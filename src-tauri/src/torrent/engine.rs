@@ -106,6 +106,11 @@ impl TorrentEngine {
         }
     }
 
+    /// The underlying session, for building the HTTP `Api` facade.
+    pub fn session(&self) -> Arc<Session> {
+        self.session.clone()
+    }
+
     /// Display name of a torrent, once its metadata has been resolved.
     pub fn torrent_name(&self, id: usize) -> Option<String> {
         self.session.get(id.into()).and_then(|handle| handle.name())
