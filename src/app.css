@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+/* Design tokens for the dark, media-first palette.
+   Declared as Tailwind theme variables so utilities like bg-surface and
+   text-muted are generated from them rather than hand-written per use. */
+@theme {
+  --color-surface: #0b0d12;
+  --color-surface-raised: #141821;
+  --color-surface-hover: #1c2130;
+  --color-border-subtle: #232838;
+  --color-ink: #e8eaf0;
+  --color-ink-muted: #9aa3b8;
+  --color-ink-faint: #6b7488;
+  --color-accent: #7c5cff;
+  --color-accent-hover: #8f74ff;
+  --color-score: #ffc857;
+}
+
+/* Base look. Kept minimal: component styling lives in the components. */
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
