@@ -1,0 +1,98 @@
+//! The provider abstraction.
+//!
+//! Every metadata source (AniList now; TMDB later) implements
+//! [`AnimeProvider`]. Callers depend on this trait rather than a concrete
+//! client, so adding a source never touches the UI or the command layer.
+
+use async_trait::async_trait;
+
+use crate::types::{Anime, ProviderId};
+
+/// Why a provider call failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderError {
+    /// The request never completed (DNS, connect, timeout).
+    Transport(String),
+    /// The server answered with a non-success status.
+    Status { status: u16, body: String },
+    /// The response was not the JSON shape we expect.
+    Decode(String),
+    /// The provider reported errors in its own envelope (e.g. GraphQL).
+    Remote(String),
+}
+
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(msg) => write!(f, "provider request failed: {msg}"),
+            Self::Status { status, body } => {
+                write!(f, "provider returned HTTP {status}: {body}")
+            }
+            Self::Decode(msg) => write!(f, "could not decode provider response: {msg}"),
+            Self::Remote(msg) => write!(f, "provider reported an error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ProviderError {}
+
+/// A source of anime metadata.
+///
+/// Async and object-safe so the app can hold a `Vec<Box<dyn AnimeProvider>>`
+/// and treat sources interchangeably.
+#[async_trait]
+pub trait AnimeProvider: Send + Sync {
+    /// Which source this is, matching the ids it returns.
+    fn id(&self) -> ProviderId;
+
+    /// Currently popular titles, for the home screen.
+    async fn trending(&self, limit: u32) -> Result<Vec<Anime>, ProviderError>;
+
+    /// Free-text search.
+    async fn search(&self, query: &str, limit: u32) -> Result<Vec<Anime>, ProviderError>;
+
+    /// Look up a single title. `Ok(None)` means "not found", which is not
+    /// an error — callers may legitimately probe for ids that do not exist.
+    async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_covers_every_variant() {
+        // Cheap guard that no variant renders as an empty string.
+        let cases = [
+            ProviderError::Transport("timeout".into()),
+            ProviderError::Status {
+                status: 429,
+                body: "slow down".into(),
+            },
+            ProviderError::Decode("bad json".into()),
+            ProviderError::Remote("invalid query".into()),
+        ];
+
+        for case in cases {
+            let rendered = case.to_string();
+            assert!(!rendered.trim().is_empty(), "empty display for {case:?}");
+        }
+    }
+
+    #[test]
+    fn status_includes_the_code() {
+        let err = ProviderError::Status {
+            status: 404,
+            body: String::new(),
+        };
+        assert!(err.to_string().contains("404"));
+    }
+
+    /// The trait must be usable behind a trait object, since the app stores
+    /// providers heterogeneously.
+    #[test]
+    fn provider_error_is_a_std_error() {
+        fn assert_error<T: std::error::Error>() {}
+        assert_error::<ProviderError>();
+    }
+}

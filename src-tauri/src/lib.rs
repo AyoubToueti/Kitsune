@@ -1,3 +1,4 @@
+pub mod providers;
 pub mod torrent;
 pub mod types;
 
