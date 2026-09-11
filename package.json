@@ -1,7 +1,7 @@
 {
   "name": "kitsune",
   "version": "0.1.0",
-  "description": "",
+  "description": "Anime streaming app built with Tauri and SvelteKit",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
