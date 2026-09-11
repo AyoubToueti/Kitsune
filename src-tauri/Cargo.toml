@@ -31,3 +31,9 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio-test = "0.4.5"
+wiremock = "0.6.5"
