@@ -25,6 +25,10 @@ pnpm-debug.log*
 # ---- Test output ----
 coverage/
 
+# ---- Nix ----
+.direnv/
+result
+
 # ---- Editor & OS noise ----
 .DS_Store
 Thumbs.db
