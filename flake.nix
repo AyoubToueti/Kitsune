@@ -42,6 +42,16 @@
           atk
           libayatana-appindicator
 
+          # GStreamer: WebKitGTK loads these at runtime for media playback.
+          # Without them `tauri dev` aborts with
+          # "GStreamer element appsink not found. Please install it."
+          gst_all_1.gstreamer
+          gst_all_1.gst-plugins-base
+          gst_all_1.gst-plugins-good
+          gst_all_1.gst-plugins-bad
+          gst_all_1.gst-plugins-ugly
+          gst_all_1.gst-libav
+
           # Media player used by the app
           mpv
 
@@ -52,6 +62,11 @@
         ];
 
         shellHook = ''
+          # Point WebKitGTK at the GStreamer plugins from this shell, since
+          # they are not installed system-wide on NixOS.
+          export GST_PLUGIN_SYSTEM_PATH_1_0="${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-ugly}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0"
+          export GST_PLUGIN_PATH_1_0="$GST_PLUGIN_SYSTEM_PATH_1_0"
+
           echo "Kitsune dev shell"
           echo "  rustc : $(rustc --version)"
           echo "  cargo : $(cargo --version)"
