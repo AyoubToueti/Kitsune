@@ -84,12 +84,29 @@ impl TorrentEngine {
         super::magnet::parse_info_hash(magnet_uri)
             .map_err(|e| anyhow!("invalid magnet URI: {e}"))?;
 
+        self.add_parsed(AddTorrent::from_url(magnet_uri)).await
+    }
+
+    /// Add a local `.torrent` file and return the engine's torrent id.
+    ///
+    /// Used for side-loading a torrent the user already has, and for
+    /// smoke tests that must not depend on a live swarm.
+    pub async fn add_torrent_file(&self, path: &Path) -> Result<usize> {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| anyhow!("torrent path is not valid UTF-8"))?;
+
+        let add = AddTorrent::from_local_filename(path_str)
+            .with_context(|| format!("failed to read torrent file {}", path.display()))?;
+
+        self.add_parsed(add).await
+    }
+
+    /// Shared add path for magnets and local torrent files.
+    async fn add_parsed(&self, add: AddTorrent<'_>) -> Result<usize> {
         let response = self
             .session
-            .add_torrent(
-                AddTorrent::from_url(magnet_uri),
-                Some(playback_options(None)),
-            )
+            .add_torrent(add, Some(playback_options(None)))
             .await
             .context("failed to add torrent")?;
 
@@ -104,6 +121,30 @@ impl TorrentEngine {
                 Ok(handle.id())
             }
         }
+    }
+
+    /// Files inside a torrent, once metadata has been resolved.
+    ///
+    /// Returns `(file_idx, name, length_bytes)`. `file_idx` is what the
+    /// stream URL needs; without metadata this is empty rather than an
+    /// error, since magnet metadata arrives asynchronously.
+    pub fn torrent_files(&self, id: usize) -> Vec<(usize, String, u64)> {
+        let Some(handle) = self.session.get(id.into()) else {
+            return Vec::new();
+        };
+
+        let mut files = Vec::new();
+        let _ = handle.with_metadata(|meta| {
+            for (idx, info) in meta.file_infos.iter().enumerate() {
+                files.push((
+                    idx,
+                    info.relative_filename.display().to_string(),
+                    info.len,
+                ));
+            }
+        });
+
+        files
     }
 
     /// The underlying session, for building the HTTP `Api` facade.

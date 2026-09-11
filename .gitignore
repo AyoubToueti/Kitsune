@@ -28,6 +28,9 @@ pnpm-debug.log*
 # ---- Test output ----
 coverage/
 
+# ---- Torrent files (used for manual smoke tests, never committed) ----
+*.torrent
+
 # ---- Nix ----
 .direnv/
 result
