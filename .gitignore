@@ -7,6 +7,9 @@ dist/
 build/
 .svelte-kit/
 .vite/
+package/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
 
 # ---- Rust / Tauri build output ----
 target/
