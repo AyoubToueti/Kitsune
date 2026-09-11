@@ -1,0 +1,33 @@
+# ---- Dependencies ----
+node_modules/
+.pnpm-store/
+
+# ---- Frontend build output ----
+dist/
+build/
+.svelte-kit/
+.vite/
+
+# ---- Rust / Tauri build output ----
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# ---- Environment & secrets ----
+.env
+.env.*
+!.env.example
+
+# ---- Logs ----
+*.log
+pnpm-debug.log*
+
+# ---- Test output ----
+coverage/
+
+# ---- Editor & OS noise ----
+.DS_Store
+Thumbs.db
+.directory
+*.swp
+*~
