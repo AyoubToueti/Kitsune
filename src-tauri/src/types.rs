@@ -64,6 +64,26 @@ impl Title {
     }
 }
 
+/// A link to an official streaming source for a work.
+///
+/// AniList calls these "streaming episodes" and sources them from the
+/// licensed services themselves. We surface them as-is: we do not host or
+/// resolve any video ourselves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamingEpisode {
+    /// Title of the entry on the external site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Where to watch it. Required: a link with nowhere to go is useless.
+    pub url: String,
+    /// The service's name, e.g. "Crunchyroll".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
+}
+
 /// A work (anime now; movies and series later) as presented in the UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,21 +95,36 @@ pub struct Anime {
     /// Cover image URL, already sized by the provider layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover_image: Option<String>,
+    /// Wide banner image, for the hero area. Not every provider has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub banner_image: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Total episodes, when known. Absent for films and ongoing shows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_count: Option<u32>,
+    /// Episode length in minutes, when the provider reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_minutes: Option<u32>,
+    /// Release format in the provider's wording, e.g. "TV", "MOVIE".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genres: Vec<String>,
     /// Mean score on the provider's own scale (AniList: 0-100).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub average_score: Option<u8>,
+    /// How many users have the work on a list. A rough popularity signal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub popularity: Option<u32>,
     /// Airing status in the provider's own wording, e.g. "FINISHED".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_year: Option<u32>,
+    /// Official places to watch this legally, as reported by the provider.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub streaming_episodes: Vec<StreamingEpisode>,
 }
 
 /// One playable entry within an [`Anime`].
@@ -142,12 +177,22 @@ mod tests {
                 user_preferred: None,
             },
             cover_image: Some("https://example.test/cover.jpg".into()),
+            banner_image: Some("https://example.test/banner.jpg".into()),
             description: Some("A pirate adventure.".into()),
             episode_count: Some(1100),
+            duration_minutes: Some(24),
+            format: Some("TV".into()),
             genres: vec!["Action".into(), "Adventure".into()],
             average_score: Some(88),
+            popularity: Some(250_000),
             status: Some("RELEASING".into()),
             season_year: Some(1999),
+            streaming_episodes: vec![StreamingEpisode {
+                title: Some("Episode 1".into()),
+                url: "https://crunchyroll.test/one-piece/1".into(),
+                site: Some("Crunchyroll".into()),
+                thumbnail: None,
+            }],
         }
     }
 

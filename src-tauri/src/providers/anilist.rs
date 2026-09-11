@@ -12,13 +12,18 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::traits::{AnimeProvider, ProviderError};
-use crate::types::{Anime, ProviderId, Title};
+use crate::types::{Anime, ProviderId, StreamingEpisode, Title};
 
 /// AniList's public GraphQL endpoint.
 pub const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
 
 /// Fields shared by every media query, so the mapping code is written once.
 const MEDIA_FIELDS: &str = r#"
+    bannerImage
+    duration
+    format
+    popularity
+    streamingEpisodes { title url site thumbnail }
     id
     title { romaji english native }
     coverImage { large extraLarge }
@@ -215,6 +220,16 @@ struct MediaData {
 
 #[derive(Deserialize)]
 struct Media {
+    #[serde(rename = "bannerImage", default)]
+    banner_image: Option<String>,
+    #[serde(default)]
+    duration: Option<u32>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    popularity: Option<u32>,
+    #[serde(rename = "streamingEpisodes", default)]
+    streaming_episodes: Option<Vec<StreamingEpisodeWire>>,
     id: i64,
     #[serde(default)]
     title: Option<MediaTitle>,
@@ -245,6 +260,18 @@ struct MediaTitle {
 }
 
 #[derive(Deserialize)]
+struct StreamingEpisodeWire {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    site: Option<String>,
+    #[serde(default)]
+    thumbnail: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct CoverImage {
     #[serde(default)]
     large: Option<String>,
@@ -266,13 +293,37 @@ fn map_media(media: Media) -> Anime {
             user_preferred: None,
         },
         cover_image: media.cover_image.and_then(pick_cover),
+        banner_image: non_empty(media.banner_image),
         description: non_empty(media.description),
         episode_count: media.episodes,
+        duration_minutes: media.duration,
+        format: non_empty(media.format),
         genres: media.genres.unwrap_or_default(),
         average_score: media.average_score,
+        popularity: media.popularity,
         status: non_empty(media.status),
         season_year: media.season_year,
+        streaming_episodes: media
+            .streaming_episodes
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(map_streaming_episode)
+            .collect(),
     }
+}
+
+/// Map one streaming link, dropping entries that have no URL.
+///
+/// AniList occasionally returns an entry without one; a link to nowhere is
+/// worse than no link, so it is skipped rather than surfaced.
+fn map_streaming_episode(episode: StreamingEpisodeWire) -> Option<StreamingEpisode> {
+    let url = non_empty(episode.url)?;
+    Some(StreamingEpisode {
+        title: non_empty(episode.title),
+        url,
+        site: non_empty(episode.site),
+        thumbnail: non_empty(episode.thumbnail),
+    })
 }
 
 /// Choose the thumbnail-sized cover.
@@ -298,6 +349,92 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The base fixture plus the newer fields: banner, format, duration,
+    /// popularity, and one streaming link.
+    ///
+    /// Built by augmenting `media_json` rather than duplicating it, so the
+    /// two cannot drift apart.
+    fn media_json_with_extras() -> serde_json::Value {
+        let mut media = media_json();
+        media["bannerImage"] = serde_json::json!("https://example.test/banner.jpg");
+        media["duration"] = serde_json::json!(24);
+        media["format"] = serde_json::json!("TV");
+        media["popularity"] = serde_json::json!(250000);
+        media["streamingEpisodes"] = serde_json::json!([
+            {
+                "title": "Episode 1",
+                "url": "https://crunchyroll.test/one-piece/1",
+                "site": "Crunchyroll",
+                "thumbnail": "https://example.test/thumb.jpg"
+            }
+        ]);
+        media
+    }
+
+    #[tokio::test]
+    async fn new_metadata_fields_are_mapped() {
+        let (_server, provider) =
+            provider_with(page_response(vec![media_json_with_extras()]), 200).await;
+
+        let anime = provider.trending(1).await.unwrap();
+        let first = &anime[0];
+
+        assert_eq!(
+            first.banner_image.as_deref(),
+            Some("https://example.test/banner.jpg")
+        );
+        assert_eq!(first.duration_minutes, Some(24));
+        assert_eq!(first.format.as_deref(), Some("TV"));
+        assert_eq!(first.popularity, Some(250_000));
+    }
+
+    #[tokio::test]
+    async fn streaming_episodes_are_mapped() {
+        let (_server, provider) =
+            provider_with(page_response(vec![media_json_with_extras()]), 200).await;
+
+        let anime = provider.trending(1).await.unwrap();
+        let links = &anime[0].streaming_episodes;
+
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].site.as_deref(), Some("Crunchyroll"));
+        assert_eq!(links[0].url, "https://crunchyroll.test/one-piece/1");
+        assert_eq!(links[0].title.as_deref(), Some("Episode 1"));
+    }
+
+    /// An entry with no URL is useless, so it is dropped rather than shown.
+    #[tokio::test]
+    async fn streaming_episode_without_url_is_dropped() {
+        let mut media = media_json();
+        media["streamingEpisodes"] = serde_json::json!([
+            { "title": "No URL", "site": "Crunchyroll" },
+            { "title": "Good", "url": "https://crunchyroll.test/ok", "site": "Crunchyroll" }
+        ]);
+
+        let (_server, provider) = provider_with(page_response(vec![media]), 200).await;
+        let anime = provider.trending(1).await.unwrap();
+
+        assert_eq!(anime[0].streaming_episodes.len(), 1);
+        assert_eq!(
+            anime[0].streaming_episodes[0].url,
+            "https://crunchyroll.test/ok"
+        );
+    }
+
+    /// A provider that omits every newer field must still map cleanly.
+    #[tokio::test]
+    async fn absent_extras_default_cleanly() {
+        let (_server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+
+        let anime = provider.trending(1).await.unwrap();
+        let first = &anime[0];
+
+        assert!(first.banner_image.is_none());
+        assert!(first.format.is_none());
+        assert!(first.duration_minutes.is_none());
+        assert!(first.popularity.is_none());
+        assert!(first.streaming_episodes.is_empty());
+    }
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
