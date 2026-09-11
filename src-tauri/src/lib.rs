@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod providers;
 pub mod torrent;
 pub mod types;
@@ -10,9 +11,21 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // One provider for the process: each `reqwest::Client` keeps a
+    // connection pool, so building one per call would waste connections
+    // and invite AniList's rate limiter.
+    let provider: commands::SharedProvider =
+        std::sync::Arc::new(providers::AniListProvider::new());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet])
+        .manage(provider)
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            commands::get_trending,
+            commands::search_anime,
+            commands::get_anime,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
