@@ -15,14 +15,23 @@
   href={`/anime/${anime.id}`}
   aria-label={title}
   class="group block w-40 shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-  onmouseenter={hover.show}
-  onmouseleave={hover.scheduleClose}
   onfocusin={hover.show}
   onfocusout={hover.scheduleClose}
 >
+  <!-- The pointer trigger lives on the artwork, not the whole link, so
+       hovering the title below does not open the preview. Keyboard focus stays
+       on the anchor, which is what makes the preview reachable without a
+       mouse. -->
+  <!-- `role="presentation"` because this wrapper is purely decorative: the
+       link above carries the accessible name, and the cover inside is alt="".
+       It has a role only because a pointer handler requires one. -->
   <div
     bind:this={poster}
+    role="presentation"
+    data-testid="poster"
     class="relative aspect-[2/3] overflow-hidden rounded-lg bg-surface-hover"
+    onmouseenter={hover.show}
+    onmouseleave={hover.scheduleClose}
   >
     {#if anime.coverImage}
       <img

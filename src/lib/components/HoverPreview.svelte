@@ -46,13 +46,15 @@
 
 <!-- Fixed rather than absolute: the rails scroll horizontally, so an in-flow
      popup would be clipped by their `overflow-x-auto`. -->
+<!-- The element is created fresh each time it opens, so the animation runs on
+     every appearance without any state to manage. -->
 <div
   use:measure
   role="tooltip"
   data-testid="hover-preview"
   data-side={placement.side}
   style="left: {placement.x}px; top: {placement.y}px;"
-  class="fixed z-50 w-72 rounded-lg border border-border-subtle bg-surface-raised p-3 shadow-xl"
+  class="preview-in fixed z-50 w-72 rounded-lg border border-border-subtle bg-surface-raised p-3 shadow-xl"
   onmouseenter={onenter}
   onmouseleave={onleave}
 >
@@ -137,3 +139,39 @@
     View details
   </a>
 </div>
+<style>
+  /* Eases in from the card's side, so the panel reads as unfolding from the
+     artwork rather than blinking into place. The distance is small on purpose:
+     a large slide would fight the fact that the panel is already overlapping
+     the card. */
+  @keyframes preview-in {
+    from {
+      opacity: 0;
+      transform: translateY(var(--preview-enter-y, 0)) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .preview-in {
+    animation: preview-in 140ms ease-out;
+  }
+
+  /* Appearing above the card: drift down towards it. */
+  .preview-in[data-side="bottom"] {
+    --preview-enter-y: -6px;
+  }
+
+  /* Flipped below the card: drift up towards it. */
+  .preview-in[data-side="top"] {
+    --preview-enter-y: 6px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .preview-in {
+      animation: none;
+    }
+  }
+</style>

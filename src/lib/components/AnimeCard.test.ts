@@ -21,6 +21,8 @@ function preview(): HTMLElement | null {
 }
 
 const link = () => screen.getByRole("link", { name: "One Piece" });
+/** The artwork, which is what the pointer trigger is attached to. */
+const poster = () => screen.getByTestId("poster");
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -106,9 +108,19 @@ describe("AnimeCard", () => {
   it("shows a preview on hover", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
 
     expect(preview()).toBeInTheDocument();
+  });
+
+  it("animates in rather than appearing instantly", async () => {
+    render(AnimeCard, { props: { anime: anime() } });
+
+    await fireEvent.mouseEnter(poster());
+
+    // The element is created on open, so the animation class is what makes it
+    // ease in. Without it the panel would blink into place.
+    expect(preview()!.className).toMatch(/preview-in/);
   });
 
   it("opens on keyboard focus, not only on hover", async () => {
@@ -120,14 +132,24 @@ describe("AnimeCard", () => {
     expect(preview()).toBeInTheDocument();
   });
 
+  it("does not open when the pointer is over the title, only the artwork", async () => {
+    render(AnimeCard, { props: { anime: anime() } });
+
+    // The trigger is on the poster, so entering the anchor without reaching the
+    // artwork must leave the preview closed.
+    await fireEvent.mouseEnter(link());
+
+    expect(preview()).toBeNull();
+  });
+
   it("keeps the preview open while the pointer is over it", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
     const panel = preview()!;
 
     // Leaving the card for the preview: the close is scheduled, then cancelled.
-    await fireEvent.mouseLeave(link());
+    await fireEvent.mouseLeave(poster());
     await fireEvent.mouseEnter(panel);
 
     // Still open after the grace period would have elapsed.
@@ -138,9 +160,9 @@ describe("AnimeCard", () => {
   it("closes once the pointer leaves the preview too", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
     const panel = preview()!;
-    await fireEvent.mouseLeave(link());
+    await fireEvent.mouseLeave(poster());
     await fireEvent.mouseEnter(panel);
 
     await fireEvent.mouseLeave(panel);
@@ -151,8 +173,8 @@ describe("AnimeCard", () => {
   it("closes after leaving the card", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(link());
-    await fireEvent.mouseLeave(link());
+    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseLeave(poster());
 
     await waitFor(() => expect(preview()).toBeNull());
   });
@@ -177,7 +199,7 @@ describe("AnimeCard", () => {
     );
 
     render(AnimeCard, { props: { anime: anime() } });
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
 
     const panel = preview()!;
     const before = panel.style.top;
@@ -207,7 +229,7 @@ describe("AnimeCard", () => {
     );
 
     render(AnimeCard, { props: { anime: anime() } });
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
 
     const panel = preview()!;
     // Left edge at the card's horizontal centre (100 + 160/2).
@@ -251,7 +273,7 @@ describe("AnimeCard", () => {
     );
 
     render(AnimeCard, { props: { anime: anime() } });
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
 
     // Card centre Y (500 + 240/2 = 620) minus the panel's real height (200),
     // so its bottom edge meets the card's centre.
@@ -267,7 +289,7 @@ describe("AnimeCard", () => {
       },
     });
 
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
 
     const panel = preview()!;
     expect(panel).toHaveTextContent("1100 eps");
@@ -283,7 +305,7 @@ describe("AnimeCard", () => {
       props: { anime: anime({ genres: ["Slice of Life"] }) },
     });
 
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
 
     expect(screen.getByRole("link", { name: "Slice of Life" })).toHaveAttribute(
       "href",
@@ -294,7 +316,7 @@ describe("AnimeCard", () => {
   it("strips HTML from the preview's synopsis", async () => {
     render(AnimeCard, { props: { anime: anime({ description: "a<br>b" }) } });
 
-    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseEnter(poster());
 
     expect(preview()).toHaveTextContent("a b");
   });

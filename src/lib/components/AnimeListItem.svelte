@@ -19,14 +19,22 @@
   href={`/anime/${anime.id}`}
   aria-label={title}
   class="group flex gap-3 rounded-lg p-2 transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-  onmouseenter={hover.show}
-  onmouseleave={hover.scheduleClose}
   onfocusin={hover.show}
   onfocusout={hover.scheduleClose}
 >
+  <!-- The pointer trigger lives on the thumbnail, not the whole row, so
+       hovering the title does not open the preview. Keyboard focus stays on the
+       anchor. -->
+  <!-- Decorative wrapper, same as the poster in AnimeCard: the anchor carries
+       the accessible name and the cover is alt="". The role exists only
+       because a pointer handler requires one. -->
   <div
     bind:this={thumb}
+    role="presentation"
+    data-testid="thumb"
     class="relative aspect-[2/3] w-16 shrink-0 overflow-hidden rounded bg-surface-hover"
+    onmouseenter={hover.show}
+    onmouseleave={hover.scheduleClose}
   >
     {#if anime.coverImage}
       <img

@@ -97,9 +97,17 @@ describe("AnimeListItem", () => {
   it("shows the same preview as a poster card", async () => {
     render(AnimeListItem, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+    await fireEvent.mouseEnter(screen.getByTestId("thumb"));
 
     expect(screen.getByTestId("hover-preview")).toBeInTheDocument();
+  });
+
+  it("does not open when the pointer is over the title, only the thumbnail", async () => {
+    render(AnimeListItem, { props: { anime: anime() } });
+
+    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+
+    expect(screen.queryByTestId("hover-preview")).toBeNull();
   });
 
   it("opens on keyboard focus, not only on hover", async () => {
@@ -115,21 +123,21 @@ describe("AnimeListItem", () => {
       props: { anime: anime({ episodeCount: 1100, format: "TV" }) },
     });
 
-    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+    await fireEvent.mouseEnter(screen.getByTestId("thumb"));
 
     expect(screen.getByTestId("hover-preview")).toHaveTextContent("1100 eps");
   });
 
   it("closes after leaving", async () => {
     render(AnimeListItem, { props: { anime: anime() } });
-    const link = screen.getByRole("link", { name: "One Piece" });
+    const thumb = screen.getByTestId("thumb");
 
-    await fireEvent.mouseEnter(link);
+    await fireEvent.mouseEnter(thumb);
     // Asserted open first: without this the close assertion below would pass
     // even if the preview never rendered at all.
     expect(screen.getByTestId("hover-preview")).toBeInTheDocument();
 
-    await fireEvent.mouseLeave(link);
+    await fireEvent.mouseLeave(thumb);
 
     await waitFor(() => expect(screen.queryByTestId("hover-preview")).toBeNull());
   });
