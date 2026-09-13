@@ -75,6 +75,20 @@ pub async fn search_from(
     provider.search(trimmed, resolve_limit(limit)).await
 }
 
+/// Titles in a genre, most popular first.
+pub async fn by_genre_from(
+    provider: &dyn AnimeProvider,
+    genre: &str,
+    limit: Option<u32>,
+) -> Result<Vec<Anime>, ProviderError> {
+    provider.by_genre(genre, resolve_limit(limit)).await
+}
+
+/// The genres available for browsing.
+pub async fn genres_from(provider: &dyn AnimeProvider) -> Result<Vec<String>, ProviderError> {
+    provider.genres().await
+}
+
 /// Look up a single title. `Ok(None)` means "no such id".
 pub async fn anime_from(
     provider: &dyn AnimeProvider,
@@ -113,6 +127,24 @@ pub async fn search_anime(
     limit: Option<u32>,
 ) -> Result<Vec<Anime>, String> {
     search_from(provider.inner().as_ref(), &query, limit)
+        .await
+        .map_err(to_message)
+}
+
+#[tauri::command]
+pub async fn get_by_genre(
+    provider: State<'_, SharedProvider>,
+    genre: String,
+    limit: Option<u32>,
+) -> Result<Vec<Anime>, String> {
+    by_genre_from(provider.inner().as_ref(), &genre, limit)
+        .await
+        .map_err(to_message)
+}
+
+#[tauri::command]
+pub async fn get_genres(provider: State<'_, SharedProvider>) -> Result<Vec<String>, String> {
+    genres_from(provider.inner().as_ref())
         .await
         .map_err(to_message)
 }

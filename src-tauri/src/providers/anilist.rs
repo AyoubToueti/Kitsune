@@ -144,6 +144,42 @@ impl AnimeProvider for AniListProvider {
         ProviderId::AniList
     }
 
+    async fn by_genre(&self, genre: &str, limit: u32) -> Result<Vec<Anime>, ProviderError> {
+        // `$genre` must be declared in the operation header or AniList
+        // rejects the whole query with "Variable \"$genre\" is not defined."
+        let query = Self::list_query(
+            "$genre: String",
+            "type: ANIME, genre: $genre, sort: POPULARITY_DESC",
+        );
+        let data: PageData = self
+            .query(
+                &query,
+                serde_json::json!({
+                    "genre": genre,
+                    "page": 1,
+                    "perPage": clamp_limit(limit),
+                }),
+            )
+            .await?;
+
+        Ok(data.page.media.into_iter().map(map_media).collect())
+    }
+
+    async fn genres(&self) -> Result<Vec<String>, ProviderError> {
+        let data: GenreData = self
+            .query("{ GenreCollection }", serde_json::json!({}))
+            .await?;
+
+        // AniList reports the adult category alongside the rest. It is not
+        // offered for browsing, so drop it here rather than in the UI where
+        // every caller would have to remember.
+        Ok(data
+            .genres
+            .into_iter()
+            .filter(|genre| !genre.eq_ignore_ascii_case("Hentai"))
+            .collect())
+    }
+
     async fn trending(&self, limit: u32) -> Result<Vec<Anime>, ProviderError> {
         let query = Self::list_query("", "type: ANIME, sort: TRENDING_DESC");
         let data: PageData = self
@@ -220,6 +256,13 @@ fn clamp_limit(limit: u32) -> u32 {
 // --- wire types -----------------------------------------------------------
 //
 // Kept private: the rest of the app only ever sees `crate::types::Anime`.
+
+/// The root `GenreCollection` field, which returns a bare array of names.
+#[derive(Deserialize)]
+struct GenreData {
+    #[serde(rename = "GenreCollection")]
+    genres: Vec<String>,
+}
 
 #[derive(Deserialize)]
 struct Envelope<T> {
@@ -381,6 +424,64 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The root `GenreCollection` payload shape.
+    fn genre_response(genres: Vec<&str>) -> serde_json::Value {
+        serde_json::json!({ "data": { "GenreCollection": genres } })
+    }
+
+    /// A genre query must declare `$genre` in the operation header or AniList
+    /// rejects it with "Variable \"$genre\" is not defined." — the same failure
+    /// mode that broke the search query.
+    #[tokio::test]
+    async fn genre_query_declares_the_genre_variable() {
+        let (_server, provider) =
+            provider_expecting("query ($genre: String, $page: Int, $perPage: Int)").await;
+
+        assert!(provider.by_genre("Mecha", 3).await.is_ok());
+    }
+
+    /// The genre travels as a GraphQL variable rather than being interpolated
+    /// into the filter, so a name containing spaces cannot break the query.
+    #[tokio::test]
+    async fn by_genre_passes_the_genre_as_a_variable() {
+        let (_server, provider) = provider_expecting("\"genre\":\"Slice of Life\"").await;
+
+        let anime = provider.by_genre("Slice of Life", 1).await.unwrap();
+        assert_eq!(anime.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn by_genre_maps_anilist_fields_like_trending() {
+        let (_server, provider) = provider_expecting("genre: $genre").await;
+
+        let anime = provider.by_genre("Action", 1).await.unwrap();
+        assert_eq!(anime[0].id, 21);
+        assert_eq!(anime[0].provider, ProviderId::AniList);
+        assert_eq!(anime[0].average_score, Some(88));
+    }
+
+    #[tokio::test]
+    async fn genres_returns_the_collection() {
+        let (_server, provider) =
+            provider_with(genre_response(vec!["Action", "Mecha", "Romance"]), 200).await;
+
+        let genres = provider.genres().await.expect("genres should succeed");
+        assert_eq!(genres, vec!["Action", "Mecha", "Romance"]);
+    }
+
+    /// AniList reports the adult category in the same collection as the rest.
+    /// It must not reach a browse grid, so it is dropped at the provider
+    /// boundary rather than left for every caller to remember.
+    #[tokio::test]
+    async fn genres_drops_the_adult_category() {
+        let (_server, provider) =
+            provider_with(genre_response(vec!["Action", "Hentai", "Mecha"]), 200).await;
+
+        let genres = provider.genres().await.unwrap();
+        assert_eq!(genres, vec!["Action", "Mecha"]);
+        assert!(!genres.iter().any(|g| g.eq_ignore_ascii_case("Hentai")));
+    }
+
     /// Mount a mock that only answers when the request body contains
     /// `expected`, so the assertion is about the query actually sent.
     async fn provider_expecting(expected: &str) -> (MockServer, AniListProvider) {

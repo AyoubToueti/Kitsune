@@ -62,6 +62,17 @@ pub trait AnimeProvider: Send + Sync {
     /// Look up a single title. `Ok(None)` means "not found", which is not
     /// an error — callers may legitimately probe for ids that do not exist.
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError>;
+    /// Titles carrying a given genre, most popular first.
+    ///
+    /// `genre` is matched against the provider's own genre names, which
+    /// [`AnimeProvider::genres`] returns.
+    async fn by_genre(&self, genre: &str, limit: u32) -> Result<Vec<Anime>, ProviderError>;
+
+    /// The genre names this provider recognises.
+    ///
+    /// Asked of the provider rather than hardcoded in the UI, so the browse
+    /// grid cannot drift from what queries actually accept.
+    async fn genres(&self) -> Result<Vec<String>, ProviderError>;
 }
 
 #[cfg(test)]
