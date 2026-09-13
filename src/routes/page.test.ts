@@ -6,7 +6,6 @@ import type { Anime } from "$lib/types";
 const getTrendingMock = vi.hoisted(() => vi.fn());
 const getListMock = vi.hoisted(() => vi.fn());
 const getGenresMock = vi.hoisted(() => vi.fn());
-const getScheduleMock = vi.hoisted(() => vi.fn());
 
 vi.mock("$lib/api/anime", async () => {
   const actual =
@@ -16,7 +15,6 @@ vi.mock("$lib/api/anime", async () => {
     getTrending: getTrendingMock,
     getList: getListMock,
     getGenres: getGenresMock,
-    getSchedule: getScheduleMock,
   };
 });
 
@@ -40,7 +38,6 @@ beforeEach(() => {
   getTrendingMock.mockReset().mockResolvedValue([]);
   getListMock.mockReset().mockResolvedValue([]);
   getGenresMock.mockReset().mockResolvedValue([]);
-  getScheduleMock.mockReset().mockResolvedValue([]);
 });
 
 describe("home page", () => {
@@ -84,13 +81,14 @@ describe("home page", () => {
     expect(screen.queryAllByText("Title 1")).toHaveLength(1);
   });
 
-  it("requests a bounded schedule window", () => {
+  it("renders the schedule section, which loads its own days", () => {
     render(Page);
 
-    const [from, to] = getScheduleMock.mock.calls[0];
-    expect(from).toBeLessThan(to);
-    const days = (to - from) / (24 * 60 * 60);
-    expect(days).toBeCloseTo(7, 0);
+    // The page no longer fetches the schedule: the widget owns its own
+    // day-on-demand loading, so all the page must do is mount it.
+    expect(
+      screen.getByRole("heading", { name: /estimated schedule/i }),
+    ).toBeInTheDocument();
   });
 
   it("still renders the other blocks when one fails", async () => {
@@ -135,13 +133,11 @@ describe("home page", () => {
     ).toBeNull();
   });
 
-  it("omits the schedule when nothing is airing", () => {
-    getScheduleMock.mockResolvedValue([]);
-
+  it("mounts the schedule without the page passing it any data", () => {
     render(Page);
 
-    expect(
-      screen.queryByRole("heading", { name: /estimated schedule/i }),
-    ).toBeNull();
+    // A day strip renders from date arithmetic alone, so the section is
+    // present before any schedule request resolves.
+    expect(screen.getByTestId("day-strip")).toBeInTheDocument();
   });
 });

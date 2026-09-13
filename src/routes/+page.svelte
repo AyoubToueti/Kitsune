@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { getGenres, getList, getSchedule, getTrending } from "$lib/api/anime";
+  import { getGenres, getList, getTrending } from "$lib/api/anime";
   import GenreGrid from "$lib/components/GenreGrid.svelte";
   import HeroCarousel from "$lib/components/HeroCarousel.svelte";
   import ListSection from "$lib/components/ListSection.svelte";
   import ScheduleWidget from "$lib/components/ScheduleWidget.svelte";
   import TrendingRail from "$lib/components/TrendingRail.svelte";
-  import type { Anime, ScheduledEpisode } from "$lib/types";
+  import type { Anime } from "$lib/types";
 
   /** Enough to fill the rail without over-fetching. */
   const TRENDING_LIMIT = 20;
@@ -13,8 +13,7 @@
   const HERO_LIMIT = 5;
   /** Per list block. */
   const BLOCK_LIMIT = 5;
-  /** How far ahead the schedule looks. */
-  const SCHEDULE_DAYS = 7;
+
 
   // --- trending: shared by the hero and the rail --------------------------
   //
@@ -39,26 +38,20 @@
       rail = [];
     });
 
-  // --- schedule and genres ------------------------------------------------
+  // --- genres -------------------------------------------------------------
+  // The schedule is not fetched here: the widget owns its own day-on-demand
+  // loading, so the page does not need to know its window.
 
   let genres = $state<string[]>([]);
-  let schedule = $state<ScheduledEpisode[]>([]);
 
-  // Computed once per load, so the window cannot drift while the user reads.
-  const now = Math.floor(Date.now() / 1000);
-  const scheduleTo = now + SCHEDULE_DAYS * 24 * 60 * 60;
-
-  async function loadSecondary() {
-    const [genreResult, scheduleResult] = await Promise.allSettled([
-      getGenres(),
-      getSchedule(now, scheduleTo, 50),
-    ]);
-
-    if (genreResult.status === "fulfilled") genres = genreResult.value;
-    if (scheduleResult.status === "fulfilled") schedule = scheduleResult.value;
-  }
-
-  loadSecondary();
+  getGenres()
+    .then((found) => {
+      genres = found;
+    })
+    .catch(() => {
+      // A missing genre grid is a missing widget, not a broken page.
+      genres = [];
+    });
 
   // --- the four list blocks -----------------------------------------------
   // Each loads through its own `ListSection`, so one rate-limited block cannot
@@ -88,4 +81,4 @@
 </div>
 
 <GenreGrid {genres} />
-<ScheduleWidget entries={schedule} />
+<ScheduleWidget />

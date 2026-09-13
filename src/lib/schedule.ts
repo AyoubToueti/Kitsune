@@ -1,27 +1,58 @@
 // Pure helpers for presenting a schedule.
 //
-// Kept out of the component so the day-boundary and ordering rules can be
-// tested without rendering anything.
+// Kept out of the component so the day-boundary, range and formatting rules can
+// be tested without rendering anything.
 
-import type { ScheduledEpisode } from "$lib/types";
+/**
+ * Days before today shown in the strip, so a viewer can look back at what
+ * already aired.
+ */
+export const SCHEDULE_PAST_DAYS = 7;
 
-/** One calendar day's worth of broadcasts. */
+/** Days after today shown in the strip. */
+export const SCHEDULE_FUTURE_DAYS = 21;
+
+/**
+ * One day in the strip.
+ *
+ * Carries its own time bounds, because the strip is built without any data: the
+ * tabs are pure date arithmetic and only the selected day is fetched.
+ */
 export interface ScheduleDay {
   /** Local calendar date as `YYYY-MM-DD`, usable as a keyed-each key. */
   key: string;
   /** "Today", "Tomorrow", or a short weekday and date. */
   label: string;
-  /**
-   * Short weekday for the day tabs, e.g. "Sun".
-   *
-   * Separate from `label` because the tabs want a fixed two-part shape
-   * (weekday over date) rather than the prose "Today"/"Tomorrow" used in
-   * the list.
-   */
+  /** Short weekday for the tabs, e.g. "Sun". */
   weekday: string;
-  /** Short date for the day tabs, e.g. "Sep 13". */
+  /** Short date for the tabs, e.g. "Sep 13". */
   shortDate: string;
-  entries: ScheduledEpisode[];
+  /** Start of this local day, in unix seconds. Inclusive. */
+  from: number;
+  /** End of this local day, in unix seconds. Inclusive. */
+  to: number;
+}
+
+/** The day strip, plus where today sits in it. */
+export interface ScheduleWindow {
+  days: ScheduleDay[];
+  /** Index of today within `days`, for the default selection. */
+  todayIndex: number;
+}
+
+/** Midnight at the start of `date`'s local day. */
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+/**
+ * `date` shifted by `days`, at the same local time of day.
+ *
+ * Going through the constructor rather than adding to the day number is what
+ * normalises month and year rollover.
+ */
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 }
 
 /**
@@ -51,45 +82,46 @@ function labelFor(date: Date, today: Date, tomorrow: Date): string {
 }
 
 /**
- * Group broadcasts by local calendar day, earliest day first.
+ * Build the day strip.
  *
- * `now` is injectable so the Today/Tomorrow labels are testable without
- * depending on the clock.
+ * Every day in the range is present regardless of whether anything airs. That
+ * keeps the strip a stable width: deriving the days from data would make the
+ * tabs appear and disappear as responses arrive, and a quiet day would vanish
+ * rather than showing as empty.
  */
-export function groupByDay(
-  entries: ScheduledEpisode[],
+export function buildDayStrip(
   now: Date = new Date(),
-): ScheduleDay[] {
-  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  pastDays: number = SCHEDULE_PAST_DAYS,
+  futureDays: number = SCHEDULE_FUTURE_DAYS,
+): ScheduleWindow {
+  const today = startOfDay(now);
+  const tomorrow = addDays(today, 1);
+  const first = addDays(today, -pastDays);
+  const count = pastDays + 1 + futureDays;
 
-  // Sort defensively. The backend orders by time already, but grouping must
-  // not silently depend on that staying true.
-  const ordered = [...entries].sort((a, b) => a.airingAt - b.airingAt);
+  const days: ScheduleDay[] = [];
 
-  const groups = new Map<string, ScheduleDay>();
+  for (let i = 0; i < count; i++) {
+    const date = addDays(first, i);
+    const next = addDays(date, 1);
 
-  for (const entry of ordered) {
-    const when = new Date(entry.airingAt * 1000);
-    const key = dayKey(when);
-
-    let group = groups.get(key);
-    if (!group) {
-      group = {
-        key,
-        label: labelFor(when, now, tomorrow),
-        weekday: when.toLocaleDateString(undefined, { weekday: "short" }),
-        shortDate: when.toLocaleDateString(undefined, {
-          day: "numeric",
-          month: "short",
-        }),
-        entries: [],
-      };
-      groups.set(key, group);
-    }
-    group.entries.push(entry);
+    days.push({
+      key: dayKey(date),
+      label: labelFor(date, today, tomorrow),
+      weekday: date.toLocaleDateString(undefined, { weekday: "short" }),
+      shortDate: date.toLocaleDateString(undefined, {
+        day: "numeric",
+        month: "short",
+      }),
+      from: Math.floor(date.getTime() / 1000),
+      // Exclusive midnight minus a second, so the whole final day is covered
+      // without bleeding into the next one.
+      to: Math.floor(next.getTime() / 1000) - 1,
+    });
   }
 
-  return [...groups.values()];
+  // Day 0 sits `pastDays` before today, so today's index is exactly `pastDays`.
+  return { days, todayIndex: pastDays };
 }
 
 /** A broadcast time in the viewer's own timezone, e.g. "21:30". */
