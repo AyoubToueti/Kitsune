@@ -6,12 +6,19 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-import type { Anime, ListFilter, ScheduledEpisode } from "$lib/types";
+import type {
+  Anime,
+  AnimePage,
+  BrowseQuery,
+  ListFilter,
+  ScheduledEpisode,
+} from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const COMMANDS = {
   trending: "get_trending",
   list: "get_list",
+  browse: "get_browse",
   search: "search_anime",
   byId: "get_anime",
   byGenre: "get_by_genre",
@@ -55,6 +62,23 @@ export async function getAnime(id: number): Promise<Anime | null> {
 /** A curated list, chosen by intent. Backs the home-screen shelves. */
 export async function getList(filter: ListFilter, limit?: number): Promise<Anime[]> {
   return invoke<Anime[]>(COMMANDS.list, { filter, limit });
+}
+
+/**
+ * Browse with filters and paging.
+ *
+ * Supersedes `searchAnime` and `getByGenre`: those are this call with one
+ * filter set, and neither could paginate.
+ *
+ * `page` is 1-based. `perPage` is a request, not a guarantee -- the backend
+ * clamps it, and the provider caps it at 50.
+ */
+export async function browseAnime(
+  query: BrowseQuery,
+  page?: number,
+  perPage?: number,
+): Promise<AnimePage> {
+  return invoke<AnimePage>(COMMANDS.browse, { query, page, perPage });
 }
 
 /** Titles in a genre, most popular first. */

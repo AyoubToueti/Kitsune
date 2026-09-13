@@ -56,6 +56,59 @@ export interface Anime {
 }
 
 /**
+ * Where a page of results sits in the whole set.
+ *
+ * Mirrors the Rust `PageInfo`. `lastPage` and `hasNextPage` are what let the
+ * UI render pagination at all.
+ */
+export interface PageInfo {
+  /**
+   * Total matches. AniList caps this at 5000, so for a very broad query it is
+   * a floor rather than an exact count.
+   */
+  total: number;
+  currentPage: number;
+  lastPage: number;
+  hasNextPage: boolean;
+}
+
+/** One page of results, with the metadata needed to ask for another. */
+export interface AnimePage {
+  items: Anime[];
+  pageInfo: PageInfo;
+}
+
+/** How to order results. Mirrors the Rust `SortOption`. */
+export type SortOption = "popularity" | "score" | "newest" | "titleAz";
+
+/** Which release status to keep. */
+export type StatusFilter = "releasing" | "finished" | "notYetReleased";
+
+/** Which release format to keep. */
+export type FormatFilter = "tv" | "movie" | "ova" | "ona" | "special" | "music";
+
+/** Which release season to keep. */
+export type SeasonFilter = "winter" | "spring" | "summer" | "fall";
+
+/**
+ * A browse request.
+ *
+ * Every filter is optional, so the UI sends only what the user set. `sort` is
+ * required because there is always an order, even when nothing is filtered.
+ */
+export interface BrowseQuery {
+  search?: string;
+  genres?: string[];
+  format?: FormatFilter;
+  status?: StatusFilter;
+  season?: SeasonFilter;
+  seasonYear?: number;
+  /** Minimum average score on the provider's own scale (AniList: 0-100). */
+  minScore?: number;
+  sort: SortOption;
+}
+
+/**
  * One upcoming broadcast, as listed on a schedule.
  *
  * Distinct from an episode of a release: this is the provider announcing that
