@@ -1,17 +1,16 @@
 <script lang="ts">
+  import { CARET_SIZE } from "$lib/hover";
   import { displayTitle, type Anime } from "$lib/types";
   import { stripHtml } from "$lib/text";
 
   let {
     anime,
-    x,
-    y,
+    placement,
     onenter,
     onleave,
   }: {
     anime: Anime;
-    x: number;
-    y: number;
+    placement: import("$lib/hover").Placement;
     /** Called when the pointer enters, so the card can cancel its close. */
     onenter: () => void;
     /** Called when the pointer leaves, so the card can schedule a close. */
@@ -21,7 +20,7 @@
   const title = $derived(displayTitle(anime.title) ?? "Untitled");
   const synopsis = $derived(stripHtml(anime.description));
 
-  /** Short facts for the badge row, mirroring the reference layout. */
+  /** Short facts for the badge row. */
   const facts = $derived(
     [
       anime.episodeCount != null ? `${anime.episodeCount} eps` : null,
@@ -29,21 +28,37 @@
     ].filter((f): f is string => f !== null),
   );
 
+  /** Only the first few genres fit; more would wrap awkwardly. */
+  const shownGenres = $derived(anime.genres.slice(0, 5));
+
   function genreHref(genre: string): string {
     return `/genre/${encodeURIComponent(genre)}`;
   }
 </script>
 
-<!-- Fixed rather than absolute: the rows scroll horizontally, so an in-flow
+<!-- Fixed rather than absolute: the rails scroll horizontally, so an in-flow
      popup would be clipped by their `overflow-x-auto`. -->
 <div
   role="tooltip"
   data-testid="hover-preview"
-  style="left: {x}px; top: {y}px;"
+  data-side={placement.side}
+  style="left: {placement.x}px; top: {placement.y}px;"
   class="fixed z-50 w-72 rounded-lg border border-border-subtle bg-surface-raised p-3 shadow-xl"
   onmouseenter={onenter}
   onmouseleave={onleave}
 >
+  <!-- A rotated square reads as a caret. Which edge it sits on follows the
+       placement, so it always points back at the card. -->
+  <span
+    aria-hidden="true"
+    data-testid="hover-caret"
+    class="absolute h-3 w-3 rotate-45 border-border-subtle bg-surface-raised {placement.side ===
+    'bottom'
+      ? '-bottom-1.5 border-b border-r'
+      : '-top-1.5 border-t border-l'}"
+    style="left: {placement.caretX - CARET_SIZE / 2}px"
+  ></span>
+
   <p class="text-sm font-semibold text-ink">{title}</p>
 
   <div class="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
@@ -93,16 +108,14 @@
     {/if}
   </dl>
 
-  {#if anime.genres.length}
+  {#if shownGenres.length}
     <p class="mt-2 text-xs">
       <span class="text-ink-faint">Genres:</span>
-      {#each anime.genres.slice(0, 5) as genre, i (genre)}<a
+      {#each shownGenres as genre, i (genre)}<a
           href={genreHref(genre)}
           class="text-ink-muted transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >{genre}</a
-        >{#if i < Math.min(anime.genres.length, 5) - 1}<span class="text-ink-faint"
-          >, </span
-        >{/if}{/each}
+        >{#if i < shownGenres.length - 1}<span class="text-ink-faint">, </span>{/if}{/each}
     </p>
   {/if}
 

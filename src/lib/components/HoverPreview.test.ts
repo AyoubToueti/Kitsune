@@ -15,7 +15,11 @@ function anime(overrides: Partial<Anime> = {}): Anime {
   };
 }
 
-const base = { x: 10, y: 20, onenter: () => {}, onleave: () => {} };
+const base = {
+  placement: { x: 10, y: 20, side: "bottom" as const, caretX: 60 },
+  onenter: () => {},
+  onleave: () => {},
+};
 
 describe("HoverPreview", () => {
   it("shows the title", () => {
@@ -44,6 +48,57 @@ describe("HoverPreview", () => {
     expect(el.style.top).toBe("20px");
   });
 
+  // --- caret --------------------------------------------------------------
+
+  it("renders a caret", () => {
+    render(HoverPreview, { props: { ...base, anime: anime() } });
+
+    expect(screen.getByTestId("hover-caret")).toBeInTheDocument();
+  });
+
+  it("places the caret at the given offset", () => {
+    render(HoverPreview, {
+      props: {
+        ...base,
+        anime: anime(),
+        placement: { ...base.placement, caretX: 80 },
+      },
+    });
+
+    // Offset is the centre, so the element starts half a caret earlier.
+    expect(screen.getByTestId("hover-caret").style.left).toBe("74px");
+  });
+
+  it("points the caret down when the preview is above the card", () => {
+    render(HoverPreview, {
+      props: {
+        ...base,
+        anime: anime(),
+        placement: { ...base.placement, side: "bottom" },
+      },
+    });
+
+    const caret = screen.getByTestId("hover-caret");
+    expect(caret.className).toMatch(/-bottom/);
+    expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "bottom");
+  });
+
+  it("points the caret up when the preview flipped below", () => {
+    render(HoverPreview, {
+      props: {
+        ...base,
+        anime: anime(),
+        placement: { ...base.placement, side: "top" },
+      },
+    });
+
+    const caret = screen.getByTestId("hover-caret");
+    expect(caret.className).toMatch(/-top/);
+    expect(screen.getByRole("tooltip")).toHaveAttribute("data-side", "top");
+  });
+
+  // --- content ------------------------------------------------------------
+
   it("shows the score when present", () => {
     render(HoverPreview, {
       props: { ...base, anime: anime({ averageScore: 88 }) },
@@ -54,7 +109,10 @@ describe("HoverPreview", () => {
 
   it("shows episode count and duration as facts", () => {
     render(HoverPreview, {
-      props: { ...base, anime: anime({ episodeCount: 1100, durationMinutes: 24 }) },
+      props: {
+        ...base,
+        anime: anime({ episodeCount: 1100, durationMinutes: 24 }),
+      },
     });
 
     expect(screen.getByText("1100 eps")).toBeInTheDocument();
@@ -127,11 +185,11 @@ describe("HoverPreview", () => {
     );
   });
 
+  // --- pointer reporting --------------------------------------------------
+
   it("reports pointer entry so the card can cancel its close", async () => {
     const onenter = vi.fn();
-    render(HoverPreview, {
-      props: { ...base, anime: anime(), onenter },
-    });
+    render(HoverPreview, { props: { ...base, anime: anime(), onenter } });
 
     await fireEvent.mouseEnter(screen.getByRole("tooltip"));
 
@@ -140,9 +198,7 @@ describe("HoverPreview", () => {
 
   it("reports pointer exit so the card can schedule a close", async () => {
     const onleave = vi.fn();
-    render(HoverPreview, {
-      props: { ...base, anime: anime(), onleave },
-    });
+    render(HoverPreview, { props: { ...base, anime: anime(), onleave } });
 
     await fireEvent.mouseLeave(screen.getByRole("tooltip"));
 

@@ -1,9 +1,16 @@
 <script lang="ts">
   import { displayTitle, type Anime } from "$lib/types";
+  import { createHoverPreview } from "$lib/hover-preview.svelte";
+  import HoverPreview from "./HoverPreview.svelte";
 
   let { anime }: { anime: Anime } = $props();
 
   const title = $derived(displayTitle(anime.title) ?? "Untitled");
+
+  // Anchored to the thumbnail rather than the whole row: the preview overlaps
+  // its anchor, and covering the title would hide what the pointer is on.
+  let thumb = $state<HTMLElement | null>(null);
+  const hover = createHoverPreview(() => thumb);
 </script>
 
 <!-- The compact row used by the home page's list blocks: a small portrait
@@ -12,8 +19,13 @@
   href={`/anime/${anime.id}`}
   aria-label={title}
   class="group flex gap-3 rounded-lg p-2 transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+  onmouseenter={hover.show}
+  onmouseleave={hover.scheduleClose}
+  onfocusin={hover.show}
+  onfocusout={hover.scheduleClose}
 >
   <div
+    bind:this={thumb}
     class="relative aspect-[2/3] w-16 shrink-0 overflow-hidden rounded bg-surface-hover"
   >
     {#if anime.coverImage}
@@ -66,3 +78,14 @@
     </div>
   </div>
 </a>
+
+{#if hover.open}
+  <!-- Sibling of the anchor, not a child: nesting links inside a link is
+       invalid, and the preview has its own genre links. -->
+  <HoverPreview
+    {anime}
+    placement={hover.placement}
+    onenter={hover.cancelClose}
+    onleave={hover.scheduleClose}
+  />
+{/if}

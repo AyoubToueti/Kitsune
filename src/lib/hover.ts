@@ -1,7 +1,7 @@
 // Where to place a hover preview relative to the card it belongs to.
 //
-// Pure so the edge cases -- flipping near the right edge, pulling up near the
-// bottom -- are testable without a browser.
+// Pure so the edge cases -- flipping when there is no room above, keeping the
+// caret inside the panel -- are testable without a browser.
 
 /** A rectangle, as `getBoundingClientRect` reports it. */
 export interface Rect {
@@ -16,45 +16,95 @@ export interface Size {
   height: number;
 }
 
-export interface Point {
+/** How the preview is anchored to its card. */
+export interface Placement {
   x: number;
   y: number;
+  /**
+   * Which edge the caret sits on.
+   *
+   * `bottom` means the preview is above the card and the caret points down at
+   * it; `top` means the preview flipped below and the caret points up.
+   */
+  side: "bottom" | "top";
+  /** Caret centre, in preview-local pixels. */
+  caretX: number;
 }
 
-/** Distance between the card and the preview. */
-export const PREVIEW_GAP = 8;
+/** How far the preview overlaps the card it belongs to. */
+export const PREVIEW_OVERLAP = 12;
+
+/** Minimum distance from the caret to the preview's own corner. */
+export const CARET_MARGIN = 16;
+
+/** Minimum distance from the preview to the viewport edge. */
+export const VIEWPORT_MARGIN = 8;
+
+/** The default preview footprint, matching the component's classes. */
+export const PREVIEW_SIZE: Size = { width: 288, height: 320 };
+
+/** Half the caret's rendered width, so its centre lands where intended. */
+export const CARET_SIZE = 12;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+export interface PlacementOptions {
+  overlap?: number;
+  margin?: number;
+}
 
 /**
- * Place the preview beside `anchor`.
+ * Place the preview so it overlaps its card, with a caret aimed at it.
  *
- * Prefers the card's right, flipping to the left when it would overflow. The
- * top is aligned with the card's, pulled up when the preview is taller than the
- * space below. Both axes are clamped so it can never sit off-screen.
+ * Prefers sitting above the card with its bottom edge lapping over the card's
+ * top. When there is not enough room above, it flips below and laps over the
+ * card's bottom instead.
+ *
+ * Horizontally it starts at the card's left edge, so the two overlap rather
+ * than sitting side by side, and is pulled left when that would overflow.
  */
 export function positionPreview(
   anchor: Rect,
   size: Size,
   viewport: Size,
-  gap: number = PREVIEW_GAP,
-): Point {
-  // Horizontal: right of the card, flipped when that would overflow.
-  let x = anchor.right + gap;
-  if (x + size.width > viewport.width) {
-    x = anchor.left - size.width - gap;
-  }
-  // Clamped last so a flipped preview on a narrow viewport still starts
-  // on-screen rather than at a negative coordinate.
-  x = Math.max(gap, x);
+  options: PlacementOptions = {},
+): Placement {
+  const overlap = options.overlap ?? PREVIEW_OVERLAP;
+  const margin = options.margin ?? VIEWPORT_MARGIN;
 
-  // Vertical: aligned with the card, pulled up when it would overflow.
-  let y = anchor.top;
-  if (y + size.height > viewport.height) {
-    y = viewport.height - size.height - gap;
-  }
-  y = Math.max(gap, y);
+  // Vertical: above the card, lapping over its top edge.
+  let side: Placement["side"] = "bottom";
+  let y = anchor.top - size.height + overlap;
 
-  return { x, y };
+  // No room above: flip below and lap over the card's bottom instead.
+  if (y < margin) {
+    side = "top";
+    y = anchor.bottom - overlap;
+  }
+
+  // A viewport shorter than the preview cannot honour the overlap, so the
+  // position is clamped rather than left off-screen.
+  if (y + size.height > viewport.height - margin) {
+    y = Math.max(margin, viewport.height - size.height - margin);
+  }
+
+  // Horizontal: start at the card's left so the preview covers part of it.
+  let x = anchor.left;
+  if (x + size.width > viewport.width - margin) {
+    x = viewport.width - size.width - margin;
+  }
+  x = Math.max(margin, x);
+
+  // The caret aims at the middle of the card, kept inside the preview's own
+  // width so it never floats off the edge of the panel.
+  const anchorCentre = anchor.left + (anchor.right - anchor.left) / 2;
+  const caretX = clamp(
+    anchorCentre - x,
+    CARET_MARGIN,
+    Math.max(CARET_MARGIN, size.width - CARET_MARGIN),
+  );
+
+  return { x, y, side, caretX };
 }
-
-/** The default preview footprint, matching the component's classes. */
-export const PREVIEW_SIZE: Size = { width: 288, height: 340 };

@@ -1,8 +1,14 @@
 import { describe, it, expect } from "vitest";
 
-import { positionPreview, PREVIEW_GAP } from "./hover";
+import {
+  positionPreview,
+  CARET_MARGIN,
+  PREVIEW_OVERLAP,
+  PREVIEW_SIZE,
+  VIEWPORT_MARGIN,
+} from "./hover";
 
-const SIZE = { width: 288, height: 340 };
+const SIZE = PREVIEW_SIZE;
 const VIEWPORT = { width: 1280, height: 800 };
 
 /** A card at the given top-left, 160x240 like the poster. */
@@ -11,59 +17,88 @@ function card(left: number, top: number) {
 }
 
 describe("positionPreview", () => {
-  it("sits to the right of the card", () => {
-    const { x } = positionPreview(card(100, 100), SIZE, VIEWPORT);
+  it("sits above the card", () => {
+    const { y, side } = positionPreview(card(100, 500), SIZE, VIEWPORT);
 
-    expect(x).toBe(100 + 160 + PREVIEW_GAP);
+    expect(side).toBe("bottom");
+    // Bottom edge laps over the card's top rather than resting against it.
+    expect(y + SIZE.height).toBe(500 + PREVIEW_OVERLAP);
   });
 
-  it("aligns its top with the card's", () => {
-    const { y } = positionPreview(card(100, 120), SIZE, VIEWPORT);
+  it("overlaps the card horizontally instead of sitting beside it", () => {
+    const { x } = positionPreview(card(100, 500), SIZE, VIEWPORT);
 
-    expect(y).toBe(120);
+    // Starts at the card's left edge, so the two overlap.
+    expect(x).toBe(100);
   });
 
-  it("flips to the left when the right would overflow", () => {
-    // Card near the right edge: right + width cannot fit.
-    const { x } = positionPreview(card(1100, 100), SIZE, VIEWPORT);
+  it("keeps the caret inside the panel", () => {
+    const { caretX } = positionPreview(card(100, 500), SIZE, VIEWPORT);
 
-    expect(x).toBe(1100 - SIZE.width - PREVIEW_GAP);
+    expect(caretX).toBeGreaterThanOrEqual(CARET_MARGIN);
+    expect(caretX).toBeLessThanOrEqual(SIZE.width - CARET_MARGIN);
   });
 
-  it("stays on-screen when there is no room either side", () => {
-    const narrow = { width: 320, height: 800 };
-    const { x } = positionPreview(card(200, 100), SIZE, narrow);
+  it("aims the caret at the middle of the card", () => {
+    // Card spans 100..260, so its centre is 180; the preview starts at 100.
+    const { caretX } = positionPreview(card(100, 500), SIZE, VIEWPORT);
 
-    // Clamped to the left margin rather than a negative coordinate.
-    expect(x).toBe(PREVIEW_GAP);
+    expect(caretX).toBe(80);
   });
 
-  it("pulls up when the preview would run off the bottom", () => {
-    const { y } = positionPreview(card(100, 700), SIZE, VIEWPORT);
+  it("holds the caret at the margin when the card extends past the panel", () => {
+    // A wide card whose centre is far to the right of the preview.
+    const wide = { left: 0, top: 500, right: 900, bottom: 740 };
+    const { caretX } = positionPreview(wide, SIZE, VIEWPORT);
 
-    expect(y).toBe(VIEWPORT.height - SIZE.height - PREVIEW_GAP);
+    // Clamped rather than drawn outside the panel.
+    expect(caretX).toBe(SIZE.width - CARET_MARGIN);
   });
 
-  it("never leaves a negative top", () => {
-    // A preview taller than the viewport cannot be placed without clamping.
+  it("flips below when there is no room above", () => {
+    const { y, side } = positionPreview(card(100, 10), SIZE, VIEWPORT);
+
+    expect(side).toBe("top");
+    // Laps over the card's bottom edge.
+    expect(y).toBe(10 + 240 - PREVIEW_OVERLAP);
+  });
+
+  it("pulls left when starting at the card would overflow", () => {
+    const { x } = positionPreview(card(1200, 500), SIZE, VIEWPORT);
+
+    expect(x).toBe(VIEWPORT.width - SIZE.width - VIEWPORT_MARGIN);
+  });
+
+  it("never leaves a negative x", () => {
+    const narrow = { width: 200, height: 800 };
+    const { x } = positionPreview(card(10, 500), SIZE, narrow);
+
+    expect(x).toBe(VIEWPORT_MARGIN);
+  });
+
+  it("clamps rather than overflowing when the viewport is shorter than the preview", () => {
     const short = { width: 1280, height: 200 };
-    const { y } = positionPreview(card(100, 100), SIZE, short);
+    const { y } = positionPreview(card(100, 150), SIZE, short);
 
-    expect(y).toBe(PREVIEW_GAP);
+    expect(y).toBeGreaterThanOrEqual(VIEWPORT_MARGIN);
   });
 
-  it("honours a custom gap", () => {
-    const { x } = positionPreview(card(100, 100), SIZE, VIEWPORT, 24);
+  it("honours a custom overlap", () => {
+    const { y } = positionPreview(card(100, 500), SIZE, VIEWPORT, { overlap: 40 });
 
-    expect(x).toBe(100 + 160 + 24);
+    expect(y + SIZE.height).toBe(540);
   });
 
-  it("produces whole numbers for a whole-numbered input", () => {
-    // Fractional rects are common from getBoundingClientRect; the result is
-    // used directly as a CSS length, so it should stay finite.
-    const { x, y } = positionPreview(card(10.5, 20.25), SIZE, VIEWPORT);
+  it("produces finite coordinates for fractional rects", () => {
+    // getBoundingClientRect frequently returns fractions.
+    const { x, y, caretX } = positionPreview(
+      { left: 10.5, top: 500.25, right: 170.5, bottom: 740.25 },
+      SIZE,
+      VIEWPORT,
+    );
 
     expect(Number.isFinite(x)).toBe(true);
     expect(Number.isFinite(y)).toBe(true);
+    expect(Number.isFinite(caretX)).toBe(true);
   });
 });

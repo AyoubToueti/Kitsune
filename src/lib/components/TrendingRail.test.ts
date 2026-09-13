@@ -16,9 +16,9 @@ function anime(id: number, title: string): Anime {
 
 /** The rank badges, in DOM order. */
 function ranks(): string[] {
-  return Array.from(document.querySelectorAll("[data-testid='rail-title']"))
-    .map((p) => p.parentElement?.parentElement?.querySelector("span")?.textContent)
-    .map((t) => (t ?? "").trim());
+  return Array.from(document.querySelectorAll("[data-testid='rank-badge']")).map(
+    (el) => el.textContent?.trim() ?? "",
+  );
 }
 
 describe("TrendingRail", () => {
@@ -34,7 +34,7 @@ describe("TrendingRail", () => {
     expect(screen.getByRole("heading", { name: "Trending" })).toBeInTheDocument();
   });
 
-  it("renders one link per entry", () => {
+  it("renders one card per entry", () => {
     render(TrendingRail, {
       props: { anime: [anime(1, "A"), anime(2, "B"), anime(3, "C")] },
     });
@@ -52,9 +52,7 @@ describe("TrendingRail", () => {
   });
 
   it("numbers entries from 01, zero-padded", () => {
-    render(TrendingRail, {
-      props: { anime: [anime(1, "A"), anime(2, "B")] },
-    });
+    render(TrendingRail, { props: { anime: [anime(1, "A"), anime(2, "B")] } });
 
     expect(ranks()).toEqual(["01", "02"]);
   });
@@ -74,11 +72,13 @@ describe("TrendingRail", () => {
   });
 
   it("rotates the rank so it reads up the edge", () => {
-    const { container } = render(TrendingRail, { props: { anime: [anime(1, "A")] } });
+    render(TrendingRail, { props: { anime: [anime(1, "A")] } });
 
-    // The vertical presentation is the whole point of this rail, so it is
-    // asserted rather than left to the stylesheet.
-    const badge = container.querySelector("span[style]") as HTMLElement;
+    // The vertical presentation is the point of this rail, so it is asserted
+    // rather than left to the stylesheet.
+    const badge = document.querySelector(
+      "[data-testid='rank-badge']",
+    ) as HTMLElement;
     expect(badge.style.writingMode).toBe("vertical-rl");
     expect(badge.style.transform).toContain("rotate(180deg)");
   });

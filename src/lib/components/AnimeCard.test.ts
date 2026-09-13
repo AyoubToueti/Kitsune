@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
 import AnimeCard from "./AnimeCard.svelte";
@@ -19,6 +19,12 @@ function anime(overrides: Partial<Anime> = {}): Anime {
 function preview(): HTMLElement | null {
   return screen.queryByTestId("hover-preview");
 }
+
+const link = () => screen.getByRole("link", { name: "One Piece" });
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("AnimeCard", () => {
   it("shows the title", () => {
@@ -74,6 +80,21 @@ describe("AnimeCard", () => {
     expect(container.querySelector("img")).toHaveAttribute("alt", "");
   });
 
+  it("blurs the poster and shows a play affordance on hover", () => {
+    const { container } = render(AnimeCard, {
+      props: { anime: anime({ coverImage: "https://example.test/c.jpg" }) },
+    });
+
+    // The blur and the overlay are pure CSS, so the classes driving them are
+    // what can be asserted.
+    expect(container.querySelector("img")?.className).toMatch(
+      /group-hover:blur/,
+    );
+    expect(screen.getByTestId("play-overlay").className).toMatch(
+      /group-hover:opacity-100/,
+    );
+  });
+
   // --- hover preview ------------------------------------------------------
 
   it("shows no preview until hovered", () => {
@@ -85,74 +106,116 @@ describe("AnimeCard", () => {
   it("shows a preview on hover", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+    await fireEvent.mouseEnter(link());
 
     expect(preview()).toBeInTheDocument();
-  });
-
-  it("blurs the poster and shows a play affordance on hover", () => {
-    const { container } = render(AnimeCard, {
-      props: { anime: anime({ coverImage: "https://example.test/c.jpg" }) },
-    });
-
-    // The blur and the overlay are pure CSS, so the classes that drive them
-    // are what can be asserted.
-    expect(container.querySelector("img")?.className).toMatch(
-      /group-hover:blur/,
-    );
-    expect(screen.getByTestId("play-overlay").className).toMatch(
-      /group-hover:opacity-100/,
-    );
-  });
-
-  it("keeps the preview open while the pointer is over it", async () => {
-    render(AnimeCard, { props: { anime: anime() } });
-    const link = screen.getByRole("link", { name: "One Piece" });
-
-    await fireEvent.mouseEnter(link);
-    const card = preview()!;
-
-    // Leaving the card for the preview: the close is scheduled, then cancelled.
-    await fireEvent.mouseLeave(link);
-    await fireEvent.mouseEnter(card);
-
-    // Still open after the grace period would have elapsed.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(preview()).toBeInTheDocument();
-  });
-
-  it("closes once the pointer leaves the preview too", async () => {
-    render(AnimeCard, { props: { anime: anime() } });
-    const link = screen.getByRole("link", { name: "One Piece" });
-
-    await fireEvent.mouseEnter(link);
-    const card = preview()!;
-    await fireEvent.mouseLeave(link);
-    await fireEvent.mouseEnter(card);
-
-    await fireEvent.mouseLeave(card);
-
-    await waitFor(() => expect(preview()).toBeNull());
-  });
-
-  it("closes after leaving the card", async () => {
-    render(AnimeCard, { props: { anime: anime() } });
-    const link = screen.getByRole("link", { name: "One Piece" });
-
-    await fireEvent.mouseEnter(link);
-    await fireEvent.mouseLeave(link);
-
-    await waitFor(() => expect(preview()).toBeNull());
   });
 
   it("opens on keyboard focus, not only on hover", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
     // A pointer-only preview would be unreachable by keyboard.
-    await fireEvent.focusIn(screen.getByRole("link", { name: "One Piece" }));
+    await fireEvent.focusIn(link());
 
     expect(preview()).toBeInTheDocument();
   });
+
+  it("keeps the preview open while the pointer is over it", async () => {
+    render(AnimeCard, { props: { anime: anime() } });
+
+    await fireEvent.mouseEnter(link());
+    const panel = preview()!;
+
+    // Leaving the card for the preview: the close is scheduled, then cancelled.
+    await fireEvent.mouseLeave(link());
+    await fireEvent.mouseEnter(panel);
+
+    // Still open after the grace period would have elapsed.
+    await new Promise((r) => setTimeout(r, 220));
+    expect(preview()).toBeInTheDocument();
+  });
+
+  it("closes once the pointer leaves the preview too", async () => {
+    render(AnimeCard, { props: { anime: anime() } });
+
+    await fireEvent.mouseEnter(link());
+    const panel = preview()!;
+    await fireEvent.mouseLeave(link());
+    await fireEvent.mouseEnter(panel);
+
+    await fireEvent.mouseLeave(panel);
+
+    await waitFor(() => expect(preview()).toBeNull());
+  });
+
+  it("closes after leaving the card", async () => {
+    render(AnimeCard, { props: { anime: anime() } });
+
+    await fireEvent.mouseEnter(link());
+    await fireEvent.mouseLeave(link());
+
+    await waitFor(() => expect(preview()).toBeNull());
+  });
+
+  // --- following the card -------------------------------------------------
+
+  it("follows the card when the page scrolls", async () => {
+    let cardTop = 500;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      () =>
+        ({
+          left: 100,
+          top: cardTop,
+          right: 260,
+          bottom: cardTop + 240,
+          width: 160,
+          height: 240,
+          x: 100,
+          y: cardTop,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    );
+
+    render(AnimeCard, { props: { anime: anime() } });
+    await fireEvent.mouseEnter(link());
+
+    const panel = preview()!;
+    const before = panel.style.top;
+
+    // The card moves up as the page scrolls.
+    cardTop = 300;
+    await fireEvent.scroll(window);
+
+    // Repositioned, rather than left where it first appeared.
+    expect(panel.style.top).not.toBe(before);
+  });
+
+  it("anchors the preview above the card, overlapping it", async () => {
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      () =>
+        ({
+          left: 100,
+          top: 500,
+          right: 260,
+          bottom: 740,
+          width: 160,
+          height: 240,
+          x: 100,
+          y: 500,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    );
+
+    render(AnimeCard, { props: { anime: anime() } });
+    await fireEvent.mouseEnter(link());
+
+    const panel = preview()!;
+    // Starts at the card's left edge rather than beside it.
+    expect(panel.style.left).toBe("100px");
+    expect(panel).toHaveAttribute("data-side", "bottom");
+  });
+
+  // --- preview content ----------------------------------------------------
 
   it("shows the preview's facts and a details link", async () => {
     render(AnimeCard, {
@@ -161,12 +224,12 @@ describe("AnimeCard", () => {
       },
     });
 
-    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+    await fireEvent.mouseEnter(link());
 
-    const card = preview()!;
-    expect(card).toHaveTextContent("1100 eps");
-    expect(card).toHaveTextContent("TV");
-    expect(card).toHaveTextContent("1999");
+    const panel = preview()!;
+    expect(panel).toHaveTextContent("1100 eps");
+    expect(panel).toHaveTextContent("TV");
+    expect(panel).toHaveTextContent("1999");
     expect(
       screen.getByRole("link", { name: /view details/i }),
     ).toHaveAttribute("href", "/anime/21");
@@ -177,7 +240,7 @@ describe("AnimeCard", () => {
       props: { anime: anime({ genres: ["Slice of Life"] }) },
     });
 
-    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+    await fireEvent.mouseEnter(link());
 
     expect(screen.getByRole("link", { name: "Slice of Life" })).toHaveAttribute(
       "href",
@@ -186,23 +249,10 @@ describe("AnimeCard", () => {
   });
 
   it("strips HTML from the preview's synopsis", async () => {
-    render(AnimeCard, {
-      props: { anime: anime({ description: "a<br>b" }) },
-    });
+    render(AnimeCard, { props: { anime: anime({ description: "a<br>b" }) } });
 
-    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+    await fireEvent.mouseEnter(link());
 
     expect(preview()).toHaveTextContent("a b");
-  });
-
-  it("positions the preview from the poster's rect", async () => {
-    render(AnimeCard, { props: { anime: anime() } });
-
-    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
-
-    // jsdom reports a zero rect, so the preview lands at the left margin
-    // rather than off-screen. The exact number is hover.test.ts's concern.
-    expect(preview()!.style.left).toBeTruthy();
-    expect(preview()!.style.top).toBeTruthy();
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
 import AnimeListItem from "./AnimeListItem.svelte";
 import type { Anime } from "$lib/types";
@@ -90,5 +90,47 @@ describe("AnimeListItem", () => {
       "https://example.test/c.jpg",
     );
     expect(container.querySelector("img")).toHaveAttribute("alt", "");
+  });
+
+  // --- hover preview ------------------------------------------------------
+
+  it("shows the same preview as a poster card", async () => {
+    render(AnimeListItem, { props: { anime: anime() } });
+
+    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+
+    expect(screen.getByTestId("hover-preview")).toBeInTheDocument();
+  });
+
+  it("opens on keyboard focus, not only on hover", async () => {
+    render(AnimeListItem, { props: { anime: anime() } });
+
+    await fireEvent.focusIn(screen.getByRole("link", { name: "One Piece" }));
+
+    expect(screen.getByTestId("hover-preview")).toBeInTheDocument();
+  });
+
+  it("carries the preview's facts", async () => {
+    render(AnimeListItem, {
+      props: { anime: anime({ episodeCount: 1100, format: "TV" }) },
+    });
+
+    await fireEvent.mouseEnter(screen.getByRole("link", { name: "One Piece" }));
+
+    expect(screen.getByTestId("hover-preview")).toHaveTextContent("1100 eps");
+  });
+
+  it("closes after leaving", async () => {
+    render(AnimeListItem, { props: { anime: anime() } });
+    const link = screen.getByRole("link", { name: "One Piece" });
+
+    await fireEvent.mouseEnter(link);
+    // Asserted open first: without this the close assertion below would pass
+    // even if the preview never rendered at all.
+    expect(screen.getByTestId("hover-preview")).toBeInTheDocument();
+
+    await fireEvent.mouseLeave(link);
+
+    await waitFor(() => expect(screen.queryByTestId("hover-preview")).toBeNull());
   });
 });
