@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, waitFor } from "@testing-library/svelte";
 
 import type { Anime } from "$lib/types";
 
-// Every command the page reaches for is stubbed, so the suite never touches
-// the backend. `errorMessage` stays real so failures render as they would in
-// the app.
+// Every command the page reaches for is stubbed, so the suite never touches the
+// backend. `errorMessage` stays real so failures render as they would in the
+// app.
 const getTrendingMock = vi.hoisted(() => vi.fn());
 const getListMock = vi.hoisted(() => vi.fn());
 const getGenresMock = vi.hoisted(() => vi.fn());
@@ -33,6 +33,11 @@ function anime(id: number, title: string): Anime {
     genres: [],
     streamingEpisodes: [],
   };
+}
+
+/** `count` distinct titles, for exercising the hero/row split. */
+function many(count: number): Anime[] {
+  return Array.from({ length: count }, (_, i) => anime(i + 1, `Title ${i + 1}`));
 }
 
 beforeEach(() => {
@@ -69,11 +74,38 @@ describe("home page", () => {
     expect(filters).toContain("upcoming");
   });
 
-  it("loads the hero from trending, not the first shelf query", () => {
+  it("fetches trending once, shared by the hero and the row", () => {
     render(Page);
 
-    // The carousel wants a handful of strong titles.
-    expect(getListMock).toHaveBeenCalledWith("trending", 5);
+    // Two separate calls would double the request and repeat the same titles
+    // in the carousel and the rail beneath it.
+    expect(getTrendingMock).toHaveBeenCalledTimes(1);
+    expect(getTrendingMock).toHaveBeenCalledWith(20);
+  });
+
+  it("rotates the top few titles in the hero", async () => {
+    getTrendingMock.mockResolvedValue(many(20));
+
+    render(Page);
+
+    // The carousel shows the first title initially.
+    expect(
+      await screen.findByRole("heading", { name: "Title 1", level: 1 }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not repeat the hero's titles in the trending row", async () => {
+    getTrendingMock.mockResolvedValue(many(20));
+
+    render(Page);
+    await screen.findByRole("heading", { name: "Title 1", level: 1 });
+
+    // "Title 1" is in the hero, so it must not also appear as a card. The row
+    // starts at HERO_LIMIT.
+    await waitFor(() => {
+      expect(screen.getByText("Title 6")).toBeInTheDocument();
+    });
+    expect(screen.queryAllByText("Title 1")).toHaveLength(1);
   });
 
   it("requests genres for the browse grid", () => {
@@ -94,21 +126,21 @@ describe("home page", () => {
 
   it("still renders every other shelf when one fails", async () => {
     // A rate-limited row must not blank the page.
-    getTrendingMock.mockRejectedValue("provider returned HTTP 429");
-    getListMock.mockResolvedValue([anime(1, "Popular")]);
+    getListMock.mockImplementation((filter: string) =>
+      filter === "mostPopular"
+        ? Promise.resolve([anime(1, "Popular")])
+        : Promise.reject("provider returned HTTP 429"),
+    );
 
     render(Page);
 
-    expect(
-      screen.getByRole("heading", { name: "Most popular" }),
-    ).toBeInTheDocument();
-    expect(await screen.findByText(/429/)).toBeInTheDocument();
-    // A sibling shelf still produced content.
     expect(await screen.findAllByText("Popular")).not.toHaveLength(0);
+    // A sibling shelf surfaced its own failure without taking the page down.
+    expect(await screen.findAllByText(/429/)).not.toHaveLength(0);
   });
 
-  it("omits the hero when nothing comes back for it", () => {
-    getListMock.mockResolvedValue([]);
+  it("omits the hero when trending comes back empty", () => {
+    getTrendingMock.mockResolvedValue([]);
 
     render(Page);
 
@@ -120,7 +152,9 @@ describe("home page", () => {
 
     render(Page);
 
-    expect(screen.queryByRole("heading", { name: /browse by genre/i })).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: /browse by genre/i }),
+    ).toBeNull();
   });
 
   it("omits the schedule when nothing is airing", () => {

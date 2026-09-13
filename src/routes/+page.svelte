@@ -8,30 +8,48 @@
 
   /** Enough for a scrollable shelf without over-fetching. */
   const SHELF_LIMIT = 20;
-  /** The carousel wants a handful of strong titles, not a full row. */
+  /** How many of those the hero rotates. */
   const HERO_LIMIT = 5;
   /** How far ahead the schedule widget looks. */
   const SCHEDULE_DAYS = 7;
 
-  // --- hero ---------------------------------------------------------------
-  // Loaded here rather than through `Shelf`, because the hero renders a
-  // carousel instead of a poster row.
+  // --- trending: shared by the hero and the first row ----------------------
+  //
+  // Both show the same list: the hero rotates the top few titles, the row ranks
+  // the rest. Fetching them separately would hit AniList twice for identical
+  // data and repeat the same titles in the carousel and the row beneath it.
+
+  /**
+   * The in-flight (or resolved) trending request.
+   *
+   * A failure clears it, so a retry issues a fresh call rather than replaying
+   * the same settled rejection.
+   */
+  let trendingRequest: Promise<Anime[]> | null = null;
+
+  function loadTrending(): Promise<Anime[]> {
+    trendingRequest ??= getTrending(SHELF_LIMIT).catch((err) => {
+      trendingRequest = null;
+      throw err;
+    });
+    return trendingRequest;
+  }
 
   let hero = $state<Anime[]>([]);
 
-  async function loadHero() {
-    try {
-      // `onMount` in the component tree below means this runs in the browser;
-      // awaiting here keeps the failure contained to the hero.
-      hero = await getList("trending", HERO_LIMIT);
-    } catch {
-      // A failed hero should degrade to nothing rather than take the page
-      // down; the shelves below still load independently.
+  // A failed hero degrades to nothing rather than taking the page down. The row
+  // below surfaces the same failure with a retry, since it reads the same
+  // request.
+  loadTrending()
+    .then((all) => {
+      hero = all.slice(0, HERO_LIMIT);
+    })
+    .catch(() => {
       hero = [];
-    }
-  }
+    });
 
-  loadHero();
+  /** The rest of the trending list, which is what the row ranks. */
+  const trendingRow = () => loadTrending().then((all) => all.slice(HERO_LIMIT));
 
   // --- secondary sections -------------------------------------------------
   // These feed single sections rather than shelves, so a failure leaves the
@@ -40,8 +58,8 @@
   let genres = $state<string[]>([]);
   let schedule = $state<ScheduledEpisode[]>([]);
 
-  // Computed once per page load, so the schedule window does not drift while
-  // the user reads.
+  // Computed once per load, so the schedule window cannot drift while the user
+  // reads.
   const now = Math.floor(Date.now() / 1000);
   const scheduleTo = now + SCHEDULE_DAYS * 24 * 60 * 60;
 
@@ -57,11 +75,10 @@
 
   loadSecondary();
 
-  // --- shelves ------------------------------------------------------------
+  // --- remaining shelves --------------------------------------------------
   // Each loads through its own `Shelf`, so one rate-limited row cannot blank
   // the rest of the page.
 
-  const trending = () => getTrending(SHELF_LIMIT);
   const topAiring = () => getList("topAiring", SHELF_LIMIT);
   const mostPopular = () => getList("mostPopular", SHELF_LIMIT);
   const topRated = () => getList("topRated", SHELF_LIMIT);
@@ -74,7 +91,7 @@
 {/if}
 
 <div class="space-y-2">
-  <Shelf title="Trending now" load={trending} numbered />
+  <Shelf title="Trending now" load={trendingRow} numbered />
   <Shelf title="Top airing" load={topAiring} />
   <Shelf title="Most popular" load={mostPopular} />
   <Shelf title="Top rated" load={topRated} />
