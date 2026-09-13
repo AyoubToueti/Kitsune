@@ -89,6 +89,9 @@ pub enum SortOption {
     Newest,
     /// Alphabetical by the provider's own title form.
     TitleAz,
+    /// Closest textual match. Only meaningful alongside a search term; without
+    /// one the provider falls back to its default order.
+    SearchMatch,
 }
 
 /// Which release status to keep.

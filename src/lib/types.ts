@@ -79,7 +79,16 @@ export interface AnimePage {
 }
 
 /** How to order results. Mirrors the Rust `SortOption`. */
-export type SortOption = "popularity" | "score" | "newest" | "titleAz";
+export type SortOption =
+  | "popularity"
+  | "score"
+  | "newest"
+  | "titleAz"
+  /**
+   * Closest textual match. Only meaningful alongside a search term; without
+   * one the provider falls back to its default order.
+   */
+  | "searchMatch";
 
 /** Which release status to keep. */
 export type StatusFilter = "releasing" | "finished" | "notYetReleased";

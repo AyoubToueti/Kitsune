@@ -1,17 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/svelte";
 
-import type { Anime } from "$lib/types";
+import type { Anime, AnimePage } from "$lib/types";
 
-// Aliased to src/test/app-state-stub.ts in vitest.config.js. Each test sets
-// the URL before rendering; the component reads it once per render.
+// Aliased to src/test/app-state-stub.ts in vitest.config.js. Each test sets the
+// URL before rendering.
 import { page as appState } from "$app/state";
 
-const searchAnimeMock = vi.hoisted(() => vi.fn());
+const browseAnimeMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/anime", async () => {
   const actual =
     await vi.importActual<typeof import("$lib/api/anime")>("$lib/api/anime");
-  return { ...actual, searchAnime: searchAnimeMock };
+  return { ...actual, browseAnime: browseAnimeMock };
 });
 
 import Page from "./+page.svelte";
@@ -26,8 +26,25 @@ function anime(id: number, title: string): Anime {
   };
 }
 
+/** A page of results, with the paging metadata the UI needs. */
+function page(
+  items: Anime[],
+  overrides: Partial<AnimePage["pageInfo"]> = {},
+): AnimePage {
+  return {
+    items,
+    pageInfo: {
+      total: items.length,
+      currentPage: 1,
+      lastPage: 1,
+      hasNextPage: false,
+      ...overrides,
+    },
+  };
+}
+
 /** A promise that never settles, to hold the page in its loading state. */
-function pending(): Promise<Anime[]> {
+function pending(): Promise<AnimePage> {
   return new Promise(() => {});
 }
 
@@ -43,12 +60,13 @@ function setUrl(url: URL) {
   (appState as { url: URL }).url = url;
 }
 
-function withQuery(q: string) {
-  setUrl(new URL(`http://localhost/search?q=${encodeURIComponent(q)}`));
+function withQuery(q: string, page?: number) {
+  const suffix = page === undefined ? "" : `&page=${page}`;
+  setUrl(new URL(`http://localhost/search?q=${encodeURIComponent(q)}${suffix}`));
 }
 
 beforeEach(() => {
-  searchAnimeMock.mockReset();
+  browseAnimeMock.mockReset();
   setUrl(new URL("http://localhost/search"));
 });
 
@@ -57,7 +75,7 @@ describe("search page", () => {
     render(Page);
 
     expect(screen.getByText(/search box above/i)).toBeInTheDocument();
-    expect(searchAnimeMock).not.toHaveBeenCalled();
+    expect(browseAnimeMock).not.toHaveBeenCalled();
   });
 
   it("does not search for a whitespace-only query", () => {
@@ -66,31 +84,57 @@ describe("search page", () => {
     render(Page);
 
     expect(screen.getByText(/search box above/i)).toBeInTheDocument();
-    expect(searchAnimeMock).not.toHaveBeenCalled();
+    expect(browseAnimeMock).not.toHaveBeenCalled();
   });
 
   it("shows a loading state while searching", () => {
     withQuery("one piece");
-    searchAnimeMock.mockReturnValue(pending());
+    browseAnimeMock.mockReturnValue(pending());
 
     render(Page);
 
     expect(screen.getByText(/searching/i)).toBeInTheDocument();
   });
 
-  it("passes the trimmed query and a limit to the backend", async () => {
+  it("searches the trimmed term with relevance ordering", async () => {
     withQuery("  one piece  ");
-    searchAnimeMock.mockResolvedValue([anime(1, "One Piece")]);
+    browseAnimeMock.mockResolvedValue(page([anime(1, "One Piece")]));
 
     render(Page);
     await screen.findByRole("heading", { name: /results for/i });
 
-    expect(searchAnimeMock).toHaveBeenCalledWith("one piece", 30);
+    // Relevance, not popularity: a search should return the best matches.
+    expect(browseAnimeMock).toHaveBeenCalledWith(
+      { search: "one piece", sort: "searchMatch" },
+      1,
+      30,
+    );
+  });
+
+  it("requests the page named in the URL", async () => {
+    withQuery("naruto", 3);
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    expect(browseAnimeMock).toHaveBeenCalledWith(expect.anything(), 3, 30);
+  });
+
+  it("treats a nonsense page as the first page", async () => {
+    // A hand-edited ?page=abc must not send NaN to the backend.
+    setUrl(new URL("http://localhost/search?q=a&page=abc"));
+    browseAnimeMock.mockResolvedValue(page([anime(1, "A")]));
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    expect(browseAnimeMock).toHaveBeenCalledWith(expect.anything(), 1, 30);
   });
 
   it("renders a card per result", async () => {
     withQuery("a");
-    searchAnimeMock.mockResolvedValue([anime(1, "Alpha"), anime(2, "Beta")]);
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Alpha"), anime(2, "Beta")]));
 
     render(Page);
 
@@ -100,7 +144,7 @@ describe("search page", () => {
 
   it("echoes the query in the results heading", async () => {
     withQuery("naruto");
-    searchAnimeMock.mockResolvedValue([anime(1, "Naruto")]);
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
 
     render(Page);
 
@@ -111,7 +155,7 @@ describe("search page", () => {
 
   it("says so when a search returned nothing", async () => {
     withQuery("zzzzz");
-    searchAnimeMock.mockResolvedValue([]);
+    browseAnimeMock.mockResolvedValue(page([]));
 
     render(Page);
 
@@ -122,10 +166,60 @@ describe("search page", () => {
 
   it("surfaces the backend error message", async () => {
     withQuery("a");
-    searchAnimeMock.mockRejectedValue("provider returned HTTP 429");
+    browseAnimeMock.mockRejectedValue("provider returned HTTP 429");
 
     render(Page);
 
     expect(await screen.findByText(/429/)).toBeInTheDocument();
+  });
+
+  // --- pagination ---------------------------------------------------------
+
+  it("shows no pagination for a single page of results", async () => {
+    withQuery("a");
+    browseAnimeMock.mockResolvedValue(page([anime(1, "A")]));
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    expect(screen.queryByTestId("pagination")).toBeNull();
+  });
+
+  it("offers pagination when there are more pages", async () => {
+    withQuery("a");
+    browseAnimeMock.mockResolvedValue(
+      page([anime(1, "A")], { total: 90, currentPage: 1, lastPage: 3, hasNextPage: true }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    expect(screen.getByTestId("pagination")).toBeInTheDocument();
+  });
+
+  it("page links keep the search term", async () => {
+    withQuery("one piece");
+    browseAnimeMock.mockResolvedValue(
+      page([anime(1, "A")], { total: 90, currentPage: 1, lastPage: 3, hasNextPage: true }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    // Losing the query would turn paging into a search for nothing.
+    const link = screen.getByRole("link", { name: "Next page" });
+    expect(link.getAttribute("href")).toContain("q=one%20piece");
+    expect(link.getAttribute("href")).toContain("page=2");
+  });
+
+  it("marks the requested page as current", async () => {
+    withQuery("a", 2);
+    browseAnimeMock.mockResolvedValue(
+      page([anime(1, "A")], { total: 90, currentPage: 2, lastPage: 3, hasNextPage: true }),
+    );
+
+    render(Page);
+
+    expect(await screen.findByTestId("current-page")).toHaveTextContent("2");
   });
 });

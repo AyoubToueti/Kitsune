@@ -1,44 +1,61 @@
 <script lang="ts">
   import { page } from "$app/state";
 
-  import { errorMessage, searchAnime } from "$lib/api/anime";
-  import AnimeCard from "$lib/components/AnimeCard.svelte";
-  import type { Anime } from "$lib/types";
+  import { browseAnime, errorMessage } from "$lib/api/anime";
+  import AnimeGrid from "$lib/components/AnimeGrid.svelte";
+  import Pagination from "$lib/components/Pagination.svelte";
+  import { clampPage } from "$lib/pagination";
+  import type { AnimePage } from "$lib/types";
 
-  const LIMIT = 30;
+  /** AniList caps perPage at 50; the backend clamps anything larger. */
+  const PER_PAGE = 30;
 
-  // Reactive: the navbar submits a GET to /search, so the query string
-  // changes without the component unmounting.
+  // Reactive: the navbar submits a GET to /search, so the query string changes
+  // without the component unmounting.
   const query = $derived((page.url.searchParams.get("q") ?? "").trim());
 
-  let results = $state<Anime[]>([]);
+  /**
+   * The requested page, sanitised to a positive integer.
+   *
+   * `Number("abc")` is NaN and `Number("0")` is 0; both mean "first page" here.
+   * A page past the end is left to the provider, which returns an empty page
+   * that the UI reports honestly rather than silently rewinding.
+   */
+  const requestedPage = $derived(
+    Math.max(1, Math.floor(Number(page.url.searchParams.get("page") ?? "1")) || 1),
+  );
+
+  let result = $state<AnimePage | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  // Distinguishes "nothing yet" from "searched and found nothing", which
-  // need different copy.
+  // Distinguishes "nothing yet" from "searched and found nothing", which need
+  // different copy.
   let searched = $state("");
 
   $effect(() => {
     const q = query;
+    const requested = requestedPage;
 
     if (q === "") {
-      results = [];
+      result = null;
       error = null;
       loading = false;
       searched = "";
       return;
     }
 
-    // Guards against a stale response overwriting a newer one when the
-    // user searches again quickly.
+    // Guards against a stale response overwriting a newer one when the user
+    // searches again quickly.
     let cancelled = false;
     loading = true;
     error = null;
 
-    searchAnime(q, LIMIT)
+    // Relevance first: a search should return the closest matches, not the most
+    // popular titles that happen to contain the words.
+    browseAnime({ search: q, sort: "searchMatch" }, requested, PER_PAGE)
       .then((found) => {
         if (cancelled) return;
-        results = found;
+        result = found;
         searched = q;
       })
       .catch((err) => {
@@ -54,6 +71,18 @@
       cancelled = true;
     };
   });
+
+  /**
+   * Build a page link that keeps the search term.
+   *
+   * The target is clamped against the last page we know about, so the control
+   * cannot link further into nowhere.
+   */
+  function hrefFor(target: number): string {
+    const last = result?.pageInfo.lastPage ?? 1;
+    const safe = clampPage(target, last);
+    return `/search?q=${encodeURIComponent(searched)}&page=${safe}`;
+  }
 </script>
 
 {#if query === ""}
@@ -65,20 +94,19 @@
     <p class="text-ink">Could not run that search.</p>
     <p class="mt-2 text-sm text-ink-faint">{error}</p>
   </div>
-{:else if results.length === 0}
+{:else if result && result.items.length === 0}
   <p class="py-16 text-center text-ink-muted">
     No results for “{searched}”.
   </p>
-{:else}
+{:else if result}
   <h1 class="mb-4 text-lg font-semibold tracking-tight">
     Results for “{searched}”
   </h1>
 
-  <ul class="flex flex-wrap gap-4">
-    {#each results as item (item.id)}
-      <li>
-        <AnimeCard anime={item} />
-      </li>
-    {/each}
-  </ul>
+  <AnimeGrid anime={result.items} />
+  <Pagination
+    current={result.pageInfo.currentPage}
+    last={result.pageInfo.lastPage}
+    {hrefFor}
+  />
 {/if}

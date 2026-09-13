@@ -443,6 +443,7 @@ fn sort_literal(sort: SortOption) -> &'static str {
         SortOption::Score => "SCORE_DESC",
         SortOption::Newest => "START_DATE_DESC",
         SortOption::TitleAz => "TITLE_ROMAJI",
+        SortOption::SearchMatch => "SEARCH_MATCH",
     }
 }
 

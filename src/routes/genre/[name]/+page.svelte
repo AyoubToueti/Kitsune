@@ -1,29 +1,35 @@
 <script lang="ts">
   import { page } from "$app/state";
 
-  import { errorMessage, getByGenre } from "$lib/api/anime";
-  import AnimeCard from "$lib/components/AnimeCard.svelte";
-  import type { Anime } from "$lib/types";
+  import { browseAnime, errorMessage } from "$lib/api/anime";
+  import AnimeGrid from "$lib/components/AnimeGrid.svelte";
+  import Pagination from "$lib/components/Pagination.svelte";
+  import { clampPage } from "$lib/pagination";
+  import type { AnimePage } from "$lib/types";
 
-  const LIMIT = 30;
+  const PER_PAGE = 30;
 
   // SvelteKit decodes route params, so a "Slice%20of%20Life" path arrives here
   // already readable. Decoding again could corrupt a name containing a literal
   // percent, so it is used as-is.
   const genre = $derived(page.params.name ?? "");
 
-  let results = $state<Anime[]>([]);
+  /** Sanitised to a positive integer; see the search page for the reasoning. */
+  const requestedPage = $derived(
+    Math.max(1, Math.floor(Number(page.url.searchParams.get("page") ?? "1")) || 1),
+  );
+
+  let result = $state<AnimePage | null>(null);
   let loading = $state(false);
   let error = $state<string | null>(null);
-  // Distinguishes "nothing yet" from "loaded and found nothing", which need
-  // different copy.
   let loadedFor = $state("");
 
   $effect(() => {
     const current = genre;
+    const requested = requestedPage;
 
     if (current === "") {
-      results = [];
+      result = null;
       error = null;
       loading = false;
       loadedFor = "";
@@ -36,10 +42,10 @@
     loading = true;
     error = null;
 
-    getByGenre(current, LIMIT)
+    browseAnime({ genres: [current], sort: "popularity" }, requested, PER_PAGE)
       .then((found) => {
         if (cancelled) return;
-        results = found;
+        result = found;
         loadedFor = current;
       })
       .catch((err) => {
@@ -55,6 +61,19 @@
       cancelled = true;
     };
   });
+
+  /**
+   * Keep the genre in the path while moving between pages.
+   *
+   * Page 1 is written without a query string, so the canonical URL for a genre
+   * stays clean and the first page is not duplicated at `?page=1`.
+   */
+  function hrefFor(target: number): string {
+    const last = result?.pageInfo.lastPage ?? 1;
+    const safe = clampPage(target, last);
+    const base = `/genre/${encodeURIComponent(loadedFor)}`;
+    return safe === 1 ? base : `${base}?page=${safe}`;
+  }
 </script>
 
 {#if genre === ""}
@@ -66,18 +85,17 @@
     <p class="text-ink">Could not load that genre.</p>
     <p class="mt-2 text-sm text-ink-faint">{error}</p>
   </div>
-{:else if results.length === 0}
+{:else if result && result.items.length === 0}
   <p class="py-16 text-center text-ink-muted">
     Nothing found in “{loadedFor}”.
   </p>
-{:else}
+{:else if result}
   <h1 class="mb-4 text-lg font-semibold tracking-tight">{loadedFor}</h1>
 
-  <ul class="flex flex-wrap gap-4">
-    {#each results as item (item.id)}
-      <li>
-        <AnimeCard anime={item} />
-      </li>
-    {/each}
-  </ul>
+  <AnimeGrid anime={result.items} />
+  <Pagination
+    current={result.pageInfo.currentPage}
+    last={result.pageInfo.lastPage}
+    {hrefFor}
+  />
 {/if}
