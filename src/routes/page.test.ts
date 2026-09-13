@@ -3,13 +3,24 @@ import { render, screen } from "@testing-library/svelte";
 
 import type { Anime } from "$lib/types";
 
-// Only `getTrending` is stubbed; `errorMessage` stays real so the test
-// exercises the actual rendering of a backend failure.
+// Every command the page reaches for is stubbed, so the suite never touches
+// the backend. `errorMessage` stays real so failures render as they would in
+// the app.
 const getTrendingMock = vi.hoisted(() => vi.fn());
+const getListMock = vi.hoisted(() => vi.fn());
+const getGenresMock = vi.hoisted(() => vi.fn());
+const getScheduleMock = vi.hoisted(() => vi.fn());
+
 vi.mock("$lib/api/anime", async () => {
   const actual =
     await vi.importActual<typeof import("$lib/api/anime")>("$lib/api/anime");
-  return { ...actual, getTrending: getTrendingMock };
+  return {
+    ...actual,
+    getTrending: getTrendingMock,
+    getList: getListMock,
+    getGenres: getGenresMock,
+    getSchedule: getScheduleMock,
+  };
 });
 
 import Page from "./+page.svelte";
@@ -24,94 +35,99 @@ function anime(id: number, title: string): Anime {
   };
 }
 
-/** A promise that never settles, to hold the page in its loading state. */
-function pending(): Promise<Anime[]> {
-  return new Promise(() => {});
-}
-
 beforeEach(() => {
-  getTrendingMock.mockReset();
+  getTrendingMock.mockReset().mockResolvedValue([]);
+  getListMock.mockReset().mockResolvedValue([]);
+  getGenresMock.mockReset().mockResolvedValue([]);
+  getScheduleMock.mockReset().mockResolvedValue([]);
 });
 
 describe("home page", () => {
-  it("shows a loading state while the request is in flight", () => {
-    getTrendingMock.mockReturnValue(pending());
-
+  it("renders the shelf headings", () => {
     render(Page);
 
-    expect(screen.getByText(/loading/i)).toBeInTheDocument();
+    for (const title of [
+      "Trending now",
+      "Top airing",
+      "Most popular",
+      "Top rated",
+      "Latest completed",
+      "Upcoming",
+    ]) {
+      expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+    }
   });
 
-  it("asks for a bounded number of titles", async () => {
-    getTrendingMock.mockResolvedValue([anime(1, "A")]);
-
-    render(Page);
-    await screen.findByRole("heading", { name: "A" });
-
-    expect(getTrendingMock).toHaveBeenCalledWith(24);
-  });
-
-  it("features the first title in the hero", async () => {
-    getTrendingMock.mockResolvedValue([anime(1, "First"), anime(2, "Second")]);
-
+  it("requests each shelf from its own list filter", () => {
     render(Page);
 
-    expect(
-      await screen.findByRole("heading", { name: "First", level: 1 }),
-    ).toBeInTheDocument();
+    const filters = getListMock.mock.calls.map((call) => call[0]);
+    expect(filters).toContain("topAiring");
+    expect(filters).toContain("mostPopular");
+    expect(filters).toContain("topRated");
+    expect(filters).toContain("latestCompleted");
+    expect(filters).toContain("upcoming");
   });
 
-  it("shows the remaining titles in the row", async () => {
-    getTrendingMock.mockResolvedValue([anime(1, "First"), anime(2, "Second")]);
-
+  it("loads the hero from trending, not the first shelf query", () => {
     render(Page);
-    await screen.findByRole("heading", { name: "First", level: 1 });
 
-    expect(screen.getByText("Second")).toBeInTheDocument();
-    // The featured title is not repeated in the row.
-    expect(screen.queryAllByText("First")).toHaveLength(1);
+    // The carousel wants a handful of strong titles.
+    expect(getListMock).toHaveBeenCalledWith("trending", 5);
   });
 
-  it("omits the row when only one title came back", async () => {
-    getTrendingMock.mockResolvedValue([anime(1, "Only")]);
-
+  it("requests genres for the browse grid", () => {
     render(Page);
-    await screen.findByRole("heading", { name: "Only", level: 1 });
 
-    // PosterRow renders nothing for an empty list.
-    expect(
-      screen.queryByRole("heading", { name: "Trending now" }),
-    ).not.toBeInTheDocument();
+    expect(getGenresMock).toHaveBeenCalled();
   });
 
-  it("surfaces the backend error message", async () => {
+  it("requests a bounded schedule window", () => {
+    render(Page);
+
+    const [from, to] = getScheduleMock.mock.calls[0];
+    expect(from).toBeLessThan(to);
+    // A week ahead, so the window is not unbounded.
+    const days = (to - from) / (24 * 60 * 60);
+    expect(days).toBeCloseTo(7, 0);
+  });
+
+  it("still renders every other shelf when one fails", async () => {
+    // A rate-limited row must not blank the page.
     getTrendingMock.mockRejectedValue("provider returned HTTP 429");
+    getListMock.mockResolvedValue([anime(1, "Popular")]);
 
     render(Page);
-
-    expect(await screen.findByText(/429/)).toBeInTheDocument();
-  });
-
-  it("offers a retry that re-requests", async () => {
-    getTrendingMock.mockRejectedValueOnce("provider returned HTTP 429");
-
-    render(Page);
-    await screen.findByText(/429/);
-
-    getTrendingMock.mockResolvedValue([anime(1, "Recovered")]);
-    screen.getByRole("button", { name: "Try again" }).click();
 
     expect(
-      await screen.findByRole("heading", { name: "Recovered", level: 1 }),
+      screen.getByRole("heading", { name: "Most popular" }),
     ).toBeInTheDocument();
-    expect(getTrendingMock).toHaveBeenCalledTimes(2);
+    expect(await screen.findByText(/429/)).toBeInTheDocument();
+    // A sibling shelf still produced content.
+    expect(await screen.findAllByText("Popular")).not.toHaveLength(0);
   });
 
-  it("says so when there are no titles", async () => {
-    getTrendingMock.mockResolvedValue([]);
+  it("omits the hero when nothing comes back for it", () => {
+    getListMock.mockResolvedValue([]);
 
     render(Page);
 
-    expect(await screen.findByText(/no titles available/i)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /carousel/i })).toBeNull();
+  });
+
+  it("omits the genre grid when no genres come back", () => {
+    getGenresMock.mockResolvedValue([]);
+
+    render(Page);
+
+    expect(screen.queryByRole("heading", { name: /browse by genre/i })).toBeNull();
+  });
+
+  it("omits the schedule when nothing is airing", () => {
+    getScheduleMock.mockResolvedValue([]);
+
+    render(Page);
+
+    expect(screen.queryByRole("heading", { name: /airing soon/i })).toBeNull();
   });
 });

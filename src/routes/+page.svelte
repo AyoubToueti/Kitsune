@@ -1,61 +1,86 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { getGenres, getList, getSchedule, getTrending } from "$lib/api/anime";
+  import GenreGrid from "$lib/components/GenreGrid.svelte";
+  import HeroCarousel from "$lib/components/HeroCarousel.svelte";
+  import ScheduleWidget from "$lib/components/ScheduleWidget.svelte";
+  import Shelf from "$lib/components/Shelf.svelte";
+  import type { Anime, ScheduledEpisode } from "$lib/types";
 
-  import { errorMessage, getTrending } from "$lib/api/anime";
-  import HeroBanner from "$lib/components/HeroBanner.svelte";
-  import PosterRow from "$lib/components/PosterRow.svelte";
-  import type { Anime } from "$lib/types";
+  /** Enough for a scrollable shelf without over-fetching. */
+  const SHELF_LIMIT = 20;
+  /** The carousel wants a handful of strong titles, not a full row. */
+  const HERO_LIMIT = 5;
+  /** How far ahead the schedule widget looks. */
+  const SCHEDULE_DAYS = 7;
 
-  // Enough for a hero plus a scrollable row, without asking AniList for
-  // more than a screenful.
-  const LIMIT = 24;
+  // --- hero ---------------------------------------------------------------
+  // Loaded here rather than through `Shelf`, because the hero renders a
+  // carousel instead of a poster row.
 
-  let anime = $state<Anime[]>([]);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
+  let hero = $state<Anime[]>([]);
 
-  async function load() {
-    loading = true;
-    error = null;
+  async function loadHero() {
     try {
-      anime = await getTrending(LIMIT);
-    } catch (err) {
-      // The backend already renders the cause, so surface it rather than a
-      // generic message. A rate limit then looks different from a bug.
-      error = errorMessage(err);
-    } finally {
-      loading = false;
+      // `onMount` in the component tree below means this runs in the browser;
+      // awaiting here keeps the failure contained to the hero.
+      hero = await getList("trending", HERO_LIMIT);
+    } catch {
+      // A failed hero should degrade to nothing rather than take the page
+      // down; the shelves below still load independently.
+      hero = [];
     }
   }
 
-  // ssr is disabled, so this runs once in the browser.
-  onMount(load);
+  loadHero();
 
-  const featured = $derived(anime[0]);
-  // The hero already shows the first title, so the row holds the rest.
-  const rest = $derived(anime.slice(1));
+  // --- secondary sections -------------------------------------------------
+  // These feed single sections rather than shelves, so a failure leaves the
+  // section absent rather than breaking the page.
+
+  let genres = $state<string[]>([]);
+  let schedule = $state<ScheduledEpisode[]>([]);
+
+  // Computed once per page load, so the schedule window does not drift while
+  // the user reads.
+  const now = Math.floor(Date.now() / 1000);
+  const scheduleTo = now + SCHEDULE_DAYS * 24 * 60 * 60;
+
+  async function loadSecondary() {
+    const [genreResult, scheduleResult] = await Promise.allSettled([
+      getGenres(),
+      getSchedule(now, scheduleTo, 50),
+    ]);
+
+    if (genreResult.status === "fulfilled") genres = genreResult.value;
+    if (scheduleResult.status === "fulfilled") schedule = scheduleResult.value;
+  }
+
+  loadSecondary();
+
+  // --- shelves ------------------------------------------------------------
+  // Each loads through its own `Shelf`, so one rate-limited row cannot blank
+  // the rest of the page.
+
+  const trending = () => getTrending(SHELF_LIMIT);
+  const topAiring = () => getList("topAiring", SHELF_LIMIT);
+  const mostPopular = () => getList("mostPopular", SHELF_LIMIT);
+  const topRated = () => getList("topRated", SHELF_LIMIT);
+  const latestCompleted = () => getList("latestCompleted", SHELF_LIMIT);
+  const upcoming = () => getList("upcoming", SHELF_LIMIT);
 </script>
 
-{#if loading}
-  <p class="py-16 text-center text-ink-muted">Loading…</p>
-{:else if error}
-  <div class="py-16 text-center">
-    <p class="text-ink">Could not load trending titles.</p>
-    <p class="mt-2 text-sm text-ink-faint">{error}</p>
-    <button
-      type="button"
-      onclick={load}
-      class="mt-4 rounded-full bg-accent px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-    >
-      Try again
-    </button>
-  </div>
-{:else if anime.length === 0}
-  <p class="py-16 text-center text-ink-muted">No titles available right now.</p>
-{:else}
-  {#if featured}
-    <HeroBanner anime={featured} />
-  {/if}
-
-  <PosterRow title="Trending now" anime={rest} />
+{#if hero.length}
+  <HeroCarousel anime={hero} />
 {/if}
+
+<div class="space-y-2">
+  <Shelf title="Trending now" load={trending} numbered />
+  <Shelf title="Top airing" load={topAiring} />
+  <Shelf title="Most popular" load={mostPopular} />
+  <Shelf title="Top rated" load={topRated} />
+  <Shelf title="Latest completed" load={latestCompleted} />
+  <Shelf title="Upcoming" load={upcoming} />
+
+  <GenreGrid {genres} />
+  <ScheduleWidget entries={schedule} />
+</div>
