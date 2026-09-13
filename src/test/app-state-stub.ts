@@ -12,4 +12,7 @@
 
 export const page = {
   url: new URL("http://localhost/"),
+  // Route params (e.g. { id: "42" } on /anime/[id]). The real `page` is
+  // reactive; this static value is fine because each test renders fresh.
+  params: {} as Record<string, string>,
 };

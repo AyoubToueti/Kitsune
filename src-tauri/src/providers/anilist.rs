@@ -109,10 +109,18 @@ impl AniListProvider {
     }
 
     /// Build the paged-media query for a filter clause.
-    fn list_query(filter: &str) -> String {
+    ///
+    /// `extra_vars` declares variables the filter clause references (e.g.
+    /// `$search: String`); an empty string is fine when none are needed.
+    fn list_query(extra_vars: &str, filter: &str) -> String {
+        let all_vars = if extra_vars.is_empty() {
+            "$page: Int, $perPage: Int".to_string()
+        } else {
+            format!("{extra_vars}, $page: Int, $perPage: Int")
+        };
         format!(
             r#"
-            query ($page: Int, $perPage: Int) {{
+            query ({all_vars}) {{
               Page(page: $page, perPage: $perPage) {{
                 media({filter}) {{
                   {MEDIA_FIELDS}
@@ -137,7 +145,7 @@ impl AnimeProvider for AniListProvider {
     }
 
     async fn trending(&self, limit: u32) -> Result<Vec<Anime>, ProviderError> {
-        let query = Self::list_query("type: ANIME, sort: TRENDING_DESC");
+        let query = Self::list_query("", "type: ANIME, sort: TRENDING_DESC");
         let data: PageData = self
             .query(
                 &query,
@@ -149,7 +157,7 @@ impl AnimeProvider for AniListProvider {
     }
 
     async fn search(&self, query: &str, limit: u32) -> Result<Vec<Anime>, ProviderError> {
-        let gql = Self::list_query("type: ANIME, sort: SEARCH_MATCH, search: $search");
+        let gql = Self::list_query("$search: String", "type: ANIME, sort: SEARCH_MATCH, search: $search");
         let data: PageData = self
             .query(
                 &gql,
@@ -436,7 +444,7 @@ mod tests {
         assert!(first.streaming_episodes.is_empty());
     }
     use super::*;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// A payload shaped like AniList's, trimmed to the fields we request.
@@ -631,5 +639,26 @@ mod tests {
     #[test]
     fn provider_reports_its_own_id() {
         assert_eq!(AniListProvider::new().id(), ProviderId::AniList);
+    }
+
+    /// The search query must declare the `$search` variable in the GraphQL
+    /// operation header, otherwise AniList rejects it with HTTP 400
+    /// "Variable "$search" is not defined."
+    #[tokio::test]
+    async fn search_query_declares_the_search_variable() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains("$search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(page_response(vec![media_json()])),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        let anime = provider.search("one piece", 1).await.expect("search should succeed");
+        assert_eq!(anime.len(), 1);
     }
 }
