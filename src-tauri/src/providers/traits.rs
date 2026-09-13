@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use crate::types::{Anime, ListFilter, ProviderId};
+use crate::types::{Anime, ListFilter, ProviderId, ScheduledEpisode};
 
 /// Why a provider call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +73,18 @@ pub trait AnimeProvider: Send + Sync {
     /// Asked of the provider rather than hardcoded in the UI, so the browse
     /// grid cannot drift from what queries actually accept.
     async fn genres(&self) -> Result<Vec<String>, ProviderError>;
+
+    /// Broadcasts falling within a time window, soonest first.
+    ///
+    /// `from` and `to` are unix timestamps in seconds. The window is passed in
+    /// rather than a "next N hours" count so the caller decides the span and
+    /// the provider stays free of clock or timezone assumptions.
+    async fn schedule(
+        &self,
+        from: i64,
+        to: i64,
+        limit: u32,
+    ) -> Result<Vec<ScheduledEpisode>, ProviderError>;
 }
 
 #[cfg(test)]

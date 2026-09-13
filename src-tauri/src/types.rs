@@ -149,6 +149,28 @@ pub struct Anime {
     pub streaming_episodes: Vec<StreamingEpisode>,
 }
 
+/// One upcoming (or recent) broadcast, as listed on a schedule.
+///
+/// Distinct from [`Episode`]: an `Episode` is something this app could play,
+/// whereas a `ScheduledEpisode` is a provider's announcement that a work will
+/// air at a given time. No source is resolved here.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledEpisode {
+    /// The work being aired. Carried whole so the UI can render a card without
+    /// a second lookup per entry.
+    pub anime: Anime,
+    /// When it airs, as a unix timestamp in seconds.
+    ///
+    /// Kept as an absolute instant rather than a pre-formatted string: the
+    /// provider has no idea what timezone the viewer is in, so converting to
+    /// local time is the frontend's job.
+    pub airing_at: i64,
+    /// Episode number being aired, when the provider states one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode: Option<u32>,
+}
+
 /// One playable entry within an [`Anime`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

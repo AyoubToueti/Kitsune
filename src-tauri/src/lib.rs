@@ -26,6 +26,7 @@ pub fn run() {
             commands::search_anime,
             commands::get_by_genre,
             commands::get_genres,
+            commands::get_schedule,
             commands::get_anime,
         ])
         .run(tauri::generate_context!())

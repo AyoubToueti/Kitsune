@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::traits::{AnimeProvider, ProviderError};
-use crate::types::{Anime, ListFilter, ProviderId, StreamingEpisode, Title};
+use crate::types::{Anime, ListFilter, ProviderId, ScheduledEpisode, StreamingEpisode, Title};
 
 /// AniList's public GraphQL endpoint.
 pub const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
@@ -180,6 +180,36 @@ impl AnimeProvider for AniListProvider {
             .collect())
     }
 
+    async fn schedule(
+        &self,
+        from: i64,
+        to: i64,
+        limit: u32,
+    ) -> Result<Vec<ScheduledEpisode>, ProviderError> {
+        let query = schedule_query();
+        let data: ScheduleData = self
+            .query(
+                &query,
+                serde_json::json!({
+                    "from": from,
+                    "to": to,
+                    "page": 1,
+                    "perPage": clamp_limit(limit),
+                }),
+            )
+            .await?;
+
+        // A schedule entry with no media cannot be rendered as a card, and
+        // AniList occasionally omits it, so those are dropped rather than
+        // surfaced as a broken row.
+        Ok(data
+            .page
+            .airing_schedules
+            .into_iter()
+            .filter_map(map_scheduled_episode)
+            .collect())
+    }
+
     async fn trending(&self, limit: u32) -> Result<Vec<Anime>, ProviderError> {
         let query = Self::list_query("", "type: ANIME, sort: TRENDING_DESC");
         let data: PageData = self
@@ -248,6 +278,30 @@ impl AnimeProvider for AniListProvider {
     }
 }
 
+/// The window query for broadcasts.
+///
+/// Written by hand rather than through `list_query`, because
+/// `airingSchedules` is a sibling of `media` on `Page`, not a media filter.
+fn schedule_query() -> String {
+    format!(
+        r#"
+        query ($from: Int, $to: Int, $page: Int, $perPage: Int) {{
+          Page(page: $page, perPage: $perPage) {{
+            airingSchedules(
+              airingAt_greater: $from
+              airingAt_lesser: $to
+              sort: TIME
+            ) {{
+              airingAt
+              episode
+              media {{ {MEDIA_FIELDS} }}
+            }}
+          }}
+        }}
+        "#
+    )
+}
+
 /// AniList rejects `perPage` above 50.
 fn clamp_limit(limit: u32) -> u32 {
     limit.clamp(1, 50)
@@ -256,6 +310,41 @@ fn clamp_limit(limit: u32) -> u32 {
 // --- wire types -----------------------------------------------------------
 //
 // Kept private: the rest of the app only ever sees `crate::types::Anime`.
+
+/// One `Page.airingSchedules` entry. `media` is the same shape the media
+/// queries return, so `MEDIA_FIELDS` and `map_media` are reused as-is.
+#[derive(Deserialize)]
+struct AiringScheduleWire {
+    #[serde(rename = "airingAt")]
+    airing_at: i64,
+    #[serde(default)]
+    episode: Option<u32>,
+    #[serde(default)]
+    media: Option<Media>,
+}
+
+/// A page of schedules, which hangs off `Page` beside `media`.
+#[derive(Deserialize)]
+struct ScheduleData {
+    #[serde(rename = "Page")]
+    page: SchedulePage,
+}
+
+#[derive(Deserialize)]
+struct SchedulePage {
+    #[serde(rename = "airingSchedules", default)]
+    airing_schedules: Vec<AiringScheduleWire>,
+}
+
+/// Map one broadcast, dropping entries with no media to show.
+fn map_scheduled_episode(wire: AiringScheduleWire) -> Option<ScheduledEpisode> {
+    let anime = wire.media.map(map_media)?;
+    Some(ScheduledEpisode {
+        anime,
+        airing_at: wire.airing_at,
+        episode: wire.episode,
+    })
+}
 
 /// The root `GenreCollection` field, which returns a bare array of names.
 #[derive(Deserialize)]
@@ -427,6 +516,119 @@ mod tests {
     /// The root `GenreCollection` payload shape.
     fn genre_response(genres: Vec<&str>) -> serde_json::Value {
         serde_json::json!({ "data": { "GenreCollection": genres } })
+    }
+
+    /// One `airingSchedules` entry, reusing the standard media fixture so the
+    /// nested shape stays in step with the media queries.
+    fn schedule_entry(airing_at: i64, episode: u32) -> serde_json::Value {
+        serde_json::json!({
+            "airingAt": airing_at,
+            "episode": episode,
+            "media": media_json(),
+        })
+    }
+
+    fn schedule_response(entries: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "data": { "Page": { "airingSchedules": entries } }
+        })
+    }
+
+    /// The window bounds must reach AniList as declared variables; a missing
+    /// declaration is the failure mode that broke search and the genre query.
+    #[tokio::test]
+    async fn schedule_query_declares_its_window_variables() {
+        let (_server, provider) =
+            provider_expecting("query ($from: Int, $to: Int, $page: Int, $perPage: Int)").await;
+
+        assert!(provider
+            .schedule(1_789_000_000, 1_789_600_000, 5)
+            .await
+            .is_ok());
+    }
+
+    /// Ordering must be chronological, otherwise a "next up" list is nonsense.
+    #[tokio::test]
+    async fn schedule_sorts_by_time() {
+        let (_server, provider) = provider_expecting("sort: TIME").await;
+
+        assert!(provider
+            .schedule(1_789_000_000, 1_789_600_000, 5)
+            .await
+            .is_ok());
+    }
+
+    /// The window travels as variables rather than being interpolated into the
+    /// filter, so the values cannot be mangled by string formatting.
+    #[tokio::test]
+    async fn schedule_passes_the_window_as_variables() {
+        let (_server, provider) = provider_expecting("\"from\":1789000000").await;
+
+        assert!(provider
+            .schedule(1_789_000_000, 1_789_600_000, 5)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn schedule_maps_each_entry_to_a_scheduled_episode() {
+        let (_server, provider) = provider_with(
+            schedule_response(vec![schedule_entry(1_789_032_600, 25)]),
+            200,
+        )
+        .await;
+
+        let entries = provider
+            .schedule(1_789_000_000, 1_789_600_000, 5)
+            .await
+            .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].airing_at, 1_789_032_600);
+        assert_eq!(entries[0].episode, Some(25));
+        // The nested media is mapped through the same path as a media query.
+        assert_eq!(entries[0].anime.id, 21);
+        assert_eq!(entries[0].anime.average_score, Some(88));
+    }
+
+    /// An entry with no media cannot be rendered as a card, so it is dropped
+    /// rather than surfacing as a blank row.
+    #[tokio::test]
+    async fn schedule_drops_entries_without_media() {
+        let mut orphan = schedule_entry(1_789_032_600, 1);
+        orphan["media"] = serde_json::Value::Null;
+
+        let (_server, provider) = provider_with(
+            schedule_response(vec![orphan, schedule_entry(1_789_036_200, 2)]),
+            200,
+        )
+        .await;
+
+        let entries = provider
+            .schedule(1_789_000_000, 1_789_600_000, 5)
+            .await
+            .unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].episode, Some(2));
+    }
+
+    /// An entry that states no episode number is still useful; it just cannot
+    /// say which episode is airing.
+    #[tokio::test]
+    async fn schedule_tolerates_a_missing_episode_number() {
+        let mut entry = schedule_entry(1_789_032_600, 1);
+        entry["episode"] = serde_json::Value::Null;
+
+        let (_server, provider) = provider_with(schedule_response(vec![entry]), 200).await;
+
+        let entries = provider
+            .schedule(1_789_000_000, 1_789_600_000, 5)
+            .await
+            .unwrap();
+
+        assert_eq!(entries[0].episode, None);
+        assert_eq!(entries[0].anime.id, 21);
     }
 
     /// A genre query must declare `$genre` in the operation header or AniList

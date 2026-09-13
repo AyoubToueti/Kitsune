@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::providers::{AnimeProvider, ProviderError};
-use crate::types::{Anime, ListFilter};
+use crate::types::{Anime, ListFilter, ScheduledEpisode};
 
 /// How many results to ask for when the caller does not say.
 pub const DEFAULT_LIMIT: u32 = 20;
@@ -84,6 +84,16 @@ pub async fn by_genre_from(
     provider.by_genre(genre, resolve_limit(limit)).await
 }
 
+/// Broadcasts within a time window, soonest first.
+pub async fn schedule_from(
+    provider: &dyn AnimeProvider,
+    from: i64,
+    to: i64,
+    limit: Option<u32>,
+) -> Result<Vec<ScheduledEpisode>, ProviderError> {
+    provider.schedule(from, to, resolve_limit(limit)).await
+}
+
 /// The genres available for browsing.
 pub async fn genres_from(provider: &dyn AnimeProvider) -> Result<Vec<String>, ProviderError> {
     provider.genres().await
@@ -150,6 +160,18 @@ pub async fn get_genres(provider: State<'_, SharedProvider>) -> Result<Vec<Strin
 }
 
 #[tauri::command]
+pub async fn get_schedule(
+    provider: State<'_, SharedProvider>,
+    from: i64,
+    to: i64,
+    limit: Option<u32>,
+) -> Result<Vec<ScheduledEpisode>, String> {
+    schedule_from(provider.inner().as_ref(), from, to, limit)
+        .await
+        .map_err(to_message)
+}
+
+#[tauri::command]
 pub async fn get_anime(
     provider: State<'_, SharedProvider>,
     id: i64,
@@ -165,6 +187,24 @@ mod tests {
     use crate::providers::AniListProvider;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// `schedule_from` forwards the window and applies the default limit.
+    #[tokio::test]
+    async fn schedule_from_uses_the_default_limit_when_unset() {
+        let response = serde_json::json!({
+            "data": { "Page": { "airingSchedules": [
+                { "airingAt": 1_789_032_600, "episode": 1, "media": media_json() }
+            ] } }
+        });
+        let (_server, provider) = provider_with(response).await;
+
+        let entries = schedule_from(&provider, 1_789_000_000, 1_789_600_000, None)
+            .await
+            .expect("should succeed");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].episode, Some(1));
+    }
 
     /// `list_from` forwards the filter and applies the default limit when the
     /// caller leaves it unset.
