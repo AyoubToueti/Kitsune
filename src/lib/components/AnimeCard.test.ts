@@ -253,8 +253,9 @@ describe("AnimeCard", () => {
     render(AnimeCard, { props: { anime: anime() } });
     await fireEvent.mouseEnter(link());
 
-    // Card top (500) minus real height (200) plus the overlap (12).
-    expect(preview()!.style.top).toBe("312px");
+    // Card top (500) minus real height (200), plus a quarter of the card's
+    // 240px height (60) as the overlap.
+    expect(preview()!.style.top).toBe("360px");
   });
 
   // --- preview content ----------------------------------------------------

@@ -3,7 +3,8 @@ import { describe, it, expect } from "vitest";
 import {
   positionPreview,
   CARET_MARGIN,
-  PREVIEW_OVERLAP,
+  MIN_PREVIEW_OVERLAP,
+  PREVIEW_OVERLAP_RATIO,
   PREVIEW_SIZE,
   VIEWPORT_MARGIN,
 } from "./hover";
@@ -22,7 +23,31 @@ describe("positionPreview", () => {
 
     expect(side).toBe("bottom");
     // Bottom edge laps over the card's top rather than resting against it.
-    expect(y + SIZE.height).toBe(500 + PREVIEW_OVERLAP);
+    expect(y + SIZE.height).toBe(500 + 240 * PREVIEW_OVERLAP_RATIO);
+  });
+
+  it("covers a quarter of the card's height", () => {
+    const { y } = positionPreview(card(100, 500), SIZE, VIEWPORT);
+
+    // Card spans 500..740, so a quarter is 60px covered.
+    expect(y + SIZE.height - 500).toBe(60);
+  });
+
+  it("scales the overlap with the card, not the viewport", () => {
+    // A short card gets a proportionally small overlap, so the panel does not
+    // swallow it.
+    const short = { left: 100, top: 500, right: 260, bottom: 600 };
+    const { y } = positionPreview(short, SIZE, VIEWPORT);
+
+    expect(y + SIZE.height - 500).toBe(25);
+  });
+
+  it("floors the overlap for a very short anchor", () => {
+    const tiny = { left: 100, top: 500, right: 160, bottom: 504 };
+    const { y } = positionPreview(tiny, SIZE, VIEWPORT);
+
+    // 4px * 0.25 would round to nothing, leaving the caret floating.
+    expect(y + SIZE.height - 500).toBe(MIN_PREVIEW_OVERLAP);
   });
 
   it("overlaps the card horizontally instead of sitting beside it", () => {
@@ -59,8 +84,8 @@ describe("positionPreview", () => {
     const { y, side } = positionPreview(card(100, 10), SIZE, VIEWPORT);
 
     expect(side).toBe("top");
-    // Laps over the card's bottom edge.
-    expect(y).toBe(10 + 240 - PREVIEW_OVERLAP);
+    // Laps over the card's bottom edge by the same quarter.
+    expect(y).toBe(10 + 240 - 240 * PREVIEW_OVERLAP_RATIO);
   });
 
   it("pulls left when starting at the card would overflow", () => {
@@ -83,7 +108,7 @@ describe("positionPreview", () => {
     expect(y).toBeGreaterThanOrEqual(VIEWPORT_MARGIN);
   });
 
-  it("honours a custom overlap", () => {
+  it("honours an explicit overlap, overriding the ratio", () => {
     const { y } = positionPreview(card(100, 500), SIZE, VIEWPORT, { overlap: 40 });
 
     expect(y + SIZE.height).toBe(540);

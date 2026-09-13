@@ -31,8 +31,22 @@ export interface Placement {
   caretX: number;
 }
 
-/** How far the preview overlaps the card it belongs to. */
-export const PREVIEW_OVERLAP = 12;
+/**
+ * How much of the card's height the preview covers.
+ *
+ * A quarter, so the panel visibly laps over the artwork and reads as attached
+ * to it rather than floating above. Proportional rather than a fixed offset,
+ * which would look like a hairline on a large card and swamp a small one.
+ */
+export const PREVIEW_OVERLAP_RATIO = 0.25;
+
+/**
+ * Floor for the overlap.
+ *
+ * Keeps a very short anchor from producing an overlap so small the caret
+ * appears to float, and guards the arithmetic against a zero-height rect.
+ */
+export const MIN_PREVIEW_OVERLAP = 8;
 
 /** Minimum distance from the caret to the preview's own corner. */
 export const CARET_MARGIN = 16;
@@ -71,7 +85,11 @@ export function positionPreview(
   viewport: Size,
   options: PlacementOptions = {},
 ): Placement {
-  const overlap = options.overlap ?? PREVIEW_OVERLAP;
+  // An explicit pixel overlap wins; otherwise a quarter of the card's height.
+  const anchorHeight = anchor.bottom - anchor.top;
+  const overlap =
+    options.overlap ??
+    Math.max(MIN_PREVIEW_OVERLAP, anchorHeight * PREVIEW_OVERLAP_RATIO);
   const margin = options.margin ?? VIEWPORT_MARGIN;
 
   // Vertical: above the card, lapping over its top edge.
