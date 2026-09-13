@@ -49,6 +49,108 @@ pub enum ListFilter {
     Upcoming,
 }
 
+/// Where a page of results sits in the whole set.
+///
+/// Mirrors AniList's `Page.pageInfo`. The frontend needs `last_page` and
+/// `has_next_page` to render pagination at all, and `total` to say how many
+/// matches there are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageInfo {
+    /// Total matches. AniList caps this at 5000, so it is a floor rather than
+    /// an exact count for very broad queries.
+    pub total: u32,
+    pub current_page: u32,
+    pub last_page: u32,
+    pub has_next_page: bool,
+}
+
+/// One page of results, with the paging metadata needed to ask for another.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimePage {
+    pub items: Vec<Anime>,
+    pub page_info: PageInfo,
+}
+
+/// How to order results.
+///
+/// Provider-agnostic, like [`ListFilter`]: a variant names an intent, and each
+/// provider maps it to its own sort argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SortOption {
+    /// Most popular first.
+    #[default]
+    Popularity,
+    /// Highest rated first.
+    Score,
+    /// Most recently started first.
+    Newest,
+    /// Alphabetical by the provider's own title form.
+    TitleAz,
+}
+
+/// Which release status to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StatusFilter {
+    Releasing,
+    Finished,
+    NotYetReleased,
+}
+
+/// Which release format to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FormatFilter {
+    Tv,
+    Movie,
+    Ova,
+    Ona,
+    Special,
+    Music,
+}
+
+/// Which release season to keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SeasonFilter {
+    Winter,
+    Spring,
+    Summer,
+    Fall,
+}
+
+/// A browse request.
+///
+/// Every filter is optional, so the frontend sends only what the user set and
+/// the default is simply "most popular".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct BrowseQuery {
+    /// Free-text search. Blank is treated as absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
+    /// Genres to require.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub genres: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<FormatFilter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<StatusFilter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season: Option<SeasonFilter>,
+    /// Requires `season` to be meaningful on AniList, which scopes the year to
+    /// a season rather than the whole calendar year.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season_year: Option<u32>,
+    /// Minimum average score on the provider's own scale (AniList: 0-100).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_score: Option<u8>,
+    pub sort: SortOption,
+}
+
 /// A work's title in the several forms providers offer.
 ///
 /// Kept as a struct rather than a single string because no single field is

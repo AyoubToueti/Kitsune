@@ -12,7 +12,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::traits::{AnimeProvider, ProviderError};
-use crate::types::{Anime, ListFilter, ProviderId, ScheduledEpisode, StreamingEpisode, Title};
+use crate::types::{
+    Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, PageInfo, ProviderId,
+    ScheduledEpisode, SeasonFilter, SortOption, StatusFilter, StreamingEpisode, Title,
+};
 
 /// AniList's public GraphQL endpoint.
 pub const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
@@ -140,6 +143,102 @@ impl Default for AniListProvider {
 
 #[async_trait]
 impl AnimeProvider for AniListProvider {
+    async fn browse(
+        &self,
+        query: BrowseQuery,
+        page: u32,
+        per_page: u32,
+    ) -> Result<AnimePage, ProviderError> {
+        // The filter clause and the variable declarations are built together,
+        // so an argument is only emitted when a variable backs it. Every value
+        // travels as a GraphQL variable -- never interpolated -- which is what
+        // makes the enum filters safe to drive from user input.
+        let mut filter = String::from("type: ANIME");
+        let mut declarations: Vec<&str> = Vec::new();
+        let mut variables = serde_json::Map::new();
+
+        if let Some(search) = non_empty(query.search) {
+            filter.push_str(", search: $search");
+            declarations.push("$search: String");
+            variables.insert("search".into(), serde_json::json!(search));
+        }
+
+        if !query.genres.is_empty() {
+            filter.push_str(", genre_in: $genres");
+            declarations.push("$genres: [String]");
+            variables.insert("genres".into(), serde_json::json!(query.genres));
+        }
+
+        if let Some(format) = query.format {
+            filter.push_str(", format: $format");
+            declarations.push("$format: MediaFormat");
+            variables.insert("format".into(), serde_json::json!(format_literal(format)));
+        }
+
+        if let Some(status) = query.status {
+            filter.push_str(", status: $status");
+            declarations.push("$status: MediaStatus");
+            variables.insert("status".into(), serde_json::json!(status_literal(status)));
+        }
+
+        if let Some(season) = query.season {
+            filter.push_str(", season: $season");
+            declarations.push("$season: MediaSeason");
+            variables.insert("season".into(), serde_json::json!(season_literal(season)));
+        }
+
+        if let Some(year) = query.season_year {
+            filter.push_str(", seasonYear: $seasonYear");
+            declarations.push("$seasonYear: Int");
+            variables.insert("seasonYear".into(), serde_json::json!(year));
+        }
+
+        if let Some(score) = query.min_score {
+            filter.push_str(", averageScore_greater: $minScore");
+            declarations.push("$minScore: Int");
+            variables.insert("minScore".into(), serde_json::json!(score));
+        }
+
+        // Sort is always set and its literal comes from an enum, never from
+        // free text, so it is safe to inline rather than send as a variable.
+        filter.push_str(", sort: ");
+        filter.push_str(sort_literal(query.sort));
+
+        // `pageInfo` is requested here rather than in `list_query` because this
+        // is the only query that paginates; the rest ignore the field.
+        let gql = format!(
+            r#"
+            query ({decls}, $page: Int, $perPage: Int) {{
+              Page(page: $page, perPage: $perPage) {{
+                pageInfo {{ total currentPage lastPage hasNextPage }}
+                media({filter}) {{
+                  {MEDIA_FIELDS}
+                }}
+              }}
+            }}
+            "#,
+            decls = declarations.join(", "),
+        );
+
+        // Floored at 1: AniList treats page 0 as an error, and a caller asking
+        // for it has almost certainly meant the first page.
+        variables.insert("page".into(), serde_json::json!(page.max(1)));
+        variables.insert("perPage".into(), serde_json::json!(clamp_limit(per_page)));
+
+        let data: PageData = self
+            .query(&gql, serde_json::Value::Object(variables))
+            .await?;
+
+        Ok(AnimePage {
+            items: data.page.media.into_iter().map(map_media).collect(),
+            page_info: PageInfo {
+                total: data.page.page_info.total,
+                current_page: data.page.page_info.current_page,
+                last_page: data.page.page_info.last_page,
+                has_next_page: data.page.page_info.has_next_page,
+            },
+        })
+    }
     fn id(&self) -> ProviderId {
         ProviderId::AniList
     }
@@ -302,6 +401,51 @@ fn schedule_query() -> String {
     )
 }
 
+/// AniList's literal for a format filter.
+///
+/// Kept here rather than on the domain enum so provider vocabulary stays in
+/// the provider. An unknown variant cannot occur -- the match is exhaustive --
+/// which is the point of using an enum over a free-text string.
+fn format_literal(format: FormatFilter) -> &'static str {
+    match format {
+        FormatFilter::Tv => "TV",
+        FormatFilter::Movie => "MOVIE",
+        FormatFilter::Ova => "OVA",
+        FormatFilter::Ona => "ONA",
+        FormatFilter::Special => "SPECIAL",
+        FormatFilter::Music => "MUSIC",
+    }
+}
+
+/// AniList's literal for a status filter.
+fn status_literal(status: StatusFilter) -> &'static str {
+    match status {
+        StatusFilter::Releasing => "RELEASING",
+        StatusFilter::Finished => "FINISHED",
+        StatusFilter::NotYetReleased => "NOT_YET_RELEASED",
+    }
+}
+
+/// AniList's literal for a season filter.
+fn season_literal(season: SeasonFilter) -> &'static str {
+    match season {
+        SeasonFilter::Winter => "WINTER",
+        SeasonFilter::Spring => "SPRING",
+        SeasonFilter::Summer => "SUMMER",
+        SeasonFilter::Fall => "FALL",
+    }
+}
+
+/// AniList's literal for a sort option.
+fn sort_literal(sort: SortOption) -> &'static str {
+    match sort {
+        SortOption::Popularity => "POPULARITY_DESC",
+        SortOption::Score => "SCORE_DESC",
+        SortOption::Newest => "START_DATE_DESC",
+        SortOption::TitleAz => "TITLE_ROMAJI",
+    }
+}
+
 /// AniList rejects `perPage` above 50.
 fn clamp_limit(limit: u32) -> u32 {
     limit.clamp(1, 50)
@@ -374,6 +518,23 @@ struct PageData {
 #[derive(Deserialize)]
 struct Page {
     media: Vec<Media>,
+    /// Defaulted because only `browse` requests this. The other Page queries
+    /// never read it, and requiring it would break their deserialization.
+    #[serde(rename = "pageInfo", default)]
+    page_info: PageInfoWire,
+}
+
+/// `Page.pageInfo`, as AniList spells it.
+#[derive(Deserialize, Default)]
+struct PageInfoWire {
+    #[serde(default)]
+    total: u32,
+    #[serde(rename = "currentPage", default)]
+    current_page: u32,
+    #[serde(rename = "lastPage", default)]
+    last_page: u32,
+    #[serde(rename = "hasNextPage", default)]
+    has_next_page: bool,
 }
 
 #[derive(Deserialize)]
@@ -513,6 +674,262 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A page response carrying `pageInfo`, for the paginated browse query.
+    fn browse_response(
+        media: Vec<serde_json::Value>,
+        total: u32,
+        current: u32,
+        last: u32,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "data": { "Page": {
+                "pageInfo": {
+                    "total": total,
+                    "currentPage": current,
+                    "lastPage": last,
+                    "hasNextPage": current < last,
+                },
+                "media": media,
+            } }
+        })
+    }
+
+    /// Paging must reach AniList as variables. Hardcoding page 1 is precisely
+    /// what stopped search from ever showing a second screenful.
+    #[tokio::test]
+    async fn browse_forwards_the_requested_page() {
+        let (_server, provider) = provider_expecting("\"page\":3").await;
+
+        assert!(provider.browse(BrowseQuery::default(), 3, 24).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn browse_forwards_the_requested_page_size() {
+        let (_server, provider) = provider_expecting("\"perPage\":24").await;
+
+        assert!(provider.browse(BrowseQuery::default(), 1, 24).await.is_ok());
+    }
+
+    /// A page of zero would be rejected by AniList, and means "first page" to
+    /// any caller that sends it.
+    #[tokio::test]
+    async fn browse_treats_page_zero_as_the_first_page() {
+        let (_server, provider) = provider_expecting("\"page\":1").await;
+
+        assert!(provider.browse(BrowseQuery::default(), 0, 24).await.is_ok());
+    }
+
+    /// A default query carries no filters at all, so the request must not
+    /// mention them. Sending an unset filter is how a browse turns into an
+    /// accidental exact match.
+    #[tokio::test]
+    async fn browse_omits_unset_filters() {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(200).set_body_json(browse_response(
+                    vec![media_json()],
+                    1,
+                    1,
+                    1,
+                ))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        provider
+            .browse(BrowseQuery::default(), 1, 24)
+            .await
+            .expect("browse should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        for absent in ["genre_in", "search", "format:", "status:", "season:"] {
+            assert!(
+                !body.contains(absent),
+                "unset filter {absent} should not be sent; body was {body}"
+            );
+        }
+    }
+
+    /// Every filter travels as a GraphQL variable, never interpolated into the
+    /// filter string. That is what makes user-supplied values safe.
+    #[tokio::test]
+    async fn browse_declares_a_variable_for_each_filter() {
+        let (_server, provider) = provider_expecting(
+            "$search: String, $genres: [String], $format: MediaFormat, $status: MediaStatus, $season: MediaSeason, $seasonYear: Int, $minScore: Int",
+        )
+        .await;
+
+        let query = BrowseQuery {
+            search: Some("piece".into()),
+            genres: vec!["Action".into()],
+            format: Some(FormatFilter::Tv),
+            status: Some(StatusFilter::Finished),
+            season: Some(SeasonFilter::Fall),
+            season_year: Some(2024),
+            min_score: Some(70),
+            sort: SortOption::Score,
+        };
+
+        assert!(provider.browse(query, 1, 24).await.is_ok());
+    }
+
+    /// Enum filters go out as AniList's own literals, mapped from our enum
+    /// rather than passed through as free text.
+    #[tokio::test]
+    async fn browse_maps_enum_filters_to_anilist_literals() {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(200).set_body_json(browse_response(
+                    vec![media_json()],
+                    1,
+                    1,
+                    1,
+                ))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        provider
+            .browse(
+                BrowseQuery {
+                    format: Some(FormatFilter::Movie),
+                    status: Some(StatusFilter::NotYetReleased),
+                    season: Some(SeasonFilter::Winter),
+                    ..BrowseQuery::default()
+                },
+                1,
+                24,
+            )
+            .await
+            .expect("browse should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(body.contains("\"format\":\"MOVIE\""), "body was {body}");
+        assert!(
+            body.contains("\"status\":\"NOT_YET_RELEASED\""),
+            "body was {body}"
+        );
+        assert!(body.contains("\"season\":\"WINTER\""), "body was {body}");
+    }
+
+    /// A blank search is an absent filter, not a search for nothing.
+    #[tokio::test]
+    async fn browse_drops_a_blank_search() {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(200).set_body_json(browse_response(
+                    vec![media_json()],
+                    1,
+                    1,
+                    1,
+                ))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        provider
+            .browse(
+                BrowseQuery {
+                    search: Some("   ".into()),
+                    ..BrowseQuery::default()
+                },
+                1,
+                24,
+            )
+            .await
+            .expect("browse should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(!body.contains("$search"), "body was {body}");
+    }
+
+    #[tokio::test]
+    async fn browse_sorts_by_the_requested_option() {
+        let (_server, provider) = provider_expecting("sort: SCORE_DESC").await;
+
+        assert!(provider
+            .browse(
+                BrowseQuery {
+                    sort: SortOption::Score,
+                    ..BrowseQuery::default()
+                },
+                1,
+                24,
+            )
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn browse_maps_page_info() {
+        let (_server, provider) =
+            provider_with(browse_response(vec![media_json()], 120, 2, 5), 200).await;
+
+        let page = provider
+            .browse(BrowseQuery::default(), 2, 24)
+            .await
+            .expect("browse should succeed");
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].id, 21);
+        assert_eq!(page.page_info.total, 120);
+        assert_eq!(page.page_info.current_page, 2);
+        assert_eq!(page.page_info.last_page, 5);
+        assert!(page.page_info.has_next_page);
+    }
+
+    /// The last page must report no next page, or the UI would offer a link to
+    /// a page that does not exist.
+    #[tokio::test]
+    async fn browse_reports_the_last_page_has_no_next() {
+        let (_server, provider) =
+            provider_with(browse_response(vec![media_json()], 120, 5, 5), 200).await;
+
+        let page = provider
+            .browse(BrowseQuery::default(), 5, 24)
+            .await
+            .expect("browse should succeed");
+
+        assert!(!page.page_info.has_next_page);
+    }
+
+    /// An empty result set is not an error, and must still carry page info so
+    /// the UI can say "no matches" rather than failing.
+    #[tokio::test]
+    async fn browse_handles_an_empty_page() {
+        let (_server, provider) = provider_with(browse_response(vec![], 0, 1, 1), 200).await;
+
+        let page = provider
+            .browse(BrowseQuery::default(), 1, 24)
+            .await
+            .expect("browse should succeed");
+
+        assert!(page.items.is_empty());
+        assert_eq!(page.page_info.total, 0);
+        assert!(!page.page_info.has_next_page);
+    }
+
     /// The root `GenreCollection` payload shape.
     fn genre_response(genres: Vec<&str>) -> serde_json::Value {
         serde_json::json!({ "data": { "GenreCollection": genres } })

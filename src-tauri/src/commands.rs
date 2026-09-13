@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::providers::{AnimeProvider, ProviderError};
-use crate::types::{Anime, ListFilter, ScheduledEpisode};
+use crate::types::{Anime, AnimePage, BrowseQuery, ListFilter, ScheduledEpisode};
 
 /// How many results to ask for when the caller does not say.
 pub const DEFAULT_LIMIT: u32 = 20;
@@ -57,6 +57,21 @@ pub async fn list_from(
     limit: Option<u32>,
 ) -> Result<Vec<Anime>, ProviderError> {
     provider.list(filter, resolve_limit(limit)).await
+}
+
+/// Browse with filters and paging.
+///
+/// A blank search is dropped rather than sent: the provider would treat it as
+/// a filter matching nothing, but the caller means "no text filter".
+pub async fn browse_from(
+    provider: &dyn AnimeProvider,
+    query: BrowseQuery,
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<AnimePage, ProviderError> {
+    provider
+        .browse(query, page.unwrap_or(1).max(1), resolve_limit(per_page))
+        .await
 }
 
 /// Search by free text.
@@ -115,6 +130,18 @@ pub async fn get_trending(
     limit: Option<u32>,
 ) -> Result<Vec<Anime>, String> {
     trending_from(provider.inner().as_ref(), limit)
+        .await
+        .map_err(to_message)
+}
+
+#[tauri::command]
+pub async fn get_browse(
+    provider: State<'_, SharedProvider>,
+    query: BrowseQuery,
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<AnimePage, String> {
+    browse_from(provider.inner().as_ref(), query, page, per_page)
         .await
         .map_err(to_message)
 }
@@ -187,6 +214,120 @@ mod tests {
     use crate::providers::AniListProvider;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A paged response, for the browse wrapper.
+    fn browse_response() -> serde_json::Value {
+        serde_json::json!({
+            "data": { "Page": {
+                "pageInfo": {
+                    "total": 120,
+                    "currentPage": 2,
+                    "lastPage": 5,
+                    "hasNextPage": true,
+                },
+                "media": [media_json()],
+            } }
+        })
+    }
+
+    ///
+    /// Mount a mock that captures the request body.
+    ///
+    /// The plain `provider_with` ignores the body, so a test asserting what was
+    /// sent needs the bytes. Returns the shared cell for inspection.
+    async fn provider_capturing(
+        status: u16,
+    ) -> (
+        MockServer,
+        AniListProvider,
+        std::sync::Arc<std::sync::Mutex<String>>,
+    ) {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(status).set_body_json(browse_response())
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        (server, provider, captured)
+    }
+
+    /// An omitted page must reach the provider as page 1, not be dropped.
+    #[tokio::test]
+    async fn browse_from_defaults_to_the_first_page() {
+        let (_server, provider, captured) = provider_capturing(200).await;
+
+        browse_from(&provider, BrowseQuery::default(), None, None)
+            .await
+            .expect("should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(body.contains("\"page\":1"), "body was {body}");
+    }
+
+    /// A caller that sends page 0 means the first page, not an error. Asserted
+    /// on the wire, because `is_ok()` alone would pass without the clamp.
+    #[tokio::test]
+    async fn browse_from_clamps_page_zero() {
+        let (_server, provider, captured) = provider_capturing(200).await;
+
+        browse_from(&provider, BrowseQuery::default(), Some(0), None)
+            .await
+            .expect("should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(body.contains("\"page\":1"), "body was {body}");
+        assert!(!body.contains("\"page\":0"), "body was {body}");
+    }
+
+    /// The wrapper passes the caller's page and size through untouched.
+    #[tokio::test]
+    async fn browse_from_forwards_an_explicit_page() {
+        let (_server, provider, captured) = provider_capturing(200).await;
+
+        browse_from(&provider, BrowseQuery::default(), Some(4), Some(50))
+            .await
+            .expect("should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(body.contains("\"page\":4"), "body was {body}");
+        assert!(body.contains("\"perPage\":50"), "body was {body}");
+    }
+
+    /// The wrapper reports the provider's page info rather than inventing it.
+    #[tokio::test]
+    async fn browse_from_returns_the_provider_page_info() {
+        let (_server, provider) = provider_with(browse_response()).await;
+
+        let page = browse_from(&provider, BrowseQuery::default(), Some(2), None)
+            .await
+            .expect("should succeed");
+
+        assert_eq!(page.page_info.current_page, 2);
+        assert_eq!(page.page_info.last_page, 5);
+        assert!(page.page_info.has_next_page);
+        assert_eq!(page.items.len(), 1);
+    }
+
+    /// A provider failure surfaces as an error rather than an empty page, so
+    /// the UI can tell "no matches" from "the request failed".
+    #[tokio::test]
+    async fn browse_from_propagates_errors() {
+        let (_server, provider, _captured) = provider_capturing(429).await;
+
+        assert!(
+            browse_from(&provider, BrowseQuery::default(), Some(1), None)
+                .await
+                .is_err()
+        );
+    }
 
     /// `schedule_from` forwards the window and applies the default limit.
     #[tokio::test]

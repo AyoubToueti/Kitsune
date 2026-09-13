@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use crate::types::{Anime, ListFilter, ProviderId, ScheduledEpisode};
+use crate::types::{Anime, AnimePage, BrowseQuery, ListFilter, ProviderId, ScheduledEpisode};
 
 /// Why a provider call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +85,20 @@ pub trait AnimeProvider: Send + Sync {
         to: i64,
         limit: u32,
     ) -> Result<Vec<ScheduledEpisode>, ProviderError>;
+    /// Browse with filters and paging.
+    ///
+    /// Supersedes [`AnimeProvider::search`] and [`AnimeProvider::by_genre`]:
+    /// those are the same query with one filter set, so one parameterised
+    /// method covers both and adds paging they could not express.
+    ///
+    /// `page` is 1-based, matching the providers' own numbering. `per_page`
+    /// is a request, not a guarantee: providers cap it.
+    async fn browse(
+        &self,
+        query: BrowseQuery,
+        page: u32,
+        per_page: u32,
+    ) -> Result<AnimePage, ProviderError>;
 }
 
 #[cfg(test)]
