@@ -11,6 +11,16 @@ export interface ScheduleDay {
   key: string;
   /** "Today", "Tomorrow", or a short weekday and date. */
   label: string;
+  /**
+   * Short weekday for the day tabs, e.g. "Sun".
+   *
+   * Separate from `label` because the tabs want a fixed two-part shape
+   * (weekday over date) rather than the prose "Today"/"Tomorrow" used in
+   * the list.
+   */
+  weekday: string;
+  /** Short date for the day tabs, e.g. "Sep 13". */
+  shortDate: string;
   entries: ScheduledEpisode[];
 }
 
@@ -64,7 +74,16 @@ export function groupByDay(
 
     let group = groups.get(key);
     if (!group) {
-      group = { key, label: labelFor(when, now, tomorrow), entries: [] };
+      group = {
+        key,
+        label: labelFor(when, now, tomorrow),
+        weekday: when.toLocaleDateString(undefined, { weekday: "short" }),
+        shortDate: when.toLocaleDateString(undefined, {
+          day: "numeric",
+          month: "short",
+        }),
+        entries: [],
+      };
       groups.set(key, group);
     }
     group.entries.push(entry);

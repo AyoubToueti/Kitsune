@@ -116,6 +116,26 @@ describe("groupByDay", () => {
     expect(days[0].key).toBe("2026-09-13");
   });
 
+  it("carries a short weekday and date for the day tabs", () => {
+    // Sep 13 2026 is a Sunday.
+    const days = groupByDay([entry(1, at(2026, 9, 13, 21, 0))], now);
+
+    expect(days[0].weekday).toBe("Sun");
+    // Locale formats vary, so assert the date is present rather than its
+    // exact wording.
+    expect(days[0].shortDate).toMatch(/13/);
+  });
+
+  it("keeps the tab fields distinct from the prose label", () => {
+    // Today's label is "Today", but its tab must still name the weekday --
+    // a tab reading "Today" would not match the reference and would be
+    // ambiguous once the list scrolls.
+    const days = groupByDay([entry(1, at(2026, 9, 13, 21, 0))], now);
+
+    expect(days[0].label).toBe("Today");
+    expect(days[0].weekday).not.toBe("Today");
+  });
+
   it("does not mutate the caller's array", () => {
     const input = [
       entry(1, at(2026, 9, 14, 9, 0)),
