@@ -1,16 +1,24 @@
 <script lang="ts">
-  import { CARET_SIZE } from "$lib/hover";
+  import { CARET_SIZE, type Placement } from "$lib/hover";
   import { displayTitle, type Anime } from "$lib/types";
   import { stripHtml } from "$lib/text";
 
   let {
     anime,
     placement,
+    measure,
     onenter,
     onleave,
   }: {
     anime: Anime;
-    placement: import("$lib/hover").Placement;
+    placement: Placement;
+    /**
+     * Action that lets the controller measure this panel.
+     *
+     * The height drives the vertical offset, and an estimate left a visible
+     * gap between the caret and the card.
+     */
+    measure: (node: HTMLElement) => { destroy: () => void };
     /** Called when the pointer enters, so the card can cancel its close. */
     onenter: () => void;
     /** Called when the pointer leaves, so the card can schedule a close. */
@@ -39,6 +47,7 @@
 <!-- Fixed rather than absolute: the rails scroll horizontally, so an in-flow
      popup would be clipped by their `overflow-x-auto`. -->
 <div
+  use:measure
   role="tooltip"
   data-testid="hover-preview"
   data-side={placement.side}
@@ -48,7 +57,9 @@
   onmouseleave={onleave}
 >
   <!-- A rotated square reads as a caret. Which edge it sits on follows the
-       placement, so it always points back at the card. -->
+       placement, so it always points back at the card. It sits flush against
+       the panel edge, overlapping the card, so there is no dead zone to cross
+       on the way to the preview. -->
   <span
     aria-hidden="true"
     data-testid="hover-caret"

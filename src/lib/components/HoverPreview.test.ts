@@ -17,6 +17,9 @@ function anime(overrides: Partial<Anime> = {}): Anime {
 
 const base = {
   placement: { x: 10, y: 20, side: "bottom" as const, caretX: 60 },
+  // A no-op stand-in: the real action is supplied by the hover controller,
+  // which AnimeCard's tests cover.
+  measure: () => ({ destroy: () => {} }),
   onenter: () => {},
   onleave: () => {},
 };
@@ -203,5 +206,20 @@ describe("HoverPreview", () => {
     await fireEvent.mouseLeave(screen.getByRole("tooltip"));
 
     expect(onleave).toHaveBeenCalledTimes(1);
+  });
+
+  // --- measuring ----------------------------------------------------------
+
+  it("hands its element to the measure action", () => {
+    // The height drives the vertical offset, and an estimate left a visible
+    // gap between the caret and the card. Without this the panel would never
+    // be measured.
+    // Explicitly typed: a zero-arg mock makes `calls[0][0]` a type error.
+    const measure = vi.fn((_node: HTMLElement) => ({ destroy: () => {} }));
+
+    render(HoverPreview, { props: { ...base, anime: anime(), measure } });
+
+    expect(measure).toHaveBeenCalledTimes(1);
+    expect(measure.mock.calls[0][0]).toBe(screen.getByRole("tooltip"));
   });
 });

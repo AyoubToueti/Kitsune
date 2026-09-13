@@ -67,6 +67,7 @@
   <HoverPreview
     {anime}
     placement={hover.placement}
+    measure={hover.measure}
     onenter={hover.cancelClose}
     onleave={hover.scheduleClose}
   />

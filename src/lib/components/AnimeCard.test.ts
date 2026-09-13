@@ -215,6 +215,48 @@ describe("AnimeCard", () => {
     expect(panel).toHaveAttribute("data-side", "bottom");
   });
 
+  it("uses the panel's real height, so the caret touches the card", async () => {
+    // A panel shorter than the estimated PREVIEW_SIZE. Using the estimate
+    // positioned it too high, leaving a visible gap between the caret and the
+    // card -- and a dead zone that closed the preview as the pointer crossed.
+    const REAL_HEIGHT = 200;
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get() {
+        return this.getAttribute("data-testid") === "hover-preview"
+          ? REAL_HEIGHT
+          : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+      configurable: true,
+      get() {
+        return this.getAttribute("data-testid") === "hover-preview" ? 288 : 0;
+      },
+    });
+
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+      () =>
+        ({
+          left: 100,
+          top: 500,
+          right: 260,
+          bottom: 740,
+          width: 160,
+          height: 240,
+          x: 100,
+          y: 500,
+          toJSON: () => ({}),
+        }) as DOMRect,
+    );
+
+    render(AnimeCard, { props: { anime: anime() } });
+    await fireEvent.mouseEnter(link());
+
+    // Card top (500) minus real height (200) plus the overlap (12).
+    expect(preview()!.style.top).toBe("312px");
+  });
+
   // --- preview content ----------------------------------------------------
 
   it("shows the preview's facts and a details link", async () => {
