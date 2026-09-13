@@ -210,8 +210,8 @@ describe("AnimeCard", () => {
     await fireEvent.mouseEnter(link());
 
     const panel = preview()!;
-    // Starts at the card's left edge rather than beside it.
-    expect(panel.style.left).toBe("100px");
+    // Left edge at the card's horizontal centre (100 + 160/2).
+    expect(panel.style.left).toBe("180px");
     expect(panel).toHaveAttribute("data-side", "bottom");
   });
 
@@ -253,9 +253,9 @@ describe("AnimeCard", () => {
     render(AnimeCard, { props: { anime: anime() } });
     await fireEvent.mouseEnter(link());
 
-    // Card top (500) minus real height (200), plus a quarter of the card's
-    // 240px height (60) as the overlap.
-    expect(preview()!.style.top).toBe("360px");
+    // Card centre Y (500 + 240/2 = 620) minus the panel's real height (200),
+    // so its bottom edge meets the card's centre.
+    expect(preview()!.style.top).toBe("420px");
   });
 
   // --- preview content ----------------------------------------------------
