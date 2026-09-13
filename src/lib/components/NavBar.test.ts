@@ -19,6 +19,16 @@ describe("NavBar", () => {
     // or its label.
     expect(screen.getByRole("search")).toBeInTheDocument();
   });
+
+  it("links to the filter page", () => {
+    render(NavBar);
+
+    // The filter page is otherwise unreachable from the UI.
+    expect(screen.getByRole("link", { name: "Filter" })).toHaveAttribute(
+      "href",
+      "/filter",
+    );
+  });
 });
 
 describe("SearchBox", () => {
