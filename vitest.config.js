@@ -12,6 +12,12 @@ export default defineConfig({
       // SvelteKit provides $lib via .svelte-kit/tsconfig.json, which Vitest
       // does not read, so map it explicitly.
       $lib: fileURLToPath(new URL("./src/lib", import.meta.url)),
+      // $app/state is virtual, supplied by the sveltekit() plugin which is
+      // not loaded here. Point it at a stub so specs resolve the import and
+      // can set the URL themselves.
+      "$app/state": fileURLToPath(
+        new URL("./src/test/app-state-stub.ts", import.meta.url),
+      ),
     },
   },
   test: {
