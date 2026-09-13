@@ -14,8 +14,7 @@ pub fn run() {
     // One provider for the process: each `reqwest::Client` keeps a
     // connection pool, so building one per call would waste connections
     // and invite AniList's rate limiter.
-    let provider: commands::SharedProvider =
-        std::sync::Arc::new(providers::AniListProvider::new());
+    let provider: commands::SharedProvider = std::sync::Arc::new(providers::AniListProvider::new());
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -23,6 +22,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             commands::get_trending,
+            commands::get_list,
             commands::search_anime,
             commands::get_anime,
         ])
@@ -54,7 +54,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("failed to create temp dir");
         let file = dir.path().join("probe.txt");
         std::fs::write(&file, b"ok").expect("failed to write probe file");
-        assert_eq!(std::fs::read(&file).expect("failed to read probe file"), b"ok");
+        assert_eq!(
+            std::fs::read(&file).expect("failed to read probe file"),
+            b"ok"
+        );
     }
 
     /// Proves the async test runtime works via `tokio-test`.

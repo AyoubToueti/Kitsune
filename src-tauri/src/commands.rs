@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::providers::{AnimeProvider, ProviderError};
-use crate::types::Anime;
+use crate::types::{Anime, ListFilter};
 
 /// How many results to ask for when the caller does not say.
 pub const DEFAULT_LIMIT: u32 = 20;
@@ -48,6 +48,15 @@ pub async fn trending_from(
     limit: Option<u32>,
 ) -> Result<Vec<Anime>, ProviderError> {
     provider.trending(resolve_limit(limit)).await
+}
+
+/// A curated list, chosen by intent. Backs the home-screen shelves.
+pub async fn list_from(
+    provider: &dyn AnimeProvider,
+    filter: ListFilter,
+    limit: Option<u32>,
+) -> Result<Vec<Anime>, ProviderError> {
+    provider.list(filter, resolve_limit(limit)).await
 }
 
 /// Search by free text.
@@ -87,6 +96,17 @@ pub async fn get_trending(
 }
 
 #[tauri::command]
+pub async fn get_list(
+    provider: State<'_, SharedProvider>,
+    filter: ListFilter,
+    limit: Option<u32>,
+) -> Result<Vec<Anime>, String> {
+    list_from(provider.inner().as_ref(), filter, limit)
+        .await
+        .map_err(to_message)
+}
+
+#[tauri::command]
 pub async fn search_anime(
     provider: State<'_, SharedProvider>,
     query: String,
@@ -113,6 +133,37 @@ mod tests {
     use crate::providers::AniListProvider;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// `list_from` forwards the filter and applies the default limit when the
+    /// caller leaves it unset.
+    #[tokio::test]
+    async fn list_from_uses_the_default_limit_when_unset() {
+        let response = serde_json::json!({
+            "data": { "Page": { "media": [media_json()] } }
+        });
+        let (_server, provider) = provider_with(response).await;
+
+        let anime = list_from(&provider, ListFilter::TopRated, None)
+            .await
+            .expect("should succeed");
+
+        assert_eq!(anime.len(), 1);
+        assert_eq!(anime[0].id, 21);
+    }
+
+    /// A caller-supplied limit must reach the provider rather than being
+    /// silently replaced by the default.
+    #[tokio::test]
+    async fn list_from_honours_an_explicit_limit() {
+        let response = serde_json::json!({
+            "data": { "Page": { "media": [media_json()] } }
+        });
+        let (_server, provider) = provider_with(response).await;
+
+        assert!(list_from(&provider, ListFilter::Upcoming, Some(5))
+            .await
+            .is_ok());
+    }
 
     /// A minimal valid AniList media payload.
     fn media_json() -> serde_json::Value {
@@ -177,7 +228,9 @@ mod tests {
         });
         let (_server, provider) = provider_with(response).await;
 
-        let anime = trending_from(&provider, Some(10)).await.expect("should succeed");
+        let anime = trending_from(&provider, Some(10))
+            .await
+            .expect("should succeed");
 
         assert_eq!(anime.len(), 1);
         assert_eq!(anime[0].id, 21);
@@ -253,6 +306,9 @@ mod tests {
             .expect_err("should fail");
 
         let message = to_message(err);
-        assert!(message.contains("429"), "message should name the status: {message}");
+        assert!(
+            message.contains("429"),
+            "message should name the status: {message}"
+        );
     }
 }

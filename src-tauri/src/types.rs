@@ -27,6 +27,28 @@ pub enum ProviderId {
     Yts,
 }
 
+/// Which curated list to fetch.
+///
+/// Deliberately provider-agnostic: a variant names an intent ("top airing"),
+/// not an AniList sort value. Each provider translates it into its own
+/// vocabulary, so adding a source never changes this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ListFilter {
+    /// What is hot right now.
+    Trending,
+    /// Currently airing, most popular first.
+    TopAiring,
+    /// Most popular of all time.
+    MostPopular,
+    /// Highest rated.
+    TopRated,
+    /// Finished airing, most recently started first.
+    LatestCompleted,
+    /// Announced but not yet aired.
+    Upcoming,
+}
+
 /// A work's title in the several forms providers offer.
 ///
 /// Kept as a struct rather than a single string because no single field is

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 
 use super::traits::{AnimeProvider, ProviderError};
-use crate::types::{Anime, ProviderId, StreamingEpisode, Title};
+use crate::types::{Anime, ListFilter, ProviderId, StreamingEpisode, Title};
 
 /// AniList's public GraphQL endpoint.
 pub const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
@@ -155,9 +155,33 @@ impl AnimeProvider for AniListProvider {
 
         Ok(data.page.media.into_iter().map(map_media).collect())
     }
+    async fn list(&self, filter: ListFilter, limit: u32) -> Result<Vec<Anime>, ProviderError> {
+        // Each shelf is the same Page query with a different filter, so
+        // only this mapping is provider-specific.
+        let filter_arg = match filter {
+            ListFilter::Trending => "type: ANIME, sort: TRENDING_DESC",
+            ListFilter::TopAiring => "type: ANIME, status: RELEASING, sort: POPULARITY_DESC",
+            ListFilter::MostPopular => "type: ANIME, sort: POPULARITY_DESC",
+            ListFilter::TopRated => "type: ANIME, sort: SCORE_DESC",
+            ListFilter::LatestCompleted => "type: ANIME, status: FINISHED, sort: START_DATE_DESC",
+            ListFilter::Upcoming => "type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC",
+        };
 
+        let query = Self::list_query("", filter_arg);
+        let data: PageData = self
+            .query(
+                &query,
+                serde_json::json!({ "page": 1, "perPage": clamp_limit(limit) }),
+            )
+            .await?;
+
+        Ok(data.page.media.into_iter().map(map_media).collect())
+    }
     async fn search(&self, query: &str, limit: u32) -> Result<Vec<Anime>, ProviderError> {
-        let gql = Self::list_query("$search: String", "type: ANIME, sort: SEARCH_MATCH, search: $search");
+        let gql = Self::list_query(
+            "$search: String",
+            "type: ANIME, sort: SEARCH_MATCH, search: $search",
+        );
         let data: PageData = self
             .query(
                 &gql,
@@ -357,6 +381,79 @@ fn non_empty(value: Option<String>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Mount a mock that only answers when the request body contains
+    /// `expected`, so the assertion is about the query actually sent.
+    async fn provider_expecting(expected: &str) -> (MockServer, AniListProvider) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(body_string_contains(expected))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(page_response(vec![media_json()])),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        (server, provider)
+    }
+
+    /// Each shelf is the same query with a different filter. If a variant were
+    /// wired to the wrong AniList argument, the body matcher would not fire and
+    /// the request would 404, so this catches a copy-paste slip.
+    #[tokio::test]
+    async fn each_list_filter_sends_its_own_query() {
+        let cases = [
+            (ListFilter::Trending, "sort: TRENDING_DESC"),
+            (
+                ListFilter::TopAiring,
+                "status: RELEASING, sort: POPULARITY_DESC",
+            ),
+            (ListFilter::MostPopular, "sort: POPULARITY_DESC"),
+            (ListFilter::TopRated, "sort: SCORE_DESC"),
+            (
+                ListFilter::LatestCompleted,
+                "status: FINISHED, sort: START_DATE_DESC",
+            ),
+            (
+                ListFilter::Upcoming,
+                "status: NOT_YET_RELEASED, sort: POPULARITY_DESC",
+            ),
+        ];
+
+        for (filter, expected) in cases {
+            let (_server, provider) = provider_expecting(expected).await;
+            let anime = provider
+                .list(filter, 5)
+                .await
+                .unwrap_or_else(|e| panic!("{filter:?} should succeed, got {e:?}"));
+
+            assert_eq!(anime.len(), 1, "{filter:?} should map one entry");
+        }
+    }
+
+    /// Shelf queries must declare no variable beyond paging. If one did, the
+    /// operation header would have to carry it or AniList would 400.
+    #[tokio::test]
+    async fn list_queries_declare_only_paging_variables() {
+        let (_server, provider) = provider_expecting("query ($page: Int, $perPage: Int)").await;
+
+        assert!(provider.list(ListFilter::MostPopular, 3).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_maps_anilist_fields_like_trending() {
+        let (_server, provider) = provider_expecting("sort: SCORE_DESC").await;
+
+        let anime = provider.list(ListFilter::TopRated, 1).await.unwrap();
+        let first = &anime[0];
+
+        assert_eq!(first.id, 21);
+        assert_eq!(first.provider, ProviderId::AniList);
+        assert_eq!(first.title.romaji.as_deref(), Some("One Piece"));
+        assert_eq!(first.average_score, Some(88));
+    }
+
     /// The base fixture plus the newer fields: banner, format, duration,
     /// popularity, and one streaming link.
     ///
@@ -493,7 +590,10 @@ mod tests {
     async fn trending_maps_anilist_fields_to_anime() {
         let (_server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
 
-        let anime = provider.trending(10).await.expect("trending should succeed");
+        let anime = provider
+            .trending(10)
+            .await
+            .expect("trending should succeed");
         assert_eq!(anime.len(), 1);
 
         let first = &anime[0];
@@ -516,7 +616,10 @@ mod tests {
         let (_server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
 
         let anime = provider.trending(1).await.unwrap();
-        let cover = anime[0].cover_image.as_deref().expect("cover should be set");
+        let cover = anime[0]
+            .cover_image
+            .as_deref()
+            .expect("cover should be set");
 
         assert!(
             cover.ends_with("bx21.jpg"),
@@ -548,7 +651,10 @@ mod tests {
         let (_server, provider) = provider_with(page_response(vec![media]), 200).await;
         let anime = provider.trending(1).await.unwrap();
 
-        assert!(anime[0].description.is_none(), "blank description should drop");
+        assert!(
+            anime[0].description.is_none(),
+            "blank description should drop"
+        );
         assert!(anime[0].status.is_none(), "blank status should drop");
     }
 
@@ -623,7 +729,10 @@ mod tests {
 
         let provider = AniListProvider::with_endpoint(server.uri());
         assert!(
-            matches!(provider.trending(1).await.unwrap_err(), ProviderError::Decode(_)),
+            matches!(
+                provider.trending(1).await.unwrap_err(),
+                ProviderError::Decode(_)
+            ),
             "expected Decode error"
         );
     }
@@ -651,14 +760,16 @@ mod tests {
             .and(path("/"))
             .and(body_string_contains("$search"))
             .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(page_response(vec![media_json()])),
+                ResponseTemplate::new(200).set_body_json(page_response(vec![media_json()])),
             )
             .mount(&server)
             .await;
 
         let provider = AniListProvider::with_endpoint(server.uri());
-        let anime = provider.search("one piece", 1).await.expect("search should succeed");
+        let anime = provider
+            .search("one piece", 1)
+            .await
+            .expect("search should succeed");
         assert_eq!(anime.len(), 1);
     }
 }

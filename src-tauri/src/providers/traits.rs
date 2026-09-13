@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 
-use crate::types::{Anime, ProviderId};
+use crate::types::{Anime, ListFilter, ProviderId};
 
 /// Why a provider call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +47,14 @@ pub trait AnimeProvider: Send + Sync {
 
     /// Currently popular titles, for the home screen.
     async fn trending(&self, limit: u32) -> Result<Vec<Anime>, ProviderError>;
+
+    /// A curated list, chosen by intent rather than by provider-specific
+    /// sort arguments.
+    ///
+    /// One method rather than one per shelf: the shelves differ only in
+    /// ordering and status, and collapsing them keeps provider-specific
+    /// vocabulary out of this trait.
+    async fn list(&self, filter: ListFilter, limit: u32) -> Result<Vec<Anime>, ProviderError>;
 
     /// Free-text search.
     async fn search(&self, query: &str, limit: u32) -> Result<Vec<Anime>, ProviderError>;
