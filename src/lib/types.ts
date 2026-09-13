@@ -22,6 +22,20 @@ export interface StreamingEpisode {
   thumbnail?: string;
 }
 
+/**
+ * Which curated list to fetch.
+ *
+ * Mirrors the Rust `ListFilter`. The values are the wire format, so they are
+ * passed straight to the backend rather than translated here.
+ */
+export type ListFilter =
+  | "trending"
+  | "topAiring"
+  | "mostPopular"
+  | "topRated"
+  | "latestCompleted"
+  | "upcoming";
+
 /** A work as presented in the UI. */
 export interface Anime {
   id: number;
@@ -39,6 +53,26 @@ export interface Anime {
   status?: string;
   seasonYear?: number;
   streamingEpisodes: StreamingEpisode[];
+}
+
+/**
+ * One upcoming broadcast, as listed on a schedule.
+ *
+ * Distinct from an episode of a release: this is the provider announcing that
+ * a work airs at a given time, not something this app can play.
+ */
+export interface ScheduledEpisode {
+  /** The work being aired, carried whole so a card needs no second lookup. */
+  anime: Anime;
+  /**
+   * When it airs, as a unix timestamp in seconds.
+   *
+   * An absolute instant, not a formatted string: the backend has no idea what
+   * timezone the viewer is in, so local formatting happens in the UI.
+   */
+  airingAt: number;
+  /** Episode number being aired, when the provider states one. */
+  episode?: number;
 }
 
 /**

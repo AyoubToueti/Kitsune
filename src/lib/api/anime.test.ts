@@ -9,10 +9,14 @@ import {
   COMMANDS,
   errorMessage,
   getAnime,
+  getByGenre,
+  getGenres,
+  getList,
+  getSchedule,
   getTrending,
   searchAnime,
 } from "./anime";
-import type { Anime } from "$lib/types";
+import type { Anime, ScheduledEpisode } from "$lib/types";
 
 function sampleAnime(): Anime {
   return {
@@ -79,6 +83,75 @@ describe("command wrappers", () => {
     invokeMock.mockResolvedValue(null);
 
     expect(await getAnime(999)).toBeNull();
+  });
+
+  it("getList passes the filter and limit", async () => {
+    invokeMock.mockResolvedValue([sampleAnime()]);
+
+    await getList("topAiring", 12);
+
+    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.list, {
+      filter: "topAiring",
+      limit: 12,
+    });
+  });
+
+  it("getList sends the filter verbatim, since it is the wire format", async () => {
+    invokeMock.mockResolvedValue([]);
+
+    await getList("latestCompleted");
+
+    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.list, {
+      filter: "latestCompleted",
+      limit: undefined,
+    });
+  });
+
+  it("getByGenre passes the genre through", async () => {
+    invokeMock.mockResolvedValue([sampleAnime()]);
+
+    await getByGenre("Slice of Life", 20);
+
+    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.byGenre, {
+      genre: "Slice of Life",
+      limit: 20,
+    });
+  });
+
+  it("getGenres takes no arguments", async () => {
+    invokeMock.mockResolvedValue(["Action", "Mecha"]);
+
+    const genres = await getGenres();
+
+    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.genres);
+    expect(genres).toEqual(["Action", "Mecha"]);
+  });
+
+  it("getSchedule passes the window and limit", async () => {
+    invokeMock.mockResolvedValue([]);
+
+    await getSchedule(1_789_000_000, 1_789_600_000, 30);
+
+    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.schedule, {
+      from: 1_789_000_000,
+      to: 1_789_600_000,
+      limit: 30,
+    });
+  });
+
+  it("getSchedule returns the mapped entries", async () => {
+    const entry: ScheduledEpisode = {
+      anime: sampleAnime(),
+      airingAt: 1_789_032_600,
+      episode: 25,
+    };
+    invokeMock.mockResolvedValue([entry]);
+
+    const result = await getSchedule(1_789_000_000, 1_789_600_000);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].airingAt).toBe(1_789_032_600);
+    expect(result[0].episode).toBe(25);
   });
 
   it("propagates a rejected command", async () => {

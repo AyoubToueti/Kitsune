@@ -6,13 +6,17 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-import type { Anime } from "$lib/types";
+import type { Anime, ListFilter, ScheduledEpisode } from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const COMMANDS = {
   trending: "get_trending",
+  list: "get_list",
   search: "search_anime",
   byId: "get_anime",
+  byGenre: "get_by_genre",
+  genres: "get_genres",
+  schedule: "get_schedule",
 } as const;
 
 /**
@@ -46,4 +50,33 @@ export async function searchAnime(query: string, limit?: number): Promise<Anime[
 /** Look up a single title. Resolves to `null` when the id does not exist. */
 export async function getAnime(id: number): Promise<Anime | null> {
   return invoke<Anime | null>(COMMANDS.byId, { id });
+}
+
+/** A curated list, chosen by intent. Backs the home-screen shelves. */
+export async function getList(filter: ListFilter, limit?: number): Promise<Anime[]> {
+  return invoke<Anime[]>(COMMANDS.list, { filter, limit });
+}
+
+/** Titles in a genre, most popular first. */
+export async function getByGenre(genre: string, limit?: number): Promise<Anime[]> {
+  return invoke<Anime[]>(COMMANDS.byGenre, { genre, limit });
+}
+
+/** The genres available for browsing. */
+export async function getGenres(): Promise<string[]> {
+  return invoke<string[]>(COMMANDS.genres);
+}
+
+/**
+ * Broadcasts falling within a window, soonest first.
+ *
+ * `from` and `to` are unix timestamps in seconds, so the caller owns the span
+ * and there is no hidden "next N hours" assumption.
+ */
+export async function getSchedule(
+  from: number,
+  to: number,
+  limit?: number,
+): Promise<ScheduledEpisode[]> {
+  return invoke<ScheduledEpisode[]>(COMMANDS.schedule, { from, to, limit });
 }
