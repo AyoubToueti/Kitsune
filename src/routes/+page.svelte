@@ -4,6 +4,8 @@
   import HeroCarousel from "$lib/components/HeroCarousel.svelte";
   import ListSection from "$lib/components/ListSection.svelte";
   import ScheduleWidget from "$lib/components/ScheduleWidget.svelte";
+  import SeasonSection from "$lib/components/SeasonSection.svelte";
+  import Top100Section from "$lib/components/Top100Section.svelte";
   import TrendingRail from "$lib/components/TrendingRail.svelte";
   import type { Anime } from "$lib/types";
 
@@ -82,3 +84,5 @@
 
 <GenreGrid {genres} />
 <ScheduleWidget />
+<SeasonSection />
+<Top100Section />

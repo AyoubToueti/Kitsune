@@ -69,6 +69,8 @@ export interface Anime {
   averageScore?: number;
   popularity?: number;
   status?: string;
+  /** Release season in the provider's wording, e.g. "FALL". */
+  season?: string;
   seasonYear?: number;
   streamingEpisodes: StreamingEpisode[];
 }
