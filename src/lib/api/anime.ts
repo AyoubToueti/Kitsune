@@ -6,6 +6,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+import { API_TTL, cached } from "./cache";
 import type {
   Anime,
   AnimePage,
@@ -46,17 +47,25 @@ export function errorMessage(error: unknown): string {
 
 /** Trending titles, for the home screen. */
 export async function getTrending(limit?: number): Promise<Anime[]> {
-  return invoke<Anime[]>(COMMANDS.trending, { limit });
+  // Keyed by the limit: a rail asking for 20 and a hero asking for 5 are
+  // different results and must not share an entry.
+  return cached(`trending:${limit ?? "default"}`, API_TTL.list, () =>
+    invoke<Anime[]>(COMMANDS.trending, { limit }),
+  );
 }
 
 /** Look up a single title. Resolves to `null` when the id does not exist. */
 export async function getAnime(id: number): Promise<Anime | null> {
-  return invoke<Anime | null>(COMMANDS.byId, { id });
+  return cached(`anime:${id}`, API_TTL.detail, () =>
+    invoke<Anime | null>(COMMANDS.byId, { id }),
+  );
 }
 
 /** A curated list, chosen by intent. Backs the home-screen shelves. */
 export async function getList(filter: ListFilter, limit?: number): Promise<Anime[]> {
-  return invoke<Anime[]>(COMMANDS.list, { filter, limit });
+  return cached(`list:${filter}:${limit ?? "default"}`, API_TTL.list, () =>
+    invoke<Anime[]>(COMMANDS.list, { filter, limit }),
+  );
 }
 
 /**
@@ -73,17 +82,32 @@ export async function browseAnime(
   page?: number,
   perPage?: number,
 ): Promise<AnimePage> {
-  return invoke<AnimePage>(COMMANDS.browse, { query, page, perPage });
+  // The whole query is the key: two filter combinations are different result
+  // sets and must not collide. The LRU cap in the cache bounds how many of
+  // these keys can accumulate.
+  return cached(
+    `browse:${JSON.stringify({ query, page, perPage })}`,
+    API_TTL.list,
+    () => invoke<AnimePage>(COMMANDS.browse, { query, page, perPage }),
+  );
 }
 
 /** The genres available for browsing. */
 export async function getGenres(): Promise<string[]> {
-  return invoke<string[]>(COMMANDS.genres);
+  // Effectively static, so the longest TTL: every route that mounts a filter
+  // panel shares one result.
+  return cached("genres", API_TTL.catalogue, () =>
+    invoke<string[]>(COMMANDS.genres),
+  );
 }
 
 /** The tags available for filtering, each with its grouping category. */
 export async function getTags(): Promise<MediaTag[]> {
-  return invoke<MediaTag[]>(COMMANDS.tags);
+  // The tag catalogue is the largest payload in the app and barely changes, so
+  // it is the biggest win from caching.
+  return cached("tags", API_TTL.catalogue, () =>
+    invoke<MediaTag[]>(COMMANDS.tags),
+  );
 }
 
 /**
@@ -97,5 +121,11 @@ export async function getSchedule(
   to: number,
   limit?: number,
 ): Promise<ScheduledEpisode[]> {
-  return invoke<ScheduledEpisode[]>(COMMANDS.schedule, { from, to, limit });
+  // The window is part of the key: each day is a distinct slice. The shortest
+  // TTL, because airing times move and a stale schedule is worse than a fetch.
+  return cached(
+    `schedule:${from}:${to}:${limit ?? "default"}`,
+    API_TTL.schedule,
+    () => invoke<ScheduledEpisode[]>(COMMANDS.schedule, { from, to, limit }),
+  );
 }

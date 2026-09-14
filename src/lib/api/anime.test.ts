@@ -15,6 +15,7 @@ import {
   getTags,
   getTrending,
 } from "./anime";
+import { clearApiCache } from "./cache";
 import type { Anime, ScheduledEpisode } from "$lib/types";
 
 function sampleAnime(): Anime {
@@ -29,6 +30,9 @@ function sampleAnime(): Anime {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  // The wrappers cache their results, so a value left by one test would be
+  // served to the next and make the suite order-dependent.
+  clearApiCache();
 });
 
 describe("command wrappers", () => {
@@ -141,6 +145,41 @@ describe("command wrappers", () => {
     invokeMock.mockRejectedValue("provider returned HTTP 429");
 
     await expect(getTrending()).rejects.toBe("provider returned HTTP 429");
+  });
+});
+
+describe("caching", () => {
+  it("serves a repeated call without hitting the backend again", async () => {
+    invokeMock.mockResolvedValue([sampleAnime()]);
+
+    await getTrending(10);
+    await getTrending(10);
+
+    // The second call is the cache's whole reason to exist.
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("still distinguishes calls that differ by argument", async () => {
+    invokeMock.mockResolvedValue([]);
+
+    await getTrending(10);
+    await getTrending(20);
+
+    // Different limits are different results, so they must not share a key.
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-fetches after a failure rather than caching it", async () => {
+    invokeMock
+      .mockRejectedValueOnce("provider returned HTTP 429")
+      .mockResolvedValueOnce([sampleAnime()]);
+
+    await expect(getTrending(10)).rejects.toBe("provider returned HTTP 429");
+    const result = await getTrending(10);
+
+    // A rate limit must not stick for the whole TTL.
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(1);
   });
 });
 
