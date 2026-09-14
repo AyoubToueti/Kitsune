@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/svelte";
 
 import type { Anime, AnimePage } from "$lib/types";
@@ -51,10 +51,36 @@ function withQuery(qs: string) {
   (appState as { url: URL }).url = new URL(`http://localhost/filter${qs}`);
 }
 
+/**
+ * jsdom has no IntersectionObserver, so the sentinel is inert by default. This
+ * stand-in records the callbacks so a test can fire the observer and drive the
+ * load-more path exactly as scrolling would.
+ */
+const observerCallbacks: Array<(entries: { isIntersecting: boolean }[]) => void> = [];
+
+function installObserver() {
+  (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = class {
+    constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+      observerCallbacks.push(cb);
+    }
+    observe() {}
+    disconnect() {}
+  };
+}
+
+function scrollToBottom() {
+  for (const cb of observerCallbacks) cb([{ isIntersecting: true }]);
+}
+
 beforeEach(() => {
   browseAnimeMock.mockReset().mockResolvedValue(page([]));
   getGenresMock.mockReset().mockResolvedValue(["Action", "Comedy"]);
+  observerCallbacks.length = 0;
   withQuery("");
+});
+
+afterEach(() => {
+  delete (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 });
 
 describe("filter page", () => {
@@ -113,24 +139,18 @@ describe("filter page", () => {
     expect(browseAnimeMock).toHaveBeenCalledWith({ sort: "popularity" }, 1, 30);
   });
 
-  it("requests the page named in the URL", async () => {
+  it("starts from the first page whatever the URL says", async () => {
+    // The list is grown by scrolling, so `?page=3` has no meaning here: a
+    // refresh starts from the top rather than restoring a scroll position.
     withQuery("?format=tv&page=3");
 
     render(Page);
 
     expect(browseAnimeMock).toHaveBeenCalledWith(
       { format: "tv", sort: "popularity" },
-      3,
+      1,
       30,
     );
-  });
-
-  it("treats a nonsense page as the first page", async () => {
-    withQuery("?page=abc");
-
-    render(Page);
-
-    expect(browseAnimeMock).toHaveBeenCalledWith({ sort: "popularity" }, 1, 30);
   });
 
   it("renders a card per result", async () => {
@@ -184,72 +204,76 @@ describe("filter page", () => {
     expect(screen.queryByRole("checkbox")).toBeNull();
   });
 
-  // --- pagination ---------------------------------------------------------
+  // --- infinite scroll ------------------------------------------------------
 
-  it("shows no pagination for a single page of results", async () => {
+  it("renders a sentinel when there are more pages", async () => {
+    browseAnimeMock.mockResolvedValue(
+      page([anime(1, "A")], {
+        total: 60,
+        currentPage: 1,
+        lastPage: 2,
+        hasNextPage: true,
+      }),
+    );
+
+    render(Page);
+    await screen.findByText("A");
+
+    expect(screen.getByTestId("scroll-sentinel")).toBeInTheDocument();
+  });
+
+  it("renders no sentinel on the last page", async () => {
     browseAnimeMock.mockResolvedValue(page([anime(1, "A")]));
 
     render(Page);
     await screen.findByText("A");
 
-    expect(screen.queryByTestId("pagination")).toBeNull();
+    // Nothing left to load, so there is nothing to trigger.
+    expect(screen.queryByTestId("scroll-sentinel")).toBeNull();
   });
 
-  it("offers pagination when there are more pages", async () => {
-    browseAnimeMock.mockResolvedValue(
-      page([anime(1, "A")], {
-        total: 90,
-        currentPage: 1,
-        lastPage: 3,
-        hasNextPage: true,
-      }),
-    );
+  it("appends the next page when the sentinel scrolls into view", async () => {
+    installObserver();
+    browseAnimeMock
+      .mockResolvedValueOnce(
+        page([anime(1, "Alpha")], {
+          total: 60,
+          currentPage: 1,
+          lastPage: 2,
+          hasNextPage: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        page([anime(2, "Beta")], {
+          total: 60,
+          currentPage: 2,
+          lastPage: 2,
+          hasNextPage: false,
+        }),
+      );
 
     render(Page);
-    await screen.findByText("A");
+    await screen.findByText("Alpha");
 
-    expect(screen.getByTestId("pagination")).toBeInTheDocument();
+    scrollToBottom();
+
+    // The earlier page stays: the list grows rather than jumping.
+    expect(await screen.findByText("Beta")).toBeInTheDocument();
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(browseAnimeMock).toHaveBeenLastCalledWith(expect.anything(), 2, 30);
   });
 
-  it("page links preserve the filters", async () => {
-    withQuery("?format=tv&genre=Action");
-    browseAnimeMock.mockResolvedValue(
-      page([anime(1, "A")], {
-        total: 90,
-        currentPage: 1,
-        lastPage: 3,
-        hasNextPage: true,
-      }),
-    );
+  it("retries the failed page", async () => {
+    browseAnimeMock
+      .mockRejectedValueOnce("provider returned HTTP 429")
+      .mockResolvedValueOnce(page([anime(1, "A")]));
 
     render(Page);
-    await screen.findByText("A");
+    await screen.findByText(/429/);
 
-    // Losing the filters would silently reset the view on every page change.
-    const href = screen.getByRole("link", { name: "Next page" }).getAttribute("href")!;
-    expect(href).toContain("format=tv");
-    expect(href).toContain("genre=Action");
-    expect(href).toContain("page=2");
-  });
+    await fireEvent.click(screen.getByRole("button", { name: /try again/i }));
 
-  it("page links omit the page parameter for the first page", async () => {
-    withQuery("?format=tv&page=2");
-    browseAnimeMock.mockResolvedValue(
-      page([anime(1, "A")], {
-        total: 90,
-        currentPage: 2,
-        lastPage: 3,
-        hasNextPage: true,
-      }),
-    );
-
-    render(Page);
-    await screen.findByText("A");
-
-    // One canonical URL per view rather than two spellings of the same results.
-    expect(screen.getByRole("link", { name: "Page 1" })).toHaveAttribute(
-      "href",
-      "/filter?format=tv",
-    );
+    expect(await screen.findByText("A")).toBeInTheDocument();
+    expect(browseAnimeMock).toHaveBeenLastCalledWith(expect.anything(), 1, 30);
   });
 });

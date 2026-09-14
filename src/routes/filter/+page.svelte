@@ -1,14 +1,13 @@
 <script lang="ts">
   import { page } from "$app/state";
 
-  import { browseAnime, errorMessage, getGenres, getTags } from "$lib/api/anime";
+  import { browseAnime, getGenres, getTags } from "$lib/api/anime";
   import ActiveFilters from "$lib/components/ActiveFilters.svelte";
   import AnimeGrid from "$lib/components/AnimeGrid.svelte";
   import FilterBar from "$lib/components/FilterBar.svelte";
-  import Pagination from "$lib/components/Pagination.svelte";
-  import { filterHref, parseBrowseQuery } from "$lib/filter";
-  import { clampPage } from "$lib/pagination";
-  import type { AnimePage, MediaTag } from "$lib/types";
+  import { parseBrowseQuery } from "$lib/filter";
+  import { createInfiniteScroll } from "$lib/infinite-scroll.svelte";
+  import type { MediaTag } from "$lib/types";
 
   const PER_PAGE = 30;
 
@@ -20,15 +19,9 @@
    */
   const params = $derived(page.url.searchParams);
   const query = $derived(parseBrowseQuery(params));
-  const requestedPage = $derived(
-    Math.max(1, Math.floor(Number(params.get("page") ?? "1")) || 1),
-  );
 
-  let result = $state<AnimePage | null>(null);
   let genres = $state<string[]>([]);
   let tags = $state<MediaTag[]>([]);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
 
   // Fetched once: neither list changes with the filters.
   getGenres()
@@ -51,40 +44,21 @@
       tags = [];
     });
 
-  $effect(() => {
-    const current = query;
-    const requested = requestedPage;
+  /**
+   * Results, grown a page at a time as the reader scrolls.
+   *
+   * The key is the filter query serialised. Changing any filter produces a new
+   * key, which resets the list and refetches from page one; re-parsing the same
+   * URL does not, because the serialisation is identical. The page number is
+   * deliberately not part of the key: the list grows by scrolling, so a refresh
+   * starts from the top rather than restoring a position nobody else has loaded.
+   */
+  const scroll = createInfiniteScroll(
+    () => JSON.stringify(query),
+    (target) => browseAnime(query, target, PER_PAGE),
+  );
 
-    // Guards against a stale response overwriting a newer one when the user
-    // changes filters quickly.
-    let cancelled = false;
-    loading = true;
-    error = null;
-
-    browseAnime(current, requested, PER_PAGE)
-      .then((found) => {
-        if (cancelled) return;
-        result = found;
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        error = errorMessage(err);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        loading = false;
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  });
-
-  /** Page links preserve the filters, since losing them would reset the view. */
-  function hrefFor(target: number): string {
-    const last = result?.pageInfo.lastPage ?? 1;
-    return filterHref(params, clampPage(target, last));
-  }
+  const { sentinel } = scroll;
 </script>
 
 <h1 class="mb-4 text-lg font-semibold tracking-tight">Filter anime</h1>
@@ -96,21 +70,44 @@
 </div>
 
 <div class="mt-8">
-  {#if loading}
+  {#if scroll.loading}
     <p class="py-16 text-center text-ink-muted">Loading…</p>
-  {:else if error}
+  {:else if scroll.items.length === 0 && scroll.error}
     <div class="py-16 text-center">
       <p class="text-ink">Could not load results.</p>
-      <p class="mt-2 text-sm text-ink-faint">{error}</p>
+      <p class="mt-2 text-sm text-ink-faint">{scroll.error}</p>
+      <button
+        type="button"
+        onclick={scroll.retry}
+        class="mt-4 rounded-full bg-surface-hover px-4 py-2 text-sm text-ink hover:text-ink-muted"
+      >
+        Try again
+      </button>
     </div>
-  {:else if result && result.items.length === 0}
+  {:else if scroll.items.length === 0}
     <p class="py-16 text-center text-ink-muted">No titles match those filters.</p>
-  {:else if result}
-    <AnimeGrid anime={result.items} />
-    <Pagination
-      current={result.pageInfo.currentPage}
-      last={result.pageInfo.lastPage}
-      {hrefFor}
-    />
+  {:else}
+    <AnimeGrid anime={scroll.items} />
+
+    {#if scroll.loadingMore}
+      <p class="py-6 text-center text-sm text-ink-faint">Loading more…</p>
+    {/if}
+
+    {#if scroll.error}
+      <div class="py-6 text-center">
+        <p class="text-sm text-ink-faint">{scroll.error}</p>
+        <button
+          type="button"
+          onclick={scroll.retry}
+          class="mt-3 rounded-full bg-surface-hover px-4 py-2 text-sm text-ink hover:text-ink-muted"
+        >
+          Try again
+        </button>
+      </div>
+    {:else if scroll.hasMore}
+      <!-- Triggers the next page as it scrolls into view. A hairline so it does
+           not shift the layout when items are appended above it. -->
+      <div use:sentinel data-testid="scroll-sentinel" class="h-px"></div>
+    {/if}
   {/if}
 </div>
