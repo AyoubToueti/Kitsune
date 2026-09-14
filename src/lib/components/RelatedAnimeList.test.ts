@@ -100,4 +100,13 @@ describe("RelatedAnimeList", () => {
 
     expect(container.querySelector("ul")).not.toBeInTheDocument();
   });
+
+  it("caps the list in a three-row scrollable container", () => {
+    render(RelatedAnimeList, { props: { relations: [related()] } });
+
+    const scroller = screen.getByTestId("related-scroller");
+    expect(scroller.className).toContain("overflow-y-auto");
+    // 3 rows × 88px + 2 gaps × 8px = 280px = 17.5rem.
+    expect(scroller.className).toContain("max-h-[17.5rem]");
+  });
 });

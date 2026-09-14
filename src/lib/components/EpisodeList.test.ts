@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, fireEvent, within } from "@testing-library/svelte";
 
 import type { StreamingEpisode } from "$lib/types";
 
@@ -20,7 +20,21 @@ function episode(overrides: Partial<StreamingEpisode> = {}): StreamingEpisode {
   };
 }
 
+/** The episode cards only; the jump form's Go button is not one of these. */
+function episodeCards() {
+  return within(screen.getByTestId("episode-list")).getAllByRole("button");
+}
+
 describe("EpisodeList", () => {
+  beforeEach(() => {
+    // jsdom has no layout engine, so smooth scrolling is a no-op stub.
+    Element.prototype.scrollIntoView = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("renders one card per episode", () => {
     render(EpisodeList, {
       props: {
@@ -31,7 +45,7 @@ describe("EpisodeList", () => {
       },
     });
 
-    expect(screen.getAllByRole("button")).toHaveLength(2);
+    expect(episodeCards()).toHaveLength(2);
   });
 
   it("renders the thumbnail for each episode", () => {
@@ -40,7 +54,7 @@ describe("EpisodeList", () => {
     });
 
     // The image is decorative; the button carries the accessible name.
-    expect(screen.getByRole("button")).toHaveAccessibleName("Episode 1");
+    expect(episodeCards()[0]).toHaveAccessibleName("Episode 1");
     expect(document.querySelector("img")?.getAttribute("src")).toBe(
       "https://example.test/thumb.jpg",
     );
@@ -51,7 +65,7 @@ describe("EpisodeList", () => {
       props: { episodes: [episode({ title: undefined, site: "Crunchyroll" })] },
     });
 
-    expect(screen.getByRole("button")).toHaveAccessibleName("Crunchyroll");
+    expect(episodeCards()[0]).toHaveAccessibleName("Crunchyroll");
   });
 
   it("falls back to the url when title and site are absent", () => {
@@ -61,7 +75,7 @@ describe("EpisodeList", () => {
       },
     });
 
-    expect(screen.getByRole("button")).toHaveAccessibleName("https://x.test/1");
+    expect(episodeCards()[0]).toHaveAccessibleName("https://x.test/1");
   });
 
   it("clicking opens the episode url", async () => {
@@ -69,7 +83,7 @@ describe("EpisodeList", () => {
       props: { episodes: [episode({ url: "https://example.test/watch/1" })] },
     });
 
-    await fireEvent.click(screen.getByRole("button"));
+    await fireEvent.click(episodeCards()[0]);
 
     expect(openUrlMock).toHaveBeenCalledWith("https://example.test/watch/1");
   });
@@ -93,7 +107,77 @@ describe("EpisodeList", () => {
     });
 
     // No image, but the button and its caption survive.
-    expect(screen.getByRole("button")).toHaveAccessibleName("Episode 1");
+    expect(episodeCards()[0]).toHaveAccessibleName("Episode 1");
     expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("wraps the grid in a scrollable container", () => {
+    render(EpisodeList, { props: { episodes: [episode()] } });
+
+    const scroller = screen.getByTestId("episode-scroller");
+    expect(scroller.className).toContain("overflow-y-auto");
+  });
+
+  it("jumps to an episode by number and highlights it", async () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [
+          episode({ title: "Episode 1", url: "https://x.test/1" }),
+          episode({ title: "Episode 2", url: "https://x.test/2" }),
+          episode({ title: "Episode 3", url: "https://x.test/3" }),
+        ],
+      },
+    });
+
+    await fireEvent.input(screen.getByLabelText("Jump to episode number"), {
+      target: { value: "3" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Go" }));
+
+    const cards = episodeCards();
+    expect(cards[2].getAttribute("data-highlighted")).toBe("true");
+    expect(cards[0].getAttribute("data-highlighted")).toBeNull();
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
+  });
+
+  it("matches an episode number embedded in the url when the title has none", async () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [
+          episode({ title: undefined, site: "Crunchyroll", url: "https://x.test/episode-5" }),
+        ],
+      },
+    });
+
+    await fireEvent.input(screen.getByLabelText("Jump to episode number"), {
+      target: { value: "5" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Go" }));
+
+    expect(episodeCards()[0].getAttribute("data-highlighted")).toBe("true");
+  });
+
+  it("reports a number that matches no episode", async () => {
+    render(EpisodeList, { props: { episodes: [episode({ title: "Episode 1" })] } });
+
+    await fireEvent.input(screen.getByLabelText("Jump to episode number"), {
+      target: { value: "99" },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Go" }));
+
+    expect(screen.getByRole("status")).toHaveTextContent(/no episode 99/i);
+    expect(episodeCards()[0].getAttribute("data-highlighted")).toBeNull();
+  });
+
+  it("clears the not-found message once typing resumes", async () => {
+    render(EpisodeList, { props: { episodes: [episode({ title: "Episode 1" })] } });
+
+    const input = screen.getByLabelText("Jump to episode number");
+    await fireEvent.input(input, { target: { value: "99" } });
+    await fireEvent.click(screen.getByRole("button", { name: "Go" }));
+    expect(screen.getByRole("status")).toBeInTheDocument();
+
+    await fireEvent.input(input, { target: { value: "9" } });
+    expect(screen.queryByRole("status")).toBeNull();
   });
 });

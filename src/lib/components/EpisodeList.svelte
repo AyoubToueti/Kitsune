@@ -4,6 +4,15 @@
 
   let { episodes = [] }: { episodes?: StreamingEpisode[] } = $props();
 
+  /** How long a jumped-to episode stays highlighted, in milliseconds. */
+  const HIGHLIGHT_MS = 3000;
+
+  let query = $state<number | null>(null);
+  let notFound = $state<number | null>(null);
+  let highlighted = $state<number | null>(null);
+  let listEl: HTMLUListElement | null = $state(null);
+  let highlightTimer: ReturnType<typeof setTimeout> | undefined;
+
   /**
    * Best label for an episode.
    *
@@ -14,46 +23,145 @@
   function label(ep: StreamingEpisode): string {
     return ep.title ?? ep.site ?? ep.url;
   }
+
+  /**
+   * The episode number an entry represents, when one can be told.
+   *
+   * The provider sends no numeric field, so the number has to be read out of
+   * the title ("Episode 12 - Name") or the URL (".../episode-12"). The title
+   * is tried first because it is written for humans; the URL patterns catch
+   * entries whose title is a site name or blank.
+   */
+  function episodeNumber(ep: StreamingEpisode): number | undefined {
+    const patterns: RegExp[] = [
+      /(?:episode|ep)\.?\s*[-–:]?\s*(\d+)/i, // "Episode 12", "Ep. 12"
+      /(?:episode|ep)[-_](\d+)/i, // "episode-12" inside a URL
+      /(\d+)\s*$/, // a bare trailing number
+    ];
+
+    for (const source of [ep.title, ep.url]) {
+      if (source == null) continue;
+      for (const pattern of patterns) {
+        const match = source.match(pattern);
+        if (match) return Number(match[1]);
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Scroll the requested episode into view and highlight it briefly.
+   *
+   * A number that matches nothing is reported rather than ignored, so a typo
+   * reads as "not found" instead of a button that does nothing.
+   */
+  function jumpToEpisode(event: SubmitEvent): void {
+    event.preventDefault();
+
+    if (query == null || !Number.isInteger(query) || query < 1) return;
+    const requested = query;
+
+    const index = episodes.findIndex((ep) => episodeNumber(ep) === requested);
+    if (index === -1) {
+      notFound = requested;
+      return;
+    }
+
+    notFound = null;
+    highlighted = index;
+
+    const card = listEl?.querySelector<HTMLElement>(
+      `[data-episode-index="${index}"]`,
+    );
+    card?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+    clearTimeout(highlightTimer);
+    highlightTimer = setTimeout(() => {
+      highlighted = null;
+    }, HIGHLIGHT_MS);
+  }
 </script>
 
 {#if episodes.length > 0}
   <div>
-    <h2 class="mb-3 text-lg font-semibold tracking-tight">Episodes</h2>
-    <ul
-      data-testid="episode-list"
-      class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+    <div class="mb-3 flex items-center justify-between gap-3">
+      <h2 class="text-lg font-semibold tracking-tight">Episodes</h2>
+
+      <!-- Jump-to-episode: a form so pressing Enter works as well as the
+           button, and a wrong number says so instead of doing nothing. -->
+      <form onsubmit={jumpToEpisode} class="flex shrink-0 items-center gap-2">
+        <label for="episode-jump" class="sr-only">Jump to episode number</label>
+        <input
+          id="episode-jump"
+          type="number"
+          min="1"
+          autocomplete="off"
+          placeholder="Episode #"
+          bind:value={query}
+          oninput={() => (notFound = null)}
+          class="w-24 rounded-full border border-border-subtle bg-surface-hover px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-accent [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        />
+        <button
+          type="submit"
+          class="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          Go
+        </button>
+      </form>
+    </div>
+
+    {#if notFound !== null}
+      <p class="mb-2 text-xs text-danger" role="status">
+        No episode {notFound} in this list.
+      </p>
+    {/if}
+
+    <!-- The grid scrolls inside a fixed-height viewport rather than
+         stretching the page, so a long season stays compact. -->
+    <div
+      data-testid="episode-scroller"
+      class="max-h-[24rem] overflow-y-auto pr-1"
     >
-      {#each episodes as ep (ep.url)}
-        <li>
-          <button
-            type="button"
-            onclick={() => openUrl(ep.url)}
-            aria-label={label(ep)}
-            class="group relative block aspect-video w-full overflow-hidden rounded-lg border border-border-subtle bg-surface-hover text-left transition-colors hover:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            {#if ep.thumbnail}
-              <img
-                src={ep.thumbnail}
-                alt=""
-                loading="lazy"
-                class="absolute inset-0 h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
-              />
-            {/if}
-
-            <!-- A bottom gradient so the caption stays readable over any frame. -->
-            <span
-              aria-hidden="true"
-              class="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 to-transparent"
-            ></span>
-
-            <span
-              class="absolute inset-x-0 bottom-0 line-clamp-2 px-2 py-1.5 text-xs font-medium text-white"
+      <ul
+        bind:this={listEl}
+        data-testid="episode-list"
+        class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+      >
+        {#each episodes as ep, index (ep.url)}
+          <li data-episode-index={index}>
+            <button
+              type="button"
+              onclick={() => openUrl(ep.url)}
+              aria-label={label(ep)}
+              data-highlighted={highlighted === index ? "true" : undefined}
+              class="group relative block aspect-video w-full overflow-hidden rounded-lg border bg-surface-hover text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {highlighted === index
+                ? 'border-accent ring-2 ring-accent'
+                : 'border-border-subtle hover:border-accent'}"
             >
-              {label(ep)}
-            </span>
-          </button>
-        </li>
-      {/each}
-    </ul>
+              {#if ep.thumbnail}
+                <img
+                  src={ep.thumbnail}
+                  alt=""
+                  loading="lazy"
+                  class="absolute inset-0 h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+                />
+              {/if}
+
+              <!-- A bottom gradient so the caption stays readable over any frame. -->
+              <span
+                aria-hidden="true"
+                class="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 to-transparent"
+              ></span>
+
+              <span
+                class="absolute inset-x-0 bottom-0 line-clamp-2 px-2 py-1.5 text-xs font-medium text-white"
+              >
+                {label(ep)}
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </div>
   </div>
 {/if}
