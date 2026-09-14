@@ -724,8 +724,10 @@ struct RecommendationEdge {
 
 #[derive(Deserialize, Default)]
 struct RecommendationNode {
+    /// Vote tally for the suggestion. SIGNED: AniList returns -1 when users
+    /// downvote a recommendation, and a u32 would fail the whole decode.
     #[serde(default)]
-    rating: u32,
+    rating: i32,
     #[serde(rename = "mediaRecommendation", default)]
     media_recommendation: Option<Media>,
 }
@@ -2044,6 +2046,55 @@ mod tests {
         assert_eq!(anime.recommendations.len(), 1);
         assert_eq!(anime.recommendations[0].rating, 42);
         assert_eq!(anime.recommendations[0].anime.id, 16498);
+    }
+
+    /// A downvoted recommendation must not fail the whole decode.
+    ///
+    /// AniList returns `rating: -1` for a suggestion users downvoted. Modelled as
+    /// `u32`, that single field rejected the entire response, so a title whose
+    /// recommendation list happened to contain one (My Hero Academia S2, among
+    /// others) could not be opened at all -- while every other title worked.
+    #[tokio::test]
+    async fn by_id_accepts_a_negative_recommendation_rating() {
+        let response = serde_json::json!({ "data": { "Media": {
+            "id": 21856,
+            "title": { "romaji": "Boku no Hero Academia 2" },
+            "recommendations": { "edges": [
+                {
+                    "node": {
+                        "rating": -1,
+                        "mediaRecommendation": {
+                            "id": 20521,
+                            "type": "ANIME",
+                            "title": { "romaji": "Hamatora THE ANIMATION" }
+                        }
+                    }
+                },
+                {
+                    "node": {
+                        "rating": 40,
+                        "mediaRecommendation": {
+                            "id": 20,
+                            "type": "ANIME",
+                            "title": { "romaji": "NARUTO" }
+                        }
+                    }
+                }
+            ] }
+        } } });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let anime = provider
+            .by_id(21856)
+            .await
+            .expect("a downvoted recommendation must not fail the decode")
+            .expect("the title should be found");
+
+        // Both edges survive, and the negative value is carried through as-is
+        // rather than clamped: -1 is real data, not an error.
+        assert_eq!(anime.recommendations.len(), 2);
+        assert_eq!(anime.recommendations[0].rating, -1);
+        assert_eq!(anime.recommendations[1].rating, 40);
     }
 
     /// The detail query must actually REQUEST the new fields.

@@ -356,8 +356,10 @@ pub struct RelatedAnime {
 #[serde(rename_all = "camelCase")]
 pub struct RecommendedAnime {
     pub anime: Anime,
-    /// Upvotes the recommendation received on the provider.
-    pub rating: u32,
+    /// Community vote tally: positive when upvoted, negative when downvoted.
+    ///
+    /// Signed because AniList returns -1 for a net-downvoted suggestion, not 0.
+    pub rating: i32,
 }
 
 /// A promotional video for a work.
