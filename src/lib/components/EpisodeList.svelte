@@ -19,7 +19,10 @@
 {#if episodes.length > 0}
   <div>
     <h2 class="mb-3 text-lg font-semibold tracking-tight">Episodes</h2>
-    <ul class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+    <ul
+      data-testid="episode-list"
+      class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
+    >
       {#each episodes as ep (ep.url)}
         <li>
           <button

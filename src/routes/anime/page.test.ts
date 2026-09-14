@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, within } from "@testing-library/svelte";
 
 import type { Anime } from "$lib/types";
 
@@ -112,14 +112,71 @@ describe("detail page", () => {
     expect(await screen.findByText(/429/)).toBeInTheDocument();
   });
 
-  it("renders the episode grid with the correct count", async () => {
-    getAnimeMock.mockResolvedValue(anime({ episodeCount: 12 }));
+  it("falls back to the numbered episode grid when there are no streaming episodes", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({ episodeCount: 12, streamingEpisodes: [] }),
+    );
 
     render(Page);
     await screen.findByRole("heading", { name: "One Piece" });
 
-    // 12 disabled episode buttons
+    // 12 disabled episode buttons from the fallback grid.
     expect(screen.getAllByRole("button")).toHaveLength(12);
+  });
+
+  it("shows episode thumbnails when streaming episodes are present", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({
+        streamingEpisodes: [
+          {
+            url: "https://crunchyroll.example/1",
+            title: "Episode 1",
+            thumbnail: "https://example.test/1.jpg",
+          },
+          {
+            url: "https://crunchyroll.example/2",
+            title: "Episode 2",
+            thumbnail: "https://example.test/2.jpg",
+          },
+        ],
+      }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    // Scoped to the episode list: the "Where to watch" section below renders its
+    // own button carrying the same title, so an unscoped query is ambiguous.
+    const list = screen.getByTestId("episode-list");
+    expect(list.querySelectorAll("button")).toHaveLength(2);
+    expect(
+      within(list).getByRole("button", { name: "Episode 1" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the related anime sidebar", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({
+        relations: [
+          {
+            id: 865,
+            title: { romaji: "Attack on Titan Season 2" },
+            relationType: "SEQUEL",
+          },
+        ],
+      }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    expect(
+      screen.getByRole("heading", { name: /related anime/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /season 2/i })).toHaveAttribute(
+      "href",
+      "/anime/865",
+    );
   });
 
   it("renders streaming links when present", async () => {
@@ -128,6 +185,7 @@ describe("detail page", () => {
         streamingEpisodes: [
           {
             url: "https://crunchyroll.example/watch",
+            title: "Episode 1",
             site: "Crunchyroll",
           },
         ],
@@ -137,9 +195,13 @@ describe("detail page", () => {
     render(Page);
     await screen.findByRole("heading", { name: "One Piece" });
 
-    expect(screen.getByText("Crunchyroll")).toBeInTheDocument();
+    // Scoped to the "Where to watch" section: the same site name also labels
+    // the episode card in the grid above, so an unscoped text match is ambiguous.
     expect(
       screen.getByRole("heading", { name: /where to watch/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Crunchyroll" }),
     ).toBeInTheDocument();
   });
 

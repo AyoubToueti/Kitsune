@@ -6,6 +6,8 @@
   import MetadataStrip from "$lib/components/MetadataStrip.svelte";
   import Synopsis from "$lib/components/Synopsis.svelte";
   import EpisodeGrid from "$lib/components/EpisodeGrid.svelte";
+  import EpisodeList from "$lib/components/EpisodeList.svelte";
+  import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
   import StreamingLinks from "$lib/components/StreamingLinks.svelte";
 
   // Reactive: navigating from /anime/1 to /anime/2 does NOT remount the
@@ -110,9 +112,25 @@
     </div>
   </section>
 
-  <!-- Episode grid -->
-  <div class="mt-8">
-    <EpisodeGrid count={anime.episodeCount} />
+  <!-- Episodes and relations share one row: the episode grid is the main
+       column, the relations a narrower sidebar beside it. They stack on narrow
+       screens, where a sidebar beside a grid would be too cramped. -->
+  <div class="mt-8 grid gap-8 lg:grid-cols-[1fr_20rem]">
+    <div>
+      {#if anime.streamingEpisodes.length > 0}
+        <!-- Prefer the thumbnail grid: it is the richer view and the data is
+             already there. -->
+        <EpisodeList episodes={anime.streamingEpisodes} />
+      {:else}
+        <!-- No streaming data, so fall back to the inert numbered grid the page
+             used before, which at least shows the episode count. -->
+        <EpisodeGrid count={anime.episodeCount} />
+      {/if}
+    </div>
+
+    <aside>
+      <RelatedAnimeList relations={anime.relations} />
+    </aside>
   </div>
 
   <!-- Where to watch -->
