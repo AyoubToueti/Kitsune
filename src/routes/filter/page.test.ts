@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 
 import type { Anime, AnimePage } from "$lib/types";
 
@@ -160,6 +160,10 @@ describe("filter page", () => {
 
   it("loads the genre list for the panel", async () => {
     render(Page);
+
+    // Genres live inside the catalogue, which starts collapsed, so the toggle
+    // has to be pressed before they exist in the DOM.
+    await fireEvent.click(await screen.findByTestId("toggle-catalogue"));
 
     expect(
       await screen.findByRole("checkbox", { name: "Action" }),

@@ -19,6 +19,7 @@
     genres,
     tags = [],
     current,
+    base = "/filter",
   }: {
     /** Genre names to offer, from the provider. */
     genres: string[];
@@ -31,6 +32,13 @@
     tags?: MediaTag[];
     /** The filters currently applied, so the controls reflect them. */
     current: BrowseQuery;
+    /**
+     * Which route the form submits to.
+     *
+     * Parameterised so the same panel can serve /filter and /search; submitting
+     * to the wrong one would drop the search term or the filters.
+     */
+    base?: string;
   } = $props();
 
   /**
@@ -82,6 +90,18 @@
 
     tagStates = updated;
   }
+
+  /**
+   * Whether the tag catalogue is expanded.
+   *
+   * Collapsed by default: 361 chips is a wall of colour, and most filter use
+   * does not involve a tag. Open state is not persisted -- the catalogue is a
+   * tool you reach for, not a setting.
+   */
+  let showCatalogue = $state(false);
+
+  /** How many tags are currently doing something, for the toggle's badge. */
+  const activeTagCount = $derived(Object.keys(tagStates).length);
 
   /**
    * What the user typed into the tag search box.
@@ -152,10 +172,11 @@
 
 <!-- A plain GET form. The browser builds the query string, the page reads it
      back, and the filters survive a reload with no state store. Tag cycling
-     needs script, but the submission itself does not: the hidden inputs are
-     real form fields, so the resulting URL is still the whole truth. -->
+     and the catalogue toggle need script, but the submission itself does not:
+     the hidden inputs are real form fields, so the URL is still the whole
+     truth and every control re-seeds from it on the next load. -->
 <form
-  action="/filter"
+  action={base}
   method="GET"
   data-testid="filter-form"
   class="rounded-xl border border-border-subtle p-4"
@@ -248,84 +269,124 @@
   </div>
 
   {#if hasCatalogue}
-    <fieldset class="mt-4 border-t border-border-subtle pt-4">
-      <legend class="mb-2 text-xs text-ink-faint">Genres &amp; tags</legend>
+    <div class="mt-4 border-t border-border-subtle pt-4">
+      <!-- The catalogue is disclosure, not a control: opening it changes what
+           is on screen, never what is submitted. That is why it is a button
+           rather than a checkbox with a name. -->
+      <button
+        type="button"
+        data-testid="toggle-catalogue"
+        aria-expanded={showCatalogue}
+        aria-controls="tag-catalogue"
+        onclick={() => (showCatalogue = !showCatalogue)}
+        class="flex w-full items-center justify-between text-xs font-medium text-ink-muted transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <span class="flex items-center gap-2">
+          <span aria-hidden="true">{showCatalogue ? "▾" : "▸"}</span>
+          Advanced Genre &amp; Tag Filters
+          {#if activeTagCount > 0}
+            <!-- Says how many tags are active without the user having to open
+                 the catalogue to find out. -->
+            <span
+              data-testid="active-tag-count"
+              class="rounded-full bg-accent px-2 py-0.5 text-white"
+            >
+              {activeTagCount}
+            </span>
+          {/if}
+        </span>
+      </button>
 
-      {#if tagGroups.length}
-        <!-- Deliberately carries no `name`: this narrows what is shown and must
-             not be submitted as a filter of its own. -->
-        <label class="mb-3 flex flex-col gap-1 text-xs text-ink-faint">
-          Filter tags
-          <input
-            type="search"
-            bind:value={tagFilter}
-            placeholder="Type to narrow the list"
-            autocomplete="off"
-            class={selectClass}
-          />
-        </label>
+      {#if showCatalogue}
+        <div id="tag-catalogue" class="mt-3">
+          {#if tagGroups.length}
+            <!-- Deliberately carries no `name`: this narrows what is shown and
+                 must not be submitted as a filter of its own. -->
+            <label class="mb-3 flex flex-col gap-1 text-xs text-ink-faint">
+              Filter tags
+              <input
+                type="search"
+                bind:value={tagFilter}
+                placeholder="Type to narrow the list"
+                autocomplete="off"
+                class={selectClass}
+              />
+            </label>
+          {/if}
+
+          <!-- A scroll region rather than letting 361 chips push the results
+               off the page. Fixed height so the results stay where the user
+               left them when the catalogue opens. -->
+          <div
+            data-testid="tag-scroll"
+            class="flex max-h-80 flex-col gap-3 overflow-y-auto pr-1"
+          >
+            {#if genres.length}
+              <div>
+                <p class={groupHeadingClass}>Genres</p>
+
+                <div class="flex flex-wrap gap-2">
+                  {#each genres as genre (genre)}
+                    <!-- Genres stay plain checkboxes: a genre is only ever
+                         required or absent, so there is no third state. -->
+                    <label class={genreChipClass}>
+                      <input
+                        type="checkbox"
+                        name="genre"
+                        value={genre}
+                        checked={selectedGenres.has(genre)}
+                        class="sr-only"
+                      />
+                      {genre}
+                    </label>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+
+            {#each visibleGroups as group (group.category)}
+              <div>
+                <p class={groupHeadingClass}>{categoryLabel(group.category)}</p>
+
+                <div class="flex flex-wrap gap-2">
+                  {#each group.tags as tag (tag.name)}
+                    <button
+                      type="button"
+                      data-testid="tag-chip"
+                      data-state={tagStates[tag.name] ?? "off"}
+                      title={tag.description ?? undefined}
+                      onclick={() => cycleTag(tag.name)}
+                      class={tagChipClass(tagStates[tag.name])}
+                    >
+                      {tag.name}
+                    </button>
+
+                  {/each}
+                </div>
+              </div>
+            {/each}
+
+            {#if nothingMatched}
+              <p class="text-xs text-ink-faint">No tags match “{tagFilter}”.</p>
+            {/if}
+          </div>
+        </div>
       {/if}
-
-      <div class="flex flex-col gap-3">
-        {#if genres.length}
-          <div>
-            <p class={groupHeadingClass}>Genres</p>
-
-            <div class="flex flex-wrap gap-2">
-              {#each genres as genre (genre)}
-                <!-- Genres stay plain checkboxes: a genre is only ever required
-                     or absent, so there is no third state to cycle through. -->
-                <label class={genreChipClass}>
-                  <input
-                    type="checkbox"
-                    name="genre"
-                    value={genre}
-                    checked={selectedGenres.has(genre)}
-                    class="sr-only"
-                  />
-                  {genre}
-                </label>
-              {/each}
-            </div>
-          </div>
-        {/if}
-
-        {#each visibleGroups as group (group.category)}
-          <div>
-            <p class={groupHeadingClass}>{categoryLabel(group.category)}</p>
-
-            <div class="flex flex-wrap gap-2">
-              {#each group.tags as tag (tag.name)}
-                <button
-                  type="button"
-                  data-testid="tag-chip"
-                  data-state={tagStates[tag.name] ?? "off"}
-                  title={tag.description ?? undefined}
-                  onclick={() => cycleTag(tag.name)}
-                  class={tagChipClass(tagStates[tag.name])}
-                >
-                  {tag.name}
-                </button>
-
-                <!-- The chip is a button, so the submission is carried by these
-                     hidden fields. Exactly one exists per active tag, which is
-                     what keeps the URL unambiguous about the direction. -->
-                {#if tagStates[tag.name] === "include"}
-                  <input type="hidden" name="tag" value={tag.name} />
-                {:else if tagStates[tag.name] === "exclude"}
-                  <input type="hidden" name="exclude_tag" value={tag.name} />
-                {/if}
-              {/each}
-            </div>
-          </div>
-        {/each}
-
-        {#if nothingMatched}
-          <p class="text-xs text-ink-faint">No tags match “{tagFilter}”.</p>
-        {/if}
-      </div>
-    </fieldset>
+    </div>
   {/if}
+
+  <!-- The active tags' form fields, deliberately OUTSIDE the collapsible
+       catalogue. The chips are buttons, so the submission is carried by these
+       hidden inputs -- and if they lived inside the collapse, changing an
+       unrelated filter with the catalogue shut would silently drop every tag
+       the user had set. -->
+  {#each Object.entries(tagStates) as [name, state] (name)}
+    {#if state === "include"}
+      <input type="hidden" name="tag" value={name} />
+    {:else}
+      <input type="hidden" name="exclude_tag" value={name} />
+    {/if}
+  {/each}
 
   <div class="mt-4 flex items-center gap-3">
     <button
@@ -336,7 +397,7 @@
     </button>
 
     <a
-      href="/filter"
+      href={base}
       class="text-sm text-ink-muted transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       Reset

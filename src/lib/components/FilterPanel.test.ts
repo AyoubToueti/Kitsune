@@ -29,358 +29,434 @@ function control(label: string): HTMLElement {
   return screen.getByLabelText(label) as HTMLElement;
 }
 
+/** The disclosure button for the tag catalogue. */
+function toggle(): HTMLElement {
+  return screen.getByTestId("toggle-catalogue");
+}
+
+/** Open the catalogue, since it starts collapsed. */
+async function openCatalogue() {
+  await fireEvent.click(toggle());
+}
+
+/**
+ * Everything the form would submit, as the browser would build it.
+ *
+ * Read from the real form rather than from component state, so a field that
+ * exists but is unreachable -- outside the form, or inside a closed section --
+ * shows up as absent rather than as a false pass.
+ */
+function submitted(): {
+  tag: string[];
+  exclude_tag: string[];
+  genre: string[];
+} {
+  const data = new FormData(form() as HTMLFormElement);
+  return {
+    tag: data.getAll("tag").map(String),
+    exclude_tag: data.getAll("exclude_tag").map(String),
+    genre: data.getAll("genre").map(String),
+  };
+}
+
+/** The props the panel takes, so tests can override just what they care about. */
+interface PanelProps {
+  genres: string[];
+  tags?: MediaTag[];
+  current: BrowseQuery;
+  base?: string;
+}
+
+/** Render with sensible defaults, overriding only what a test cares about. */
+function renderPanel(overrides: Partial<PanelProps> = {}) {
+  // Built as one object rather than spread inline: the component's props are a
+  // closed set, and an inline spread defeats that check.
+  const props: PanelProps = {
+    genres: GENRES,
+    current: { sort: "popularity" },
+    ...overrides,
+  };
+
+  return render(FilterPanel, { props });
+}
+
 describe("FilterPanel", () => {
-  it("submits as a GET to /filter", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
+  describe("the form itself", () => {
+    it("submits as a GET to /filter", () => {
+      renderPanel();
 
-    // A plain GET form: the browser builds the query string, so the page works
-    // without JavaScript.
-    expect(form()).toHaveAttribute("action", "/filter");
-    expect(form()).toHaveAttribute("method", "GET");
-  });
-
-  it("offers the default sort when nothing is selected", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
-
-    expect(control("Sort")).toHaveValue("popularity");
-  });
-
-  it("reflects the applied filters", () => {
-    const current: BrowseQuery = {
-      format: "tv",
-      status: "finished",
-      season: "fall",
-      seasonYear: 2024,
-      minScore: 70,
-      sort: "score",
-    };
-
-    render(FilterPanel, { props: { genres: GENRES, current } });
-
-    expect(control("Type")).toHaveValue("tv");
-    expect(control("Status")).toHaveValue("finished");
-    expect(control("Season")).toHaveValue("fall");
-    expect(control("Year")).toHaveValue("2024");
-    expect(control("Score")).toHaveValue("70");
-    expect(control("Sort")).toHaveValue("score");
-  });
-
-  it("shows the search term", () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, current: { search: "naruto", sort: "searchMatch" } },
+      // A plain GET form: the browser builds the query string.
+      expect(form()).toHaveAttribute("action", "/filter");
+      expect(form()).toHaveAttribute("method", "GET");
     });
 
-    expect(control("Search")).toHaveValue("naruto");
-  });
+    it("submits to the given base path instead", () => {
+      renderPanel({ base: "/search" });
 
-  it("renders a checkbox per genre", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
-
-    for (const genre of GENRES) {
-      expect(screen.getByRole("checkbox", { name: genre })).toBeInTheDocument();
-    }
-  });
-
-  it("checks the genres that are applied", () => {
-    render(FilterPanel, {
-      props: {
-        genres: GENRES,
-        current: { genres: ["Action", "Comedy"], sort: "popularity" },
-      },
+      // A shared panel has to post back to whichever route hosts it, or the
+      // search term would be dropped on submit.
+      expect(form()).toHaveAttribute("action", "/search");
     });
 
-    expect(screen.getByRole("checkbox", { name: "Action" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Comedy" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Slice of Life" })).not.toBeChecked();
-  });
+    it("resets to the base path rather than always /filter", () => {
+      renderPanel({ base: "/search" });
 
-  it("renders no genre section when the provider gave none", () => {
-    render(FilterPanel, { props: { genres: [], current: { sort: "popularity" } } });
-
-    // An empty fieldset would be a heading with nothing under it.
-    expect(screen.queryByRole("checkbox")).toBeNull();
-  });
-
-  it("does not offer relevance sort, which needs a search term", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
-
-    // `searchMatch` orders by textual relevance and means nothing without a
-    // term, so the filter page must not offer it.
-    expect(
-      screen.queryByRole("option", { name: /best match/i }),
-    ).toBeNull();
-  });
-
-  it("offers every format", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
-
-    for (const label of ["TV", "Movie", "OVA", "ONA", "Special", "Music"]) {
-      expect(screen.getByRole("option", { name: label })).toBeInTheDocument();
-    }
-  });
-
-  it("renders no catalogue section when there is nothing to show", () => {
-    render(FilterPanel, {
-      props: { genres: [], tags: [], current: { sort: "popularity" } },
+      expect(screen.getByRole("link", { name: "Reset" })).toHaveAttribute(
+        "href",
+        "/search",
+      );
     });
 
-    // An empty fieldset would be a heading with nothing under it.
-    expect(screen.queryByRole("group", { name: /genres/i })).toBeNull();
-  });
+    it("offers the default sort when nothing is selected", () => {
+      renderPanel();
 
-  it("offers a tag search box when a catalogue exists", () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+      expect(control("Sort")).toHaveValue("popularity");
     });
 
-    expect(screen.getByLabelText("Filter tags")).toBeInTheDocument();
-  });
+    it("reflects the applied filters", () => {
+      renderPanel({
+        current: {
+          format: "tv",
+          status: "finished",
+          season: "fall",
+          seasonYear: 2024,
+          minScore: 70,
+          sort: "score",
+        },
+      });
 
-  it("offers no tag search box when there are no tags", () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: [], current: { sort: "popularity" } },
+      expect(control("Type")).toHaveValue("tv");
+      expect(control("Status")).toHaveValue("finished");
+      expect(control("Season")).toHaveValue("fall");
+      expect(control("Year")).toHaveValue("2024");
+      expect(control("Score")).toHaveValue("70");
+      expect(control("Sort")).toHaveValue("score");
     });
 
-    // A search box that can never match anything is worse than none.
-    expect(screen.queryByLabelText("Filter tags")).toBeNull();
-  });
+    it("shows the search term", () => {
+      renderPanel({ current: { search: "naruto", sort: "searchMatch" } });
 
-  it("groups tags under their category", () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+      expect(control("Search")).toHaveValue("naruto");
     });
 
-    // Categories arrive as provider keys and are humanised for display.
-    for (const label of ["Theme / Fantasy", "Setting / Scene", "Demographic"]) {
-      expect(screen.getByText(label)).toBeInTheDocument();
-    }
-  });
+    it("does not offer relevance sort, which needs a search term", () => {
+      renderPanel();
 
-  it("renders a chip per tag", () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+      // `searchMatch` orders by textual relevance and means nothing without a
+      // term, so this form must not offer it.
+      expect(screen.queryByRole("option", { name: /best match/i })).toBeNull();
     });
 
-    for (const tag of TAGS) {
-      expect(screen.getByRole("button", { name: tag.name })).toBeInTheDocument();
-    }
+    it("offers every format", () => {
+      renderPanel();
+
+      for (const label of ["TV", "Movie", "OVA", "ONA", "Special", "Music"]) {
+        expect(screen.getByRole("option", { name: label })).toBeInTheDocument();
+      }
+    });
+
+    it("has a submit button", () => {
+      renderPanel();
+
+      expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument();
+    });
+
+    it("offers a reset back to the unfiltered view", () => {
+      renderPanel();
+
+      expect(screen.getByRole("link", { name: "Reset" })).toHaveAttribute(
+        "href",
+        "/filter",
+      );
+    });
   });
 
-  it("seeds the chip state from the applied filters", () => {
-    render(FilterPanel, {
-      props: {
-        genres: GENRES,
+  describe("the catalogue disclosure", () => {
+    it("renders no disclosure when there is nothing to show", () => {
+      renderPanel({ genres: [], tags: [] });
+
+      // A toggle that opens an empty box is worse than no toggle.
+      expect(screen.queryByTestId("toggle-catalogue")).toBeNull();
+    });
+
+    it("starts collapsed", () => {
+      renderPanel({ tags: TAGS });
+
+      expect(toggle()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByTestId("tag-scroll")).toBeNull();
+    });
+
+    it("opens the catalogue when followed", async () => {
+      renderPanel({ tags: TAGS });
+
+      await openCatalogue();
+
+      expect(toggle()).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByTestId("tag-scroll")).toBeInTheDocument();
+    });
+
+    it("closes again on a second press", async () => {
+      renderPanel({ tags: TAGS });
+
+      await openCatalogue();
+      await openCatalogue();
+
+      expect(toggle()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByTestId("tag-scroll")).toBeNull();
+    });
+
+    it("counts the active tags on the toggle", async () => {
+      renderPanel({
+        tags: TAGS,
+        current: { tags: ["Isekai"], excludedTags: ["School"], sort: "popularity" },
+      });
+
+      // The count is the only hint that tags are set while the catalogue is shut.
+      expect(screen.getByTestId("active-tag-count")).toHaveTextContent("2");
+    });
+
+    it("shows no count when no tags are active", () => {
+      renderPanel({ tags: TAGS });
+
+      expect(screen.queryByTestId("active-tag-count")).toBeNull();
+    });
+
+    it("submits active tags even while collapsed", () => {
+      renderPanel({
         tags: TAGS,
         current: { tags: ["Isekai"], sort: "popularity" },
-      },
-    });
+      });
 
-    expect(screen.getByRole("button", { name: "Isekai" })).toHaveAttribute(
-      "data-state",
-      "include",
-    );
-    expect(screen.getByRole("button", { name: "Magic" })).toHaveAttribute(
-      "data-state",
-      "off",
-    );
+      // The hidden fields must live outside the collapse, or changing an
+      // unrelated filter with the catalogue shut would silently drop them.
+      expect(screen.queryByTestId("tag-scroll")).toBeNull();
+      expect(submitted().tag).toEqual(["Isekai"]);
+    });
   });
 
-  it("seeds an excluded chip from the applied filters", () => {
-    render(FilterPanel, {
-      props: {
-        genres: GENRES,
-        tags: TAGS,
-        current: { excludedTags: ["Harem"], sort: "popularity" },
-      },
+  describe("genres", () => {
+    it("renders a checkbox per genre", async () => {
+      renderPanel();
+      await openCatalogue();
+
+      for (const genre of GENRES) {
+        expect(screen.getByRole("checkbox", { name: genre })).toBeInTheDocument();
+      }
     });
 
-    // The two directions must not be confused on the way in from the URL.
-    expect(
-      screen.getByRole("button", { name: "Isekai" }),
-    ).toHaveAttribute("data-state", "off");
+    it("checks the genres that are applied", async () => {
+      renderPanel({ current: { genres: ["Action", "Comedy"], sort: "popularity" } });
+      await openCatalogue();
+
+      expect(screen.getByRole("checkbox", { name: "Action" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Comedy" })).toBeChecked();
+      expect(screen.getByRole("checkbox", { name: "Slice of Life" })).not.toBeChecked();
+    });
+
+    it("submits a checked genre", async () => {
+      renderPanel();
+      await openCatalogue();
+
+      await fireEvent.click(screen.getByRole("checkbox", { name: "Action" }));
+
+      expect(submitted().genre).toEqual(["Action"]);
+    });
+
+    it("renders no genre section when the provider gave none", () => {
+      renderPanel({ genres: [], tags: [] });
+
+      // Nothing to disclose, so nothing is offered.
+      expect(screen.queryByRole("checkbox")).toBeNull();
+    });
   });
 
-  it("shows the provider's description as a tooltip", () => {
-    render(FilterPanel, {
-      props: {
-        genres: GENRES,
-        tags: TAGS_WITH_DESCRIPTION,
-        current: { sort: "popularity" },
-      },
+  describe("the tag catalogue", () => {
+    it("offers a tag search box", async () => {
+      renderPanel({ tags: TAGS });
+      await openCatalogue();
+
+      expect(screen.getByLabelText("Filter tags")).toBeInTheDocument();
     });
 
-    const chip = screen.getByRole("button", { name: "Isekai" });
-    expect(chip).toHaveAttribute("title", "Another world.");
+    it("offers no tag search box when there are no tags", async () => {
+      renderPanel({ tags: [] });
+      await openCatalogue();
+
+      // A search box that can never match anything is worse than none.
+      expect(screen.queryByLabelText("Filter tags")).toBeNull();
+    });
+
+    it("groups tags under their category", async () => {
+      renderPanel({ tags: TAGS });
+      await openCatalogue();
+
+      // Categories arrive as provider keys and are humanised for display.
+      for (const label of ["Theme / Fantasy", "Setting / Scene", "Demographic"]) {
+        expect(screen.getByText(label)).toBeInTheDocument();
+      }
+    });
+
+    it("renders a chip per tag", async () => {
+      renderPanel({ tags: TAGS });
+      await openCatalogue();
+
+      for (const tag of TAGS) {
+        expect(screen.getByRole("button", { name: tag.name })).toBeInTheDocument();
+      }
+    });
+
+    it("shows the provider's description as a tooltip", async () => {
+      renderPanel({ tags: TAGS_WITH_DESCRIPTION });
+      await openCatalogue();
+
+      expect(screen.getByRole("button", { name: "Isekai" })).toHaveAttribute(
+        "title",
+        "Another world.",
+      );
+    });
+
+    // A tag with no prose must not get `title=""`, which some browsers render
+    // as an empty tooltip box rather than no tooltip at all.
+    it("omits the tooltip for a tag with no description", async () => {
+      renderPanel({ tags: TAGS_WITH_DESCRIPTION });
+      await openCatalogue();
+
+      expect(screen.getByRole("button", { name: "School" })).not.toHaveAttribute(
+        "title",
+      );
+    });
+
+    it("keeps the tag search box out of the submission", async () => {
+      renderPanel({ tags: TAGS });
+      await openCatalogue();
+
+      // The box narrows the view; if it were submitted it would become a filter
+      // the backend never asked for.
+      expect(screen.getByLabelText("Filter tags")).not.toHaveAttribute("name");
+    });
   });
 
-  // A tag with no prose must not get `title=""`, which some browsers render as
-  // an empty tooltip box rather than no tooltip at all.
-  it("omits the tooltip for a tag with no description", () => {
-    render(FilterPanel, {
-      props: {
-        genres: GENRES,
-        tags: TAGS_WITH_DESCRIPTION,
-        current: { sort: "popularity" },
-      },
-    });
-
-    const chip = screen.getByRole("button", { name: "School" });
-    expect(chip).not.toHaveAttribute("title");
-  });
-
-  it("shows every category by default", () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
-    });
-
-    for (const label of ["Theme / Fantasy", "Setting / Scene", "Demographic"]) {
-      expect(screen.getByText(label)).toBeInTheDocument();
+  describe("filtering the catalogue", () => {
+    /** Open the catalogue and type into its search box. */
+    async function search(term: string) {
+      renderPanel({ tags: TAGS });
+      await openCatalogue();
+      await fireEvent.input(screen.getByLabelText("Filter tags"), {
+        target: { value: term },
+      });
     }
+
+    it("narrows the catalogue to matching tags", async () => {
+      await search("school");
+
+      expect(screen.getByRole("button", { name: "School" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Isekai" })).toBeNull();
+    });
+
+    it("matches case-insensitively", async () => {
+      await search("ISeK");
+
+      expect(screen.getByRole("button", { name: "Isekai" })).toBeInTheDocument();
+    });
+
+    // A heading with no chips under it is just noise once a search is active.
+    it("hides a category whose tags all fail to match", async () => {
+      await search("school");
+
+      expect(screen.getByText("Setting / Scene")).toBeInTheDocument();
+      expect(screen.queryByText("Theme / Fantasy")).toBeNull();
+    });
+
+    it("says so when a search term matches nothing", async () => {
+      await search("zzzz");
+
+      // Silence would look like a broken list rather than an empty result.
+      expect(screen.getByText(/no tags match/i)).toBeInTheDocument();
+    });
   });
 
-  it("narrows the catalogue to tags matching the search term", async () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+  describe("tag chip states", () => {
+    /** Open the catalogue and hand back a named chip. */
+    async function chip(name: string): Promise<HTMLElement> {
+      await openCatalogue();
+      return screen.getByRole("button", { name });
+    }
+
+    it("seeds an included chip from the applied filters", async () => {
+      renderPanel({
+        tags: TAGS,
+        current: { tags: ["Isekai"], sort: "popularity" },
+      });
+
+      expect(await chip("Isekai")).toHaveAttribute("data-state", "include");
+      expect(screen.getByRole("button", { name: "Magic" })).toHaveAttribute(
+        "data-state",
+        "off",
+      );
     });
 
-    await fireEvent.input(screen.getByLabelText("Filter tags"), {
-      target: { value: "school" },
+    it("seeds an excluded chip without touching its neighbours", async () => {
+      renderPanel({
+        tags: TAGS,
+        current: { excludedTags: ["School"], sort: "popularity" },
+      });
+
+      expect(await chip("School")).toHaveAttribute("data-state", "exclude");
+      expect(screen.getByRole("button", { name: "Isekai" })).toHaveAttribute(
+        "data-state",
+        "off",
+      );
     });
 
-    expect(screen.getByRole("button", { name: "School" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Isekai" })).toBeNull();
-  });
+    it("cycles a tag off -> include -> exclude -> off", async () => {
+      renderPanel({ tags: TAGS });
+      const isekai = await chip("Isekai");
 
-  it("matches a search term case-insensitively", async () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+      // Untouched: present but inert.
+      expect(isekai).toHaveAttribute("data-state", "off");
+      expect(submitted().tag).toEqual([]);
+      expect(submitted().exclude_tag).toEqual([]);
+
+      await fireEvent.click(isekai);
+      expect(isekai).toHaveAttribute("data-state", "include");
+      expect(submitted().tag).toEqual(["Isekai"]);
+
+      await fireEvent.click(isekai);
+      expect(isekai).toHaveAttribute("data-state", "exclude");
+      expect(submitted().exclude_tag).toEqual(["Isekai"]);
+      // The include must be gone, or the tag would be required AND rejected.
+      expect(submitted().tag).toEqual([]);
+
+      await fireEvent.click(isekai);
+      expect(isekai).toHaveAttribute("data-state", "off");
+      expect(submitted().exclude_tag).toEqual([]);
     });
 
-    await fireEvent.input(screen.getByLabelText("Filter tags"), {
-      target: { value: "ISeK" },
+    it("tracks each tag's state independently", async () => {
+      renderPanel({ tags: TAGS });
+      const isekai = await chip("Isekai");
+      const school = screen.getByRole("button", { name: "School" });
+
+      await fireEvent.click(isekai);
+      await fireEvent.click(school);
+      await fireEvent.click(school);
+
+      expect(isekai).toHaveAttribute("data-state", "include");
+      expect(school).toHaveAttribute("data-state", "exclude");
     });
 
-    expect(screen.getByRole("button", { name: "Isekai" })).toBeInTheDocument();
-  });
+    it("submits inclusions and exclusions as separate parameters", async () => {
+      renderPanel({ tags: TAGS });
+      const isekai = await chip("Isekai");
+      const school = screen.getByRole("button", { name: "School" });
 
-  /** Every chip's submission state, as the browser would build it. */
-  function submitted(): { tag: string[]; exclude_tag: string[] } {
-    const data = new FormData(form() as HTMLFormElement);
-    return {
-      tag: data.getAll("tag").map(String),
-      exclude_tag: data.getAll("exclude_tag").map(String),
-    };
-  }
+      await fireEvent.click(isekai);
+      await fireEvent.click(school);
+      await fireEvent.click(school);
 
-  it("cycles a tag off -> include -> exclude -> off", async () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+      const { tag, exclude_tag } = submitted();
+      expect(tag).toEqual(["Isekai"]);
+      expect(exclude_tag).toEqual(["School"]);
     });
-
-    const chip = screen.getByRole("button", { name: "Isekai" });
-
-    // Untouched: present but inert.
-    expect(chip).toHaveAttribute("data-state", "off");
-    expect(submitted().tag).toEqual([]);
-    expect(submitted().exclude_tag).toEqual([]);
-
-    await fireEvent.click(chip);
-    expect(chip).toHaveAttribute("data-state", "include");
-    expect(submitted().tag).toEqual(["Isekai"]);
-
-    await fireEvent.click(chip);
-    expect(chip).toHaveAttribute("data-state", "exclude");
-    expect(submitted().exclude_tag).toEqual(["Isekai"]);
-    // The include must be gone, or the tag would be required AND rejected.
-    expect(submitted().tag).toEqual([]);
-
-    await fireEvent.click(chip);
-    expect(chip).toHaveAttribute("data-state", "off");
-    expect(submitted().exclude_tag).toEqual([]);
-  });
-
-  it("tracks each tag's state independently", async () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
-    });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Isekai" }));
-    await fireEvent.click(screen.getByRole("button", { name: "School" }));
-    await fireEvent.click(screen.getByRole("button", { name: "School" }));
-
-    expect(screen.getByRole("button", { name: "Isekai" })).toHaveAttribute(
-      "data-state",
-      "include",
-    );
-    expect(screen.getByRole("button", { name: "School" })).toHaveAttribute(
-      "data-state",
-      "exclude",
-    );
-  });
-
-  it("submits inclusions and exclusions as separate parameters", async () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
-    });
-
-    await fireEvent.click(screen.getByRole("button", { name: "Isekai" }));
-    await fireEvent.click(screen.getByRole("button", { name: "School" }));
-    await fireEvent.click(screen.getByRole("button", { name: "School" }));
-
-    const { tag, exclude_tag } = submitted();
-    expect(tag).toEqual(["Isekai"]);
-    expect(exclude_tag).toEqual(["School"]);
-  });
-
-  /// A heading with no chips under it is just noise once a search is active.
-  it("hides a category whose tags all fail to match", async () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
-    });
-
-    await fireEvent.input(screen.getByLabelText("Filter tags"), {
-      target: { value: "school" },
-    });
-
-    expect(screen.getByText("Setting / Scene")).toBeInTheDocument();
-    expect(screen.queryByText("Theme / Fantasy")).toBeNull();
-  });
-
-  it("says so when a search term matches nothing", async () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
-    });
-
-    await fireEvent.input(screen.getByLabelText("Filter tags"), {
-      target: { value: "zzzz" },
-    });
-
-    // Silence would look like a broken list rather than an empty result.
-    expect(screen.getByText(/no tags match/i)).toBeInTheDocument();
-  });
-
-  it("keeps the catalogue hidden behind the search box out of the submission", () => {
-    render(FilterPanel, {
-      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
-    });
-
-    // The search box narrows the view; if it were submitted it would become a
-    // filter the backend never asked for.
-    expect(screen.getByLabelText("Filter tags")).not.toHaveAttribute("name");
-  });
-
-  it("has a submit button", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
-
-    expect(screen.getByRole("button", { name: "Filter" })).toBeInTheDocument();
-  });
-
-  it("offers a reset back to the unfiltered view", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
-
-    expect(screen.getByRole("link", { name: "Reset" })).toHaveAttribute(
-      "href",
-      "/filter",
-    );
   });
 });
