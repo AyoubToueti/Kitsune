@@ -14,7 +14,8 @@ use serde::Deserialize;
 use super::traits::{AnimeProvider, ProviderError};
 use crate::types::{
     Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, MediaTag, PageInfo, ProviderId,
-    ScheduledEpisode, SeasonFilter, SortOption, StatusFilter, StreamingEpisode, Title,
+    RecommendedAnime, RelatedAnime, ScheduledEpisode, SeasonFilter, SortOption, StatusFilter,
+    StreamingEpisode, Title, Trailer,
 };
 
 /// AniList's public GraphQL endpoint.
@@ -212,10 +213,7 @@ impl AnimeProvider for AniListProvider {
         if !query.tags.is_empty() || !query.excluded_tags.is_empty() {
             filter.push_str(", minimumTagRank: $minimumTagRank");
             declarations.push("$minimumTagRank: Int");
-            variables.insert(
-                "minimumTagRank".into(),
-                serde_json::json!(MINIMUM_TAG_RANK),
-            );
+            variables.insert("minimumTagRank".into(), serde_json::json!(MINIMUM_TAG_RANK));
         }
 
         if let Some(status) = query.status {
@@ -609,6 +607,10 @@ struct Media {
     #[serde(rename = "streamingEpisodes", default)]
     streaming_episodes: Option<Vec<StreamingEpisodeWire>>,
     id: i64,
+    /// Only requested by the recommendation sub-query, where it distinguishes
+    /// anime from manga. Absent everywhere else, so the check tolerates `None`.
+    #[serde(rename = "type", default)]
+    media_type: Option<String>,
     #[serde(default)]
     title: Option<MediaTitle>,
     #[serde(rename = "coverImage", default)]
@@ -627,6 +629,75 @@ struct Media {
     season: Option<String>,
     #[serde(rename = "seasonYear", default)]
     season_year: Option<u32>,
+    #[serde(default)]
+    relations: Option<RelationConnection>,
+    #[serde(default)]
+    recommendations: Option<RecommendationConnection>,
+    #[serde(default)]
+    trailer: Option<TrailerWire>,
+}
+
+#[derive(Deserialize, Default)]
+struct RelationConnection {
+    #[serde(default)]
+    edges: Vec<RelationEdge>,
+}
+
+#[derive(Deserialize, Default)]
+struct RelationEdge {
+    #[serde(rename = "relationType", default)]
+    relation_type: Option<String>,
+    #[serde(default)]
+    node: Option<RelationNode>,
+}
+
+#[derive(Deserialize, Default)]
+struct RelationNode {
+    id: i64,
+    /// AniList mixes manga and anime into one relation graph, so the type is read
+    /// back to filter the manga edges out.
+    #[serde(rename = "type", default)]
+    media_type: Option<String>,
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    episodes: Option<u32>,
+    #[serde(default)]
+    title: Option<MediaTitle>,
+    #[serde(rename = "coverImage", default)]
+    cover_image: Option<CoverImage>,
+}
+
+#[derive(Deserialize, Default)]
+struct RecommendationConnection {
+    #[serde(default)]
+    edges: Vec<RecommendationEdge>,
+}
+
+#[derive(Deserialize, Default)]
+struct RecommendationEdge {
+    #[serde(default)]
+    node: Option<RecommendationNode>,
+}
+
+#[derive(Deserialize, Default)]
+struct RecommendationNode {
+    #[serde(default)]
+    rating: u32,
+    #[serde(rename = "mediaRecommendation", default)]
+    media_recommendation: Option<Media>,
+}
+
+#[derive(Deserialize, Default)]
+struct TrailerWire {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    site: Option<String>,
+    #[serde(default)]
+    thumbnail: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -690,6 +761,21 @@ fn map_media(media: Media) -> Anime {
             .into_iter()
             .filter_map(map_streaming_episode)
             .collect(),
+        relations: media
+            .relations
+            .unwrap_or_default()
+            .edges
+            .into_iter()
+            .filter_map(map_relation_edge)
+            .collect(),
+        recommendations: media
+            .recommendations
+            .unwrap_or_default()
+            .edges
+            .into_iter()
+            .filter_map(map_recommendation_edge)
+            .collect(),
+        trailer: media.trailer.and_then(map_trailer),
     }
 }
 
@@ -704,6 +790,76 @@ fn map_streaming_episode(episode: StreamingEpisodeWire) -> Option<StreamingEpiso
         url,
         site: non_empty(episode.site),
         thumbnail: non_empty(episode.thumbnail),
+    })
+}
+
+/// Map one relation edge, dropping anything that is not an anime.
+///
+/// AniList's relation graph mixes media types, so a work's relations can include
+/// its source manga. Those are skipped: this is an anime app, and a manga node
+/// carries no episode data to show.
+fn map_relation_edge(edge: RelationEdge) -> Option<RelatedAnime> {
+    let node = edge.node?;
+    if node.media_type.as_deref() != Some("ANIME") {
+        return None;
+    }
+    // The relation type is what the sidebar labels the row with; without it the
+    // entry is unlabelled, so it is treated as absent rather than guessed.
+    let relation_type = non_empty(edge.relation_type)?;
+
+    Some(RelatedAnime {
+        id: node.id,
+        title: Title {
+            romaji: node
+                .title
+                .as_ref()
+                .and_then(|t| non_empty(t.romaji.clone())),
+            english: node
+                .title
+                .as_ref()
+                .and_then(|t| non_empty(t.english.clone())),
+            native: node
+                .title
+                .as_ref()
+                .and_then(|t| non_empty(t.native.clone())),
+            user_preferred: None,
+        },
+        cover_image: node.cover_image.and_then(pick_cover),
+        format: non_empty(node.format),
+        status: non_empty(node.status),
+        episode_count: node.episodes,
+        relation_type,
+    })
+}
+
+/// Map one recommendation edge, dropping any with no recommended work.
+///
+/// The nested work is mapped through [`map_media`], so it carries the same fields
+/// a card expects. Its own relations and recommendations are not requested, so
+/// they come back empty.
+fn map_recommendation_edge(edge: RecommendationEdge) -> Option<RecommendedAnime> {
+    let node = edge.node?;
+    let media = node.media_recommendation?;
+    if media.media_type.as_deref() != Some("ANIME") {
+        return None;
+    }
+
+    Some(RecommendedAnime {
+        anime: map_media(media),
+        rating: node.rating,
+    })
+}
+
+/// Map a trailer, requiring both the id and the site.
+///
+/// A trailer with no `id` has no video to open and one with no `site` has no URL
+/// to build, so either missing drops the whole thing rather than surfacing a
+/// link that cannot be followed.
+fn map_trailer(trailer: TrailerWire) -> Option<Trailer> {
+    Some(Trailer {
+        id: non_empty(trailer.id)?,
+        site: non_empty(trailer.site)?,
+        thumbnail: non_empty(trailer.thumbnail),
     })
 }
 
@@ -963,7 +1119,10 @@ mod tests {
         provider.browse(query, 1, 24).await.expect("should succeed");
 
         let body = captured.lock().unwrap().clone();
-        assert!(body.contains("tag_not_in: $excludedTags"), "body was {body}");
+        assert!(
+            body.contains("tag_not_in: $excludedTags"),
+            "body was {body}"
+        );
         assert!(body.contains("\"Harem\""), "body was {body}");
         assert!(
             body.contains("minimumTagRank: $minimumTagRank"),
@@ -1010,7 +1169,10 @@ mod tests {
 
         let body = captured.lock().unwrap().clone();
         assert!(body.contains("tag_in: $tags"), "body was {body}");
-        assert!(body.contains("tag_not_in: $excludedTags"), "body was {body}");
+        assert!(
+            body.contains("tag_not_in: $excludedTags"),
+            "body was {body}"
+        );
         // One floor serves both directions, so it must appear exactly once.
         assert_eq!(
             body.matches("minimumTagRank: $minimumTagRank").count(),
@@ -1375,90 +1537,91 @@ mod tests {
     async fn tags_carry_their_category() {
         let (_server, provider) = provider_with(
             tag_response(vec![
-                    ("Isekai", "Theme-Fantasy", None, false),
-                    ("School", "Setting-Scene", None, false),
-                ]),
-                200,
-            )
-            .await;
+                ("Isekai", "Theme-Fantasy", None, false),
+                ("School", "Setting-Scene", None, false),
+            ]),
+            200,
+        )
+        .await;
 
-            let tags = provider.tags().await.expect("tags should succeed");
+        let tags = provider.tags().await.expect("tags should succeed");
 
-            // The category is what the filter UI groups by, so losing it would
-            // leave every tag in one undifferentiated list.
-            assert_eq!(tags.len(), 2);
-            assert_eq!(tags[0].name, "Isekai");
-            assert_eq!(tags[0].category, "Theme-Fantasy");
-            assert_eq!(tags[1].category, "Setting-Scene");
-        }
+        // The category is what the filter UI groups by, so losing it would
+        // leave every tag in one undifferentiated list.
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "Isekai");
+        assert_eq!(tags[0].category, "Theme-Fantasy");
+        assert_eq!(tags[1].category, "Setting-Scene");
+    }
 
-        /// The provider's prose is what the chip tooltip shows, so it has to
-        /// survive the mapping rather than being dropped as unmapped.
-        #[tokio::test]
-        async fn tags_carry_their_description() {
-            let (_server, provider) = provider_with(
-                tag_response(vec![
-                    ("Isekai", "Theme-Fantasy", Some("Another world."), false),
-                ]),
-                200,
-            )
-            .await;
+    /// The provider's prose is what the chip tooltip shows, so it has to
+    /// survive the mapping rather than being dropped as unmapped.
+    #[tokio::test]
+    async fn tags_carry_their_description() {
+        let (_server, provider) = provider_with(
+            tag_response(vec![(
+                "Isekai",
+                "Theme-Fantasy",
+                Some("Another world."),
+                false,
+            )]),
+            200,
+        )
+        .await;
 
-            let tags = provider.tags().await.unwrap();
-            assert_eq!(tags[0].description.as_deref(), Some("Another world."));
-        }
+        let tags = provider.tags().await.unwrap();
+        assert_eq!(tags[0].description.as_deref(), Some("Another world."));
+    }
 
-        /// AniList leaves the field nullable, and some entries carry only
-        /// whitespace. Either way the chip should render without a tooltip
-        /// rather than with an empty one.
-        #[tokio::test]
-        async fn tags_treat_a_blank_description_as_absent() {
-            let (_server, provider) = provider_with(
-                tag_response(vec![
-                    ("Isekai", "Theme-Fantasy", None, false),
-                    ("School", "Setting-Scene", Some("   "), false),
-                ]),
-                200,
-            )
-            .await;
+    /// AniList leaves the field nullable, and some entries carry only
+    /// whitespace. Either way the chip should render without a tooltip
+    /// rather than with an empty one.
+    #[tokio::test]
+    async fn tags_treat_a_blank_description_as_absent() {
+        let (_server, provider) = provider_with(
+            tag_response(vec![
+                ("Isekai", "Theme-Fantasy", None, false),
+                ("School", "Setting-Scene", Some("   "), false),
+            ]),
+            200,
+        )
+        .await;
 
-            let tags = provider.tags().await.unwrap();
-            assert_eq!(tags[0].description, None);
-            assert_eq!(tags[1].description, None);
-        }
+        let tags = provider.tags().await.unwrap();
+        assert_eq!(tags[0].description, None);
+        assert_eq!(tags[1].description, None);
+    }
 
-        /// Adult tags sit interleaved in the collection, not behind their own
-        /// field, so they have to be filtered out by flag.
-        #[tokio::test]
-        async fn tags_drop_the_adult_entries() {
-            let (_server, provider) = provider_with(
-                tag_response(vec![
-                    ("Isekai", "Theme-Fantasy", None, false),
-                    ("Nudity", "Sexual Content", None, true),
-                ]),
-                200,
-            )
-            .await;
+    /// Adult tags sit interleaved in the collection, not behind their own
+    /// field, so they have to be filtered out by flag.
+    #[tokio::test]
+    async fn tags_drop_the_adult_entries() {
+        let (_server, provider) = provider_with(
+            tag_response(vec![
+                ("Isekai", "Theme-Fantasy", None, false),
+                ("Nudity", "Sexual Content", None, true),
+            ]),
+            200,
+        )
+        .await;
 
-            let tags = provider.tags().await.unwrap();
-            assert_eq!(tags.len(), 1);
-            assert_eq!(tags[0].name, "Isekai");
-        }
+        let tags = provider.tags().await.unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "Isekai");
+    }
 
-        /// The adult flag and the description only arrive if they were asked
-        /// for. Omitting the flag would leave every entry deserialising as
-        /// non-adult and let the adult tags through while the filter above
-        /// still looked correct; omitting the description would silently empty
-        /// every tooltip.
-        #[tokio::test]
-        async fn tags_query_asks_for_the_adult_flag_and_description() {
-            let (_server, provider) = provider_expecting(
-                "MediaTagCollection { name category description isAdult }",
-            )
-            .await;
+    /// The adult flag and the description only arrive if they were asked
+    /// for. Omitting the flag would leave every entry deserialising as
+    /// non-adult and let the adult tags through while the filter above
+    /// still looked correct; omitting the description would silently empty
+    /// every tooltip.
+    #[tokio::test]
+    async fn tags_query_asks_for_the_adult_flag_and_description() {
+        let (_server, provider) =
+            provider_expecting("MediaTagCollection { name category description isAdult }").await;
 
-            provider.tags().await.expect("tags should succeed");
-        }
+        provider.tags().await.expect("tags should succeed");
+    }
 
     /// Mount a mock that only answers when the request body contains
     /// `expected`, so the assertion is about the query actually sent.
@@ -1763,6 +1926,108 @@ mod tests {
         assert_eq!(anime.id, 21);
     }
 
+    /// A detail response carrying relations, recommendations and a trailer.
+    fn detail_media_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": 21,
+            "title": { "romaji": "Attack on Titan" },
+            "relations": { "edges": [
+                {
+                    "relationType": "SEQUEL",
+                    "node": {
+                        "id": 865,
+                        "type": "ANIME",
+                        "format": "TV",
+                        "status": "FINISHED",
+                        "episodes": 12,
+                        "title": { "romaji": "Attack on Titan Season 2" },
+                        "coverImage": { "large": "https://example.test/s2.jpg" }
+                    }
+                },
+                {
+                    "relationType": "SOURCE",
+                    "node": {
+                        "id": 999,
+                        "type": "MANGA",
+                        "title": { "romaji": "Attack on Titan (manga)" }
+                    }
+                }
+            ] },
+            "recommendations": { "edges": [
+                {
+                    "node": {
+                        "rating": 42,
+                        "mediaRecommendation": {
+                            "id": 16498,
+                            "type": "ANIME",
+                            "title": { "romaji": "Fullmetal Alchemist: Brotherhood" },
+                            "coverImage": { "large": "https://example.test/fmab.jpg" },
+                            "format": "TV"
+                        }
+                    }
+                },
+                {
+                    "node": { "rating": 1, "mediaRecommendation": null }
+                }
+            ] },
+            "trailer": {
+                "id": "LHtdKWJdif4",
+                "site": "youtube",
+                "thumbnail": "https://example.test/trailer.jpg"
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn by_id_maps_relations_and_drops_manga_edges() {
+        let response = serde_json::json!({ "data": { "Media": detail_media_json() } });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let anime = provider.by_id(21).await.unwrap().expect("should be found");
+
+        // The manga edge is filtered out, leaving only the anime sequel.
+        assert_eq!(anime.relations.len(), 1);
+        let related = &anime.relations[0];
+        assert_eq!(related.id, 865);
+        assert_eq!(related.relation_type, "SEQUEL");
+        assert_eq!(related.episode_count, Some(12));
+    }
+
+    #[tokio::test]
+    async fn by_id_maps_recommendations_with_their_rating() {
+        let response = serde_json::json!({ "data": { "Media": detail_media_json() } });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let anime = provider.by_id(21).await.unwrap().expect("should be found");
+
+        // The empty recommendation is dropped, leaving one.
+        assert_eq!(anime.recommendations.len(), 1);
+        assert_eq!(anime.recommendations[0].rating, 42);
+        assert_eq!(anime.recommendations[0].anime.id, 16498);
+    }
+
+    #[tokio::test]
+    async fn by_id_maps_the_trailer() {
+        let response = serde_json::json!({ "data": { "Media": detail_media_json() } });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let anime = provider.by_id(21).await.unwrap().expect("should be found");
+        let trailer = anime.trailer.expect("trailer should be present");
+        assert_eq!(trailer.id, "LHtdKWJdif4");
+        assert_eq!(trailer.site, "youtube");
+    }
+
+    /// A list query never asks for the detail fields, so they come back empty.
+    #[tokio::test]
+    async fn trending_leaves_the_detail_fields_empty() {
+        let (_server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+
+        let anime = provider.trending(1).await.unwrap();
+        assert!(anime[0].relations.is_empty());
+        assert!(anime[0].recommendations.is_empty());
+        assert!(anime[0].trailer.is_none());
+    }
+
     /// A missing title is not an error, so `by_id` must report `None`
     /// rather than failing the call.
     #[tokio::test]
@@ -1832,5 +2097,4 @@ mod tests {
     fn provider_reports_its_own_id() {
         assert_eq!(AniListProvider::new().id(), ProviderId::AniList);
     }
-
 }

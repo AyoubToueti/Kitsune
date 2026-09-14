@@ -306,6 +306,74 @@ pub struct Anime {
     /// Official places to watch this legally, as reported by the provider.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub streaming_episodes: Vec<StreamingEpisode>,
+    /// Other works this one is connected to, as the provider reports.
+    ///
+    /// Populated only by the single-title lookup; list queries leave it empty,
+    /// since a card has no room for it and it would bloat every response.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<RelatedAnime>,
+    /// Community recommendations, highest-rated first. Detail-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommendations: Vec<RecommendedAnime>,
+    /// The work's trailer, when the provider has one. Detail-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trailer: Option<Trailer>,
+}
+
+/// A work connected to another, as the provider links them.
+///
+/// `relation_type` is the provider's own vocabulary ("SEQUEL", "PREQUEL",
+/// "SIDE_STORY", ...) and is surfaced verbatim: the set is open-ended, and
+/// translating it into an enum of our own would drop any type a future
+/// provider adds.
+///
+/// Deliberately not a whole [`Anime`]: a sidebar row needs a cover, a title and
+/// a couple of facts, and the full type would drag genres, description and
+/// streaming links through every detail response for nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelatedAnime {
+    pub id: i64,
+    pub title: Title,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cover_image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode_count: Option<u32>,
+    /// How this work relates to the one being viewed, e.g. "SEQUEL".
+    pub relation_type: String,
+}
+
+/// A community recommendation for a work.
+///
+/// Carries the recommended work whole so a poster card renders without a second
+/// lookup. `rating` is the number of users who upvoted the suggestion, kept
+/// beside the work so the UI can show or sort by it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendedAnime {
+    pub anime: Anime,
+    /// Upvotes the recommendation received on the provider.
+    pub rating: u32,
+}
+
+/// A promotional video for a work.
+///
+/// `site` and `id` stay apart rather than joined into one URL because the
+/// provider reports the platform and the video id separately, and each platform
+/// spells its watch URL differently -- composing the link is the UI's job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Trailer {
+    /// The video id on `site`, e.g. a YouTube video id.
+    pub id: String,
+    /// Hosting platform, e.g. "youtube" or "dailymotion".
+    pub site: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
 }
 
 /// One upcoming (or recent) broadcast, as listed on a schedule.
@@ -397,6 +465,26 @@ mod tests {
                 site: Some("Crunchyroll".into()),
                 thumbnail: None,
             }],
+            relations: vec![RelatedAnime {
+                id: 22,
+                title: Title {
+                    romaji: Some("One Piece Film: Red".into()),
+                    english: None,
+                    native: None,
+                    user_preferred: None,
+                },
+                cover_image: Some("https://example.test/related.jpg".into()),
+                format: Some("MOVIE".into()),
+                status: Some("FINISHED".into()),
+                episode_count: Some(1),
+                relation_type: "SEQUEL".into(),
+            }],
+            recommendations: vec![],
+            trailer: Some(Trailer {
+                id: "dQw4w9WgXcQ".into(),
+                site: "youtube".into(),
+                thumbnail: Some("https://example.test/trailer.jpg".into()),
+            }),
         }
     }
 
@@ -414,6 +502,9 @@ mod tests {
         assert!(json.get("coverImage").is_some(), "expected camelCase key");
         assert!(json.get("episodeCount").is_some());
         assert!(json.get("averageScore").is_some());
+        // The detail-only additions travel camelCase too.
+        assert!(json.get("relations").is_some());
+        assert!(json.get("trailer").is_some());
         // And never the snake_case form.
         assert!(json.get("cover_image").is_none());
     }
