@@ -89,6 +89,13 @@ pub enum SortOption {
     Newest,
     /// Alphabetical by the provider's own title form.
     TitleAz,
+    /// What is hot right now, rather than what is popular overall.
+    Trending,
+    /// Most often favourited.
+    Favorites,
+    /// Most recently added to the provider's catalogue, which is not the same
+    /// as most recently aired.
+    DateAdded,
     /// Closest textual match. Only meaningful alongside a search term; without
     /// one the provider falls back to its default order.
     SearchMatch,

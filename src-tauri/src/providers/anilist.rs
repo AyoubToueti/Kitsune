@@ -473,6 +473,9 @@ fn sort_literal(sort: SortOption) -> &'static str {
         SortOption::Score => "SCORE_DESC",
         SortOption::Newest => "START_DATE_DESC",
         SortOption::TitleAz => "TITLE_ROMAJI",
+        SortOption::Trending => "TRENDING_DESC",
+        SortOption::Favorites => "FAVOURITES_DESC",
+        SortOption::DateAdded => "ID_DESC",
         SortOption::SearchMatch => "SEARCH_MATCH",
     }
 }
@@ -1115,6 +1118,50 @@ mod tests {
             )
             .await
             .is_ok());
+    }
+
+    /// Every sort variant must map to a distinct AniList literal. A copy-paste
+    /// slip here would make two options behave identically, which the UI would
+    /// present as a control that does nothing.
+    #[tokio::test]
+    async fn each_sort_maps_to_its_own_anilist_literal() {
+        let cases = [
+            (SortOption::Popularity, "sort: POPULARITY_DESC"),
+            (SortOption::Score, "sort: SCORE_DESC"),
+            (SortOption::Newest, "sort: START_DATE_DESC"),
+            (SortOption::TitleAz, "sort: TITLE_ROMAJI"),
+            (SortOption::Trending, "sort: TRENDING_DESC"),
+            (SortOption::Favorites, "sort: FAVOURITES_DESC"),
+            (SortOption::DateAdded, "sort: ID_DESC"),
+            (SortOption::SearchMatch, "sort: SEARCH_MATCH"),
+        ];
+
+        // Guard the premise: if two variants shared a literal, the loop below
+        // would pass while the options were indistinguishable.
+        let literals: Vec<&str> = cases.iter().map(|(_, literal)| *literal).collect();
+        let mut unique = literals.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), literals.len(), "two sorts share a literal");
+
+        for (sort, expected) in cases {
+            let (_server, provider) = provider_expecting(expected).await;
+
+            assert!(
+                provider
+                    .browse(
+                        BrowseQuery {
+                            sort,
+                            ..BrowseQuery::default()
+                        },
+                        1,
+                        24,
+                    )
+                    .await
+                    .is_ok(),
+                "{sort:?} should send {expected}"
+            );
+        }
     }
 
     #[tokio::test]
