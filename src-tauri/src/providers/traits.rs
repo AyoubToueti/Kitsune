@@ -6,7 +6,9 @@
 
 use async_trait::async_trait;
 
-use crate::types::{Anime, AnimePage, BrowseQuery, ListFilter, ProviderId, ScheduledEpisode};
+use crate::types::{
+    Anime, AnimePage, BrowseQuery, ListFilter, MediaTag, ProviderId, ScheduledEpisode,
+};
 
 /// Why a provider call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +67,16 @@ pub trait AnimeProvider: Send + Sync {
     /// Asked of the provider rather than hardcoded in the UI, so the browse
     /// grid cannot drift from what queries actually accept.
     async fn genres(&self) -> Result<Vec<String>, ProviderError>;
+
+    /// The tags this provider recognises, each with its grouping category.
+    ///
+    /// Separate from [`AnimeProvider::genres`] because providers model the two
+    /// differently: a genre is a flat list of broad categories, a tag is a
+    /// larger set that only makes sense grouped. Asked of the provider for the
+    /// same reason as genres -- a hardcoded list would drift from what queries
+    /// actually accept, and an unrecognised tag filters to nothing rather than
+    /// erroring, so the drift would be silent.
+    async fn tags(&self) -> Result<Vec<MediaTag>, ProviderError>;
 
     /// Broadcasts falling within a time window, soonest first.
     ///

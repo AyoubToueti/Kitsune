@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::providers::{AnimeProvider, ProviderError};
-use crate::types::{Anime, AnimePage, BrowseQuery, ListFilter, ScheduledEpisode};
+use crate::types::{Anime, AnimePage, BrowseQuery, ListFilter, MediaTag, ScheduledEpisode};
 
 /// How many results to ask for when the caller does not say.
 pub const DEFAULT_LIMIT: u32 = 20;
@@ -89,6 +89,11 @@ pub async fn genres_from(provider: &dyn AnimeProvider) -> Result<Vec<String>, Pr
     provider.genres().await
 }
 
+/// The tags available for filtering, each with its grouping category.
+pub async fn tags_from(provider: &dyn AnimeProvider) -> Result<Vec<MediaTag>, ProviderError> {
+    provider.tags().await
+}
+
 /// Look up a single title. `Ok(None)` means "no such id".
 pub async fn anime_from(
     provider: &dyn AnimeProvider,
@@ -135,6 +140,13 @@ pub async fn get_list(
 #[tauri::command]
 pub async fn get_genres(provider: State<'_, SharedProvider>) -> Result<Vec<String>, String> {
     genres_from(provider.inner().as_ref())
+        .await
+        .map_err(to_message)
+}
+
+    #[tauri::command]
+pub async fn get_tags(provider: State<'_, SharedProvider>) -> Result<Vec<MediaTag>, String> {
+    tags_from(provider.inner().as_ref())
         .await
         .map_err(to_message)
 }
@@ -421,6 +433,24 @@ mod tests {
 
         let anime = anime_from(&provider, 999).await.expect("should not error");
         assert!(anime.is_none(), "a missing id is not an error");
+    }
+
+    // --- tags_from -------------------------------------------------------
+
+    #[tokio::test]
+    async fn tags_from_returns_name_and_category() {
+        let response = serde_json::json!({
+            "data": { "MediaTagCollection": [
+                { "name": "Isekai", "category": "Theme-Fantasy", "isAdult": false },
+            ] }
+        });
+        let (_server, provider) = provider_with(response).await;
+
+        let tags = tags_from(&provider).await.expect("should succeed");
+
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "Isekai");
+        assert_eq!(tags[0].category, "Theme-Fantasy");
     }
 
     // --- provider failure surfaces ---------------------------------------

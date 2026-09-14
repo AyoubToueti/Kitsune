@@ -12,6 +12,7 @@ import {
   getGenres,
   getList,
   getSchedule,
+  getTags,
   getTrending,
 } from "./anime";
 import type { Anime, ScheduledEpisode } from "$lib/types";
@@ -95,6 +96,18 @@ describe("command wrappers", () => {
 
     expect(invokeMock).toHaveBeenCalledWith(COMMANDS.genres);
     expect(genres).toEqual(["Action", "Mecha"]);
+  });
+
+  it("getTags takes no arguments", async () => {
+    invokeMock.mockResolvedValue([{ name: "Isekai", category: "Theme-Fantasy" }]);
+
+    const tags = await getTags();
+
+    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.tags);
+    expect(tags).toHaveLength(1);
+    // The category is what the filter UI groups by, so it must survive the
+    // boundary rather than being flattened to names on the way through.
+    expect(tags[0].category).toBe("Theme-Fantasy");
   });
 
   it("getSchedule passes the window and limit", async () => {

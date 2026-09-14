@@ -36,6 +36,17 @@ export type ListFilter =
   | "latestCompleted"
   | "upcoming";
 
+/**
+ * A descriptor the provider associates with a work.
+ *
+ * Distinct from a genre: `category` is what a filter UI groups by, so the two
+ * travel together rather than as a bare name.
+ */
+export interface MediaTag {
+  name: string;
+  category: string;
+}
+
 /** A work as presented in the UI. */
 export interface Anime {
   id: number;

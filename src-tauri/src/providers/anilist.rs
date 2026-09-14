@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use super::traits::{AnimeProvider, ProviderError};
 use crate::types::{
-    Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, PageInfo, ProviderId,
+    Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, MediaTag, PageInfo, ProviderId,
     ScheduledEpisode, SeasonFilter, SortOption, StatusFilter, StreamingEpisode, Title,
 };
 
@@ -258,6 +258,29 @@ impl AnimeProvider for AniListProvider {
             .collect())
     }
 
+    async fn tags(&self) -> Result<Vec<MediaTag>, ProviderError> {
+        let data: TagData = self
+            .query(
+                "{ MediaTagCollection { name category isAdult } }",
+                serde_json::json!({}),
+            )
+            .await?;
+
+        // The adult tags are interleaved with the rest rather than grouped in
+        // their own field. They are not offered for browsing, so they are
+        // dropped here rather than in the UI where every caller would have to
+        // remember -- the same reason `genres` drops Hentai.
+        Ok(data
+            .tags
+            .into_iter()
+            .filter(|tag| !tag.is_adult)
+            .map(|tag| MediaTag {
+                name: tag.name,
+                category: tag.category,
+            })
+            .collect())
+    }
+
     async fn schedule(
         &self,
         from: i64,
@@ -457,6 +480,22 @@ fn map_scheduled_episode(wire: AiringScheduleWire) -> Option<ScheduledEpisode> {
 struct GenreData {
     #[serde(rename = "GenreCollection")]
     genres: Vec<String>,
+}
+
+/// The root `MediaTagCollection` field, a bare array of tag descriptors.
+#[derive(Deserialize)]
+struct TagData {
+    #[serde(rename = "MediaTagCollection", default)]
+    tags: Vec<TagWire>,
+}
+
+#[derive(Deserialize)]
+struct TagWire {
+    name: String,
+    #[serde(default)]
+    category: String,
+    #[serde(rename = "isAdult", default)]
+    is_adult: bool,
 }
 
 #[derive(Deserialize)]
@@ -897,6 +936,23 @@ mod tests {
         serde_json::json!({ "data": { "GenreCollection": genres } })
     }
 
+    /// The root `MediaTagCollection` payload shape. Each entry is
+    /// `(name, category, isAdult)`.
+    fn tag_response(tags: Vec<(&str, &str, bool)>) -> serde_json::Value {
+        let entries: Vec<serde_json::Value> = tags
+            .into_iter()
+            .map(|(name, category, is_adult)| {
+                serde_json::json!({
+                    "name": name,
+                    "category": category,
+                    "isAdult": is_adult,
+                })
+            })
+            .collect();
+
+        serde_json::json!({ "data": { "MediaTagCollection": entries } })
+    }
+
     /// One `airingSchedules` entry, reusing the standard media fixture so the
     /// nested shape stays in step with the media queries.
     fn schedule_entry(airing_at: i64, episode: u32) -> serde_json::Value {
@@ -1030,6 +1086,56 @@ mod tests {
         let genres = provider.genres().await.unwrap();
         assert_eq!(genres, vec!["Action", "Mecha"]);
         assert!(!genres.iter().any(|g| g.eq_ignore_ascii_case("Hentai")));
+    }
+
+    #[tokio::test]
+    async fn tags_carry_their_category() {
+        let (_server, provider) = provider_with(
+            tag_response(vec![
+                ("Isekai", "Theme-Fantasy", false),
+                ("School", "Setting-Scene", false),
+            ]),
+            200,
+        )
+        .await;
+
+        let tags = provider.tags().await.expect("tags should succeed");
+
+        // The category is what the filter UI groups by, so losing it would
+        // leave every tag in one undifferentiated list.
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].name, "Isekai");
+        assert_eq!(tags[0].category, "Theme-Fantasy");
+        assert_eq!(tags[1].category, "Setting-Scene");
+    }
+
+    /// Adult tags sit interleaved in the collection, not behind their own
+    /// field, so they have to be filtered out by flag.
+    #[tokio::test]
+    async fn tags_drop_the_adult_entries() {
+        let (_server, provider) = provider_with(
+            tag_response(vec![
+                ("Isekai", "Theme-Fantasy", false),
+                ("Nudity", "Sexual Content", true),
+            ]),
+            200,
+        )
+        .await;
+
+        let tags = provider.tags().await.unwrap();
+        assert_eq!(tags.len(), 1);
+        assert_eq!(tags[0].name, "Isekai");
+    }
+
+    /// The adult flag only arrives if it was asked for. Omitting it would leave
+    /// every entry deserialising as non-adult and let the adult tags through
+    /// while the filter above still looked correct.
+    #[tokio::test]
+    async fn tags_query_asks_for_the_adult_flag() {
+        let (_server, provider) =
+            provider_expecting("MediaTagCollection { name category isAdult }").await;
+
+        provider.tags().await.expect("tags should succeed");
     }
 
     /// Mount a mock that only answers when the request body contains

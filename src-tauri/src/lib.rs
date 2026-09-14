@@ -25,6 +25,7 @@ pub fn run() {
             commands::get_list,
             commands::get_browse,
             commands::get_genres,
+            commands::get_tags,
             commands::get_schedule,
             commands::get_anime,
         ])

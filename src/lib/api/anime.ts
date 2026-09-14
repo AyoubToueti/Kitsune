@@ -11,6 +11,7 @@ import type {
   AnimePage,
   BrowseQuery,
   ListFilter,
+  MediaTag,
   ScheduledEpisode,
 } from "$lib/types";
 
@@ -21,6 +22,7 @@ export const COMMANDS = {
   browse: "get_browse",
   byId: "get_anime",
   genres: "get_genres",
+  tags: "get_tags",
   schedule: "get_schedule",
 } as const;
 
@@ -77,6 +79,11 @@ export async function browseAnime(
 /** The genres available for browsing. */
 export async function getGenres(): Promise<string[]> {
   return invoke<string[]>(COMMANDS.genres);
+}
+
+/** The tags available for filtering, each with its grouping category. */
+export async function getTags(): Promise<MediaTag[]> {
+  return invoke<MediaTag[]>(COMMANDS.tags);
 }
 
 /**

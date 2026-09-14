@@ -211,6 +211,21 @@ pub struct StreamingEpisode {
     pub thumbnail: Option<String>,
 }
 
+/// A descriptor a provider associates with a work.
+///
+/// AniList keeps these separate from genres: a genre is a broad category
+/// (Action, Romance) while a tag is a specific attribute (Isekai, Time Loop).
+/// Each tag carries the category that groups it in a filter UI, so it travels
+/// as a pair rather than a bare string -- the frontend groups by category and
+/// would otherwise have nothing to group on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaTag {
+    pub name: String,
+    /// Grouping label, e.g. "Setting-Scene" or "Demographic".
+    pub category: String,
+}
+
 /// A work (anime now; movies and series later) as presented in the UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
