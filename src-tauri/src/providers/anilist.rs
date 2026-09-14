@@ -54,6 +54,45 @@ const MEDIA_FIELDS: &str = r#"
     seasonYear
 "#;
 
+/// Detail-only fields, added on top of [`MEDIA_FIELDS`] for the single-title
+/// lookup.
+///
+/// Kept apart because they are expensive and only the detail page can use them:
+/// `relations` is a graph traversal, `recommendations` runs its own paged
+/// sub-query, and a card has nowhere to render either. Sending them on every
+/// list query would multiply AniList's work for data the UI throws away.
+const MEDIA_DETAIL_FIELDS: &str = r#"
+    relations {
+      edges {
+        relationType
+        node {
+          id
+          type
+          format
+          status
+          episodes
+          title { romaji english }
+          coverImage { large }
+        }
+      }
+    }
+    recommendations(perPage: 10, sort: RATING_DESC) {
+      edges {
+        node {
+          rating
+          mediaRecommendation {
+            id
+            type
+            title { romaji english }
+            coverImage { large }
+            format
+          }
+        }
+      }
+    }
+    trailer { id site thumbnail }
+"#;
+
 /// An AniList GraphQL client.
 pub struct AniListProvider {
     http: reqwest::Client,
@@ -395,6 +434,7 @@ impl AnimeProvider for AniListProvider {
             query ($id: Int) {{
               Media(id: $id, type: ANIME) {{
                 {MEDIA_FIELDS}
+                {MEDIA_DETAIL_FIELDS}
               }}
             }}
             "#
@@ -2004,6 +2044,49 @@ mod tests {
         assert_eq!(anime.recommendations.len(), 1);
         assert_eq!(anime.recommendations[0].rating, 42);
         assert_eq!(anime.recommendations[0].anime.id, 16498);
+    }
+
+    /// The detail query must actually REQUEST the new fields.
+    ///
+    /// The mapping tests above feed a payload straight into `map_media`, so they
+    /// pass even when the query never asks AniList for the data -- which is
+    /// exactly the bug this guards. The request body is inspected directly.
+    #[tokio::test]
+    async fn by_id_query_requests_the_detail_fields() {
+        let response = serde_json::json!({ "data": { "Media": media_json() } });
+        let (server, provider) = provider_with(response, 200).await;
+
+        provider.by_id(21).await.unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert!(body.contains("relations"), "query should ask for relations");
+        assert!(
+            body.contains("recommendations"),
+            "query should ask for recommendations"
+        );
+        assert!(body.contains("trailer"), "query should ask for the trailer");
+    }
+
+    /// And a list query must NOT request them, since the payload would bloat.
+    #[tokio::test]
+    async fn trending_query_omits_the_detail_fields() {
+        let (server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+
+        provider.trending(1).await.unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert!(
+            !body.contains("recommendations"),
+            "list query should be lean"
+        );
     }
 
     #[tokio::test]
