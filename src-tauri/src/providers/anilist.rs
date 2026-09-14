@@ -21,6 +21,13 @@ use crate::types::{
 pub const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
 
 /// Fields shared by every media query, so the mapping code is written once.
+/// Weak taggings are noise: one user tagging an unrelated work is enough to
+/// match it, which is why an unfiltered `tag_in: [Isekai]` surfaced BLEACH.
+/// AniList's own UI exposes this as "minimum tag percentage", defaulting to
+/// 18, but 40 is where results actually stabilise -- measured: 40 and 60
+/// returned the same set while 18 still let the noise through.
+const MINIMUM_TAG_RANK: u32 = 40;
+
 const MEDIA_FIELDS: &str = r#"
     bannerImage
     duration
@@ -173,6 +180,19 @@ impl AnimeProvider for AniListProvider {
             filter.push_str(", format: $format");
             declarations.push("$format: MediaFormat");
             variables.insert("format".into(), serde_json::json!(format_literal(format)));
+        }
+
+        if !query.tags.is_empty() {
+            // The rank floor travels with the tags: it is only meaningful
+            // alongside `tag_in`, and sending it unconditionally would be a
+            // filter the caller never asked for.
+            filter.push_str(", tag_in: $tags, minimumTagRank: $minimumTagRank");
+            declarations.push("$tags: [String], $minimumTagRank: Int");
+            variables.insert("tags".into(), serde_json::json!(query.tags));
+            variables.insert(
+                "minimumTagRank".into(),
+                serde_json::json!(MINIMUM_TAG_RANK),
+            );
         }
 
         if let Some(status) = query.status {
@@ -750,7 +770,15 @@ mod tests {
             .expect("browse should succeed");
 
         let body = captured.lock().unwrap().clone();
-        for absent in ["genre_in", "search", "format:", "status:", "season:"] {
+        for absent in [
+            "genre_in",
+            "search",
+            "format:",
+            "status:",
+            "season:",
+            "tag_in",
+            "minimumTagRank",
+        ] {
             assert!(
                 !body.contains(absent),
                 "unset filter {absent} should not be sent; body was {body}"
@@ -776,9 +804,91 @@ mod tests {
             season_year: Some(2024),
             min_score: Some(70),
             sort: SortOption::Score,
+            tags: Vec::new(),
         };
 
         assert!(provider.browse(query, 1, 24).await.is_ok());
+    }
+
+    /// Tags travel as a variable and bring the rank floor with them. Without
+    /// the floor a single stray tagging is enough to match, which is why an
+    /// unfiltered `tag_in: [Isekai]` surfaced BLEACH.
+    #[tokio::test]
+    async fn browse_sends_tags_with_the_rank_floor() {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(200).set_body_json(browse_response(
+                    vec![media_json()],
+                    1,
+                    1,
+                    1,
+                ))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        let query = BrowseQuery {
+            tags: vec!["Isekai".into()],
+            ..BrowseQuery::default()
+        };
+
+        provider.browse(query, 1, 24).await.expect("should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(body.contains("tag_in: $tags"), "body was {body}");
+        assert!(
+            body.contains("minimumTagRank: $minimumTagRank"),
+            "the rank floor must travel with the tags; body was {body}"
+        );
+        // AniList rejects the whole query when a variable is used but not
+        // declared, so the declaration matters as much as the filter.
+        assert!(
+            body.contains("$tags: [String], $minimumTagRank: Int"),
+            "both variables must be declared; body was {body}"
+        );
+        assert!(body.contains("\"Isekai\""), "body was {body}");
+    }
+
+    /// The rank floor is only meaningful next to `tag_in`, so a query without
+    /// tags must not carry it.
+    #[tokio::test]
+    async fn browse_omits_the_rank_floor_without_tags() {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(200).set_body_json(browse_response(
+                    vec![media_json()],
+                    1,
+                    1,
+                    1,
+                ))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        let query = BrowseQuery {
+            genres: vec!["Action".into()],
+            ..BrowseQuery::default()
+        };
+
+        provider.browse(query, 1, 24).await.expect("should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(!body.contains("minimumTagRank"), "body was {body}");
+        assert!(!body.contains("tag_in"), "body was {body}");
     }
 
     /// Enum filters go out as AniList's own literals, mapped from our enum

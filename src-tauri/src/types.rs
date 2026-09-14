@@ -136,8 +136,20 @@ pub struct BrowseQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<String>,
     /// Genres to require.
+    ///
+    /// Combined with AND, not OR: a provider returns only works carrying
+    /// every listed genre.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub genres: Vec<String>,
+    /// Tags to require, by name. Also combined with AND.
+    ///
+    /// These are the provider's tag namespace, not its genres: AniList keeps
+    /// "Isekai" and "School" as tags while "Action" and "Mecha" are genres.
+    /// Sending a name the provider does not know is not an error -- it simply
+    /// matches nothing -- so callers must only send names that came from
+    /// [`MediaTag`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<FormatFilter>,
     #[serde(skip_serializing_if = "Option::is_none")]
