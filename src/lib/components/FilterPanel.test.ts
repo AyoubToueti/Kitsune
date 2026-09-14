@@ -2,9 +2,16 @@ import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/svelte";
 
 import FilterPanel from "./FilterPanel.svelte";
-import type { BrowseQuery } from "$lib/types";
+import type { BrowseQuery, MediaTag } from "$lib/types";
 
 const GENRES = ["Action", "Comedy", "Slice of Life"];
+
+const TAGS: MediaTag[] = [
+  { name: "Isekai", category: "Theme-Fantasy" },
+  { name: "Magic", category: "Theme-Fantasy" },
+  { name: "School", category: "Setting-Scene" },
+  { name: "Shounen", category: "Demographic" },
+];
 
 /** The form element, which carries the submit target. */
 function form(): HTMLElement {
@@ -104,6 +111,74 @@ describe("FilterPanel", () => {
     for (const label of ["TV", "Movie", "OVA", "ONA", "Special", "Music"]) {
       expect(screen.getByRole("option", { name: label })).toBeInTheDocument();
     }
+  });
+
+  it("renders no tag section when the catalogue is empty", () => {
+    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
+
+    expect(screen.queryByRole("group", { name: "Tags" })).toBeNull();
+  });
+
+  it("groups tags under their category", () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    // Categories arrive as provider keys and are humanised for display.
+    for (const label of ["Theme / Fantasy", "Setting / Scene", "Demographic"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it("renders a checkbox per tag", () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    for (const tag of TAGS) {
+      expect(screen.getByRole("checkbox", { name: tag.name })).toBeInTheDocument();
+    }
+  });
+
+  it("checks the tags that are applied", () => {
+    render(FilterPanel, {
+      props: {
+        genres: GENRES,
+        tags: TAGS,
+        current: { tags: ["Isekai"], sort: "popularity" },
+      },
+    });
+
+    expect(screen.getByRole("checkbox", { name: "Isekai" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Magic" })).not.toBeChecked();
+  });
+
+  /// A collapsed section hides its chips, so an applied tag inside one would be
+  /// invisible: the user would see an active filter with no way to spot it.
+  it("expands the category holding an applied tag", () => {
+    render(FilterPanel, {
+      props: {
+        genres: GENRES,
+        tags: TAGS,
+        current: { tags: ["School"], sort: "popularity" },
+      },
+    });
+
+    const section = screen.getByText("Setting / Scene").closest("details");
+    expect(section).toHaveAttribute("open");
+  });
+
+  it("leaves categories without applied tags collapsed", () => {
+    render(FilterPanel, {
+      props: {
+        genres: GENRES,
+        tags: TAGS,
+        current: { tags: ["School"], sort: "popularity" },
+      },
+    });
+
+    const section = screen.getByText("Theme / Fantasy").closest("details");
+    expect(section).not.toHaveAttribute("open");
   });
 
   it("has a submit button", () => {

@@ -1,13 +1,13 @@
 <script lang="ts">
   import { page } from "$app/state";
 
-  import { browseAnime, errorMessage, getGenres } from "$lib/api/anime";
+  import { browseAnime, errorMessage, getGenres, getTags } from "$lib/api/anime";
   import AnimeGrid from "$lib/components/AnimeGrid.svelte";
   import FilterPanel from "$lib/components/FilterPanel.svelte";
   import Pagination from "$lib/components/Pagination.svelte";
   import { filterHref, parseBrowseQuery } from "$lib/filter";
   import { clampPage } from "$lib/pagination";
-  import type { AnimePage } from "$lib/types";
+  import type { AnimePage, MediaTag } from "$lib/types";
 
   const PER_PAGE = 30;
 
@@ -25,10 +25,11 @@
 
   let result = $state<AnimePage | null>(null);
   let genres = $state<string[]>([]);
+  let tags = $state<MediaTag[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
 
-  // Fetched once: the genre list does not change with the filters.
+  // Fetched once: neither list changes with the filters.
   getGenres()
     .then((found) => {
       genres = found;
@@ -37,6 +38,16 @@
       // A missing genre list means no checkboxes, not a broken page. The other
       // filters still work.
       genres = [];
+    });
+
+  getTags()
+    .then((found) => {
+      tags = found;
+    })
+    .catch(() => {
+      // Same reasoning as genres: a missing tag list is a smaller panel, not
+      // a broken page.
+      tags = [];
     });
 
   $effect(() => {
@@ -77,7 +88,7 @@
 
 <h1 class="mb-4 text-lg font-semibold tracking-tight">Filter anime</h1>
 
-<FilterPanel {genres} current={query} />
+<FilterPanel {genres} {tags} current={query} />
 
 <div class="mt-8">
   {#if loading}

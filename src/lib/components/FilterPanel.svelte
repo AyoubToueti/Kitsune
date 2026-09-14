@@ -9,26 +9,53 @@
     SORT_LABELS,
     STATUS_LABELS,
     STATUS_VALUES,
+    categoryLabel,
+    groupTagsByCategory,
     yearOptions,
   } from "$lib/filter";
-  import type { BrowseQuery } from "$lib/types";
+  import type { BrowseQuery, MediaTag } from "$lib/types";
 
   let {
     genres,
+    tags = [],
     current,
   }: {
     /** Genre names to offer, from the provider. */
     genres: string[];
+    /**
+     * Tags to offer, each with its grouping category.
+     *
+     * Optional so the panel still renders when the catalogue request fails: a
+     * missing tag list is a smaller panel, not a broken page.
+     */
+    tags?: MediaTag[];
     /** The filters currently applied, so the controls reflect them. */
     current: BrowseQuery;
   } = $props();
 
   const years = yearOptions();
   const selectedGenres = $derived(new Set(current.genres ?? []));
+  const selectedTags = $derived(new Set(current.tags ?? []));
+
+  const tagGroups = $derived(groupTagsByCategory(tags));
+
+  /**
+   * Whether a category should start expanded.
+   *
+   * A group holding an applied tag opens, otherwise the user cannot see which
+   * tags are active without hunting through collapsed sections.
+   */
+  function startsOpen(names: string[]): boolean {
+    return names.some((name) => selectedTags.has(name));
+  }
 
   /** Shared styling for the select controls. */
   const selectClass =
     "rounded-lg border border-border-subtle bg-surface-hover px-3 py-1.5 text-sm text-ink focus:ring-2 focus:ring-accent focus:outline-none";
+
+  /** Shared styling for a genre or tag checkbox chip. */
+  const chipClass =
+    "cursor-pointer rounded-full border border-border-subtle px-3 py-1 text-xs transition-colors has-checked:border-accent has-checked:bg-accent has-checked:text-white hover:text-ink";
 </script>
 
 <!-- A plain GET form rather than a JS submit handler. The browser builds the
@@ -135,9 +162,7 @@
         {#each genres as genre (genre)}
           <!-- Checkboxes rather than a multi-select: every genre is visible at
                once, and the browser sends repeated `genre` parameters. -->
-          <label
-            class="cursor-pointer rounded-full border border-border-subtle px-3 py-1 text-xs transition-colors has-checked:border-accent has-checked:bg-accent has-checked:text-white hover:text-ink"
-          >
+          <label class={chipClass}>
             <input
               type="checkbox"
               name="genre"
@@ -147,6 +172,45 @@
             />
             {genre}
           </label>
+        {/each}
+      </div>
+    </fieldset>
+  {/if}
+
+  {#if tagGroups.length}
+    <fieldset class="mt-4">
+      <legend class="mb-2 text-xs text-ink-faint">Tags</legend>
+
+      <!-- Native <details> rather than a JS toggle: it collapses without
+           JavaScript, and a closed <details> still submits its inputs because
+           they stay in the DOM -- only their rendering is hidden. -->
+      <div class="flex flex-col gap-2">
+        {#each tagGroups as group (group.category)}
+          <details
+            open={startsOpen(group.names)}
+            class="rounded-lg border border-border-subtle px-3 py-2"
+          >
+            <summary
+              class="cursor-pointer text-xs font-medium text-ink-muted transition-colors hover:text-ink"
+            >
+              {categoryLabel(group.category)}
+            </summary>
+
+            <div class="mt-2 flex flex-wrap gap-2">
+              {#each group.names as name (name)}
+                <label class={chipClass}>
+                  <input
+                    type="checkbox"
+                    name="tag"
+                    value={name}
+                    checked={selectedTags.has(name)}
+                    class="sr-only"
+                  />
+                  {name}
+                </label>
+              {/each}
+            </div>
+          </details>
         {/each}
       </div>
     </fieldset>
