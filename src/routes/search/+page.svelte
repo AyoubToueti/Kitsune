@@ -1,13 +1,12 @@
 <script lang="ts">
   import { page } from "$app/state";
 
-  import { browseAnime, errorMessage, getGenres, getTags } from "$lib/api/anime";
+  import { browseAnime, getGenres, getTags } from "$lib/api/anime";
   import ActiveFilters from "$lib/components/ActiveFilters.svelte";
   import AnimeGrid from "$lib/components/AnimeGrid.svelte";
   import FilterBar from "$lib/components/FilterBar.svelte";
-  import Pagination from "$lib/components/Pagination.svelte";
-  import { filterHref, parseBrowseQuery } from "$lib/filter";
-  import { clampPage } from "$lib/pagination";
+  import { parseBrowseQuery } from "$lib/filter";
+  import { createInfiniteScroll } from "$lib/infinite-scroll.svelte";
   import type { AnimePage, MediaTag } from "$lib/types";
 
   /** AniList caps perPage at 50; the backend clamps anything larger. */
@@ -27,23 +26,37 @@
   /** The filters applied on top of the search, read from the same URL. */
   const filters = $derived(parseBrowseQuery(params));
 
-  /**
-   * The requested page, sanitised to a positive integer.
-   *
-   * `Number("abc")` is NaN and `Number("0")` is 0; both mean "first page" here.
-   */
-  const requestedPage = $derived(
-    Math.max(1, Math.floor(Number(params.get("page") ?? "1")) || 1),
-  );
-
-  let result = $state<AnimePage | null>(null);
   let genres = $state<string[]>([]);
   let tags = $state<MediaTag[]>([]);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
-  // Distinguishes "nothing yet" from "searched and found nothing", which need
-  // different copy.
-  let searched = $state("");
+
+  /** An empty result, used when there is no term to search for. */
+  function emptyPage(): AnimePage {
+    return {
+      items: [],
+      pageInfo: { total: 0, currentPage: 1, lastPage: 1, hasNextPage: false },
+    };
+  }
+
+  /**
+   * Results, grown a page at a time as the reader scrolls.
+   *
+   * The key folds in the term and the filters, so changing either resets the
+   * list and refetches from page one. An empty term fetches nothing: the page
+   * shows its prompt instead, and `browseAnime` is never called without a term.
+   *
+   * Relevance first, always: a text search should return the closest matches,
+   * not the most popular titles that happen to contain the words. The panel
+   * therefore does not offer a sort control here.
+   */
+  const scroll = createInfiniteScroll(
+    () => JSON.stringify({ term, filters }),
+    (target) =>
+      term === ""
+        ? Promise.resolve(emptyPage())
+        : browseAnime({ ...filters, search: term, sort: "searchMatch" }, target, PER_PAGE),
+  );
+
+  const { sentinel } = scroll;
 
   getGenres()
     .then((found) => {
@@ -63,65 +76,13 @@
       tags = [];
     });
 
-  $effect(() => {
-    const q = term;
-    const current = filters;
-    const requested = requestedPage;
-
-    if (q === "") {
-      result = null;
-      error = null;
-      loading = false;
-      searched = "";
-      return;
-    }
-
-    // Guards against a stale response overwriting a newer one when the user
-    // searches or re-filters quickly.
-    let cancelled = false;
-    loading = true;
-    error = null;
-
-    // Relevance first, always: a text search should return the closest matches,
-    // not the most popular titles that happen to contain the words. The panel
-    // therefore does not offer a sort control here.
-    browseAnime({ ...current, search: q, sort: "searchMatch" }, requested, PER_PAGE)
-      .then((found) => {
-        if (cancelled) return;
-        result = found;
-        searched = q;
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        error = errorMessage(err);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        loading = false;
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  });
-
-  /**
-   * Build a page link that keeps both the term and the filters.
-   *
-   * Routed through `filterHref` so the repeated parameters (genre, tag,
-   * exclude_tag) survive paging rather than only the first of each.
-   */
-  function hrefFor(target: number): string {
-    const last = result?.pageInfo.lastPage ?? 1;
-    return filterHref(params, clampPage(target, last), "/search");
-  }
 </script>
 
 <!-- Echoes the term only when there are results to head. The empty state names
      the term itself, and two elements carrying it would read as a stutter. -->
 <h1 class="mb-4 text-lg font-semibold tracking-tight">
-  {#if result && result.items.length > 0}
-    Results for “{searched}”
+  {#if scroll.items.length > 0}
+    Results for “{term}”
   {:else}
     Search anime
   {/if}
@@ -149,21 +110,44 @@
     <p class="py-16 text-center text-ink-muted">
       Type something in the search box above.
     </p>
-  {:else if loading}
+  {:else if scroll.loading}
     <p class="py-16 text-center text-ink-muted">Searching…</p>
-  {:else if error}
+  {:else if scroll.items.length === 0 && scroll.error}
     <div class="py-16 text-center">
       <p class="text-ink">Could not run that search.</p>
-      <p class="mt-2 text-sm text-ink-faint">{error}</p>
+      <p class="mt-2 text-sm text-ink-faint">{scroll.error}</p>
+      <button
+        type="button"
+        onclick={scroll.retry}
+        class="mt-4 rounded-full bg-surface-hover px-4 py-2 text-sm text-ink hover:text-ink-muted"
+      >
+        Try again
+      </button>
     </div>
-  {:else if result && result.items.length === 0}
-    <p class="py-16 text-center text-ink-muted">No results for “{searched}”.</p>
-  {:else if result}
-    <AnimeGrid anime={result.items} />
-    <Pagination
-      current={result.pageInfo.currentPage}
-      last={result.pageInfo.lastPage}
-      {hrefFor}
-    />
+  {:else if scroll.items.length === 0}
+    <p class="py-16 text-center text-ink-muted">No results for “{term}”.</p>
+  {:else}
+    <AnimeGrid anime={scroll.items} />
+
+    {#if scroll.loadingMore}
+      <p class="py-6 text-center text-sm text-ink-faint">Loading more…</p>
+    {/if}
+
+    {#if scroll.error}
+      <div class="py-6 text-center">
+        <p class="text-sm text-ink-faint">{scroll.error}</p>
+        <button
+          type="button"
+          onclick={scroll.retry}
+          class="mt-3 rounded-full bg-surface-hover px-4 py-2 text-sm text-ink hover:text-ink-muted"
+        >
+          Try again
+        </button>
+      </div>
+    {:else if scroll.hasMore}
+      <!-- Triggers the next page as it scrolls into view. A hairline so it does
+           not shift the layout when items are appended above it. -->
+      <div use:sentinel data-testid="scroll-sentinel" class="h-px"></div>
+    {/if}
   {/if}
 </div>

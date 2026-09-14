@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/svelte";
 
 import type { Anime, AnimePage } from "$lib/types";
@@ -65,9 +65,35 @@ function withQuery(q: string, page?: number) {
   setUrl(new URL(`http://localhost/search?q=${encodeURIComponent(q)}${suffix}`));
 }
 
+/**
+ * jsdom has no IntersectionObserver, so the sentinel is inert by default. This
+ * stand-in records the callbacks so a test can fire the observer and drive the
+ * load-more path exactly as scrolling would.
+ */
+const observerCallbacks: Array<(entries: { isIntersecting: boolean }[]) => void> = [];
+
+function installObserver() {
+  (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver = class {
+    constructor(cb: (entries: { isIntersecting: boolean }[]) => void) {
+      observerCallbacks.push(cb);
+    }
+    observe() {}
+    disconnect() {}
+  };
+}
+
+function scrollToBottom() {
+  for (const cb of observerCallbacks) cb([{ isIntersecting: true }]);
+}
+
 beforeEach(() => {
   browseAnimeMock.mockReset();
+  observerCallbacks.length = 0;
   setUrl(new URL("http://localhost/search"));
+});
+
+afterEach(() => {
+  delete (globalThis as { IntersectionObserver?: unknown }).IntersectionObserver;
 });
 
 describe("search page", () => {
@@ -111,20 +137,11 @@ describe("search page", () => {
     );
   });
 
-  it("requests the page named in the URL", async () => {
+  it("starts from the first page whatever the URL says", async () => {
+    // The list is grown by scrolling, so `?page=3` has no meaning here: a
+    // refresh starts from the top rather than restoring a scroll position.
     withQuery("naruto", 3);
     browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
-
-    render(Page);
-    await screen.findByRole("heading", { name: /results for/i });
-
-    expect(browseAnimeMock).toHaveBeenCalledWith(expect.anything(), 3, 30);
-  });
-
-  it("treats a nonsense page as the first page", async () => {
-    // A hand-edited ?page=abc must not send NaN to the backend.
-    setUrl(new URL("http://localhost/search?q=a&page=abc"));
-    browseAnimeMock.mockResolvedValue(page([anime(1, "A")]));
 
     render(Page);
     await screen.findByRole("heading", { name: /results for/i });
@@ -173,48 +190,96 @@ describe("search page", () => {
     expect(await screen.findByText(/429/)).toBeInTheDocument();
   });
 
-  // --- pagination ---------------------------------------------------------
+  // --- infinite scroll ------------------------------------------------------
 
-  it("shows no pagination for a single page of results", async () => {
+  it("renders a sentinel when there are more pages", async () => {
+    withQuery("a");
+    browseAnimeMock.mockResolvedValue(
+      page([anime(1, "A")], { total: 60, currentPage: 1, lastPage: 2, hasNextPage: true }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    expect(screen.getByTestId("scroll-sentinel")).toBeInTheDocument();
+  });
+
+  it("renders no sentinel on the last page", async () => {
     withQuery("a");
     browseAnimeMock.mockResolvedValue(page([anime(1, "A")]));
 
     render(Page);
     await screen.findByRole("heading", { name: /results for/i });
 
-    expect(screen.queryByTestId("pagination")).toBeNull();
+    // Nothing left to load, so there is nothing to trigger.
+    expect(screen.queryByTestId("scroll-sentinel")).toBeNull();
   });
 
-  it("offers pagination when there are more pages", async () => {
+  it("appends the next page when the sentinel scrolls into view", async () => {
+    installObserver();
     withQuery("a");
-    browseAnimeMock.mockResolvedValue(
-      page([anime(1, "A")], { total: 90, currentPage: 1, lastPage: 3, hasNextPage: true }),
-    );
+    browseAnimeMock
+      .mockResolvedValueOnce(
+        page([anime(1, "Alpha")], {
+          total: 60,
+          currentPage: 1,
+          lastPage: 2,
+          hasNextPage: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        page([anime(2, "Beta")], {
+          total: 60,
+          currentPage: 2,
+          lastPage: 2,
+          hasNextPage: false,
+        }),
+      );
 
     render(Page);
-    await screen.findByRole("heading", { name: /results for/i });
+    await screen.findByText("Alpha");
 
-    expect(screen.getByTestId("pagination")).toBeInTheDocument();
+    scrollToBottom();
+
+    // The earlier page stays: the list grows rather than jumping.
+    expect(await screen.findByText("Beta")).toBeInTheDocument();
+    expect(screen.getByText("Alpha")).toBeInTheDocument();
+    expect(browseAnimeMock).toHaveBeenLastCalledWith(expect.anything(), 2, 30);
   });
 
-  it("page links keep the search term", async () => {
+  it("keeps the search term when loading the next page", async () => {
+    installObserver();
     withQuery("one piece");
-    browseAnimeMock.mockResolvedValue(
-      page([anime(1, "A")], { total: 90, currentPage: 1, lastPage: 3, hasNextPage: true }),
-    );
+    browseAnimeMock
+      .mockResolvedValueOnce(
+        page([anime(1, "Alpha")], {
+          total: 60,
+          currentPage: 1,
+          lastPage: 2,
+          hasNextPage: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        page([anime(2, "Beta")], {
+          total: 60,
+          currentPage: 2,
+          lastPage: 2,
+          hasNextPage: false,
+        }),
+      );
 
     render(Page);
-    await screen.findByRole("heading", { name: /results for/i });
+    await screen.findByText("Alpha");
 
-    // Losing the query would turn paging into a search for nothing.
-    const link = screen.getByRole("link", { name: "Next page" });
-    const href = link.getAttribute("href") ?? "";
+    scrollToBottom();
 
-    // Assert on the decoded value rather than the spelling: URLSearchParams
-    // writes a space as `+` where encodeURIComponent writes `%20`, and both
-    // parse back to the same term.
-    expect(new URLSearchParams(href.split("?")[1]).get("q")).toBe("one piece");
-    expect(href).toContain("page=2");
+    // Losing the query would turn the second page into a search for nothing.
+    await screen.findByText("Beta");
+    expect(browseAnimeMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: "one piece" }),
+      2,
+      30,
+    );
   });
 
   // --- filters on top of the search -----------------------------------------
@@ -303,14 +368,11 @@ describe("search page", () => {
     expect(href).toContain("q=naruto");
   });
 
-  it("marks the requested page as current", async () => {
-    withQuery("a", 2);
-    browseAnimeMock.mockResolvedValue(
-      page([anime(1, "A")], { total: 90, currentPage: 2, lastPage: 3, hasNextPage: true }),
-    );
-
+  it("does not query for an empty term", () => {
     render(Page);
 
-    expect(await screen.findByTestId("current-page")).toHaveTextContent("2");
+    // The key folds in the term; with none, the composable resolves an empty
+    // page itself rather than asking the backend for nothing.
+    expect(browseAnimeMock).not.toHaveBeenCalled();
   });
 });
