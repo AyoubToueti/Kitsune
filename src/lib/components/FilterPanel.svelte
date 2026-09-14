@@ -20,6 +20,9 @@
     tags = [],
     current,
     base = "/filter",
+    showSearch = true,
+    showSort = true,
+    extraParams = {},
   }: {
     /** Genre names to offer, from the provider. */
     genres: string[];
@@ -39,6 +42,29 @@
      * to the wrong one would drop the search term or the filters.
      */
     base?: string;
+    /**
+     * Whether to render the free-text search field.
+     *
+     * /search hides it. The navbar's search box owns the term there, and two
+     * inputs writing different parameters to one URL would lose it.
+     */
+    showSearch?: boolean;
+    /**
+     * Whether to offer the sort options.
+     *
+     * /search hides them. A text search is ranked by relevance, and this panel
+     * deliberately does not offer relevance -- it means nothing without a term,
+     * so the filter page must not imply otherwise.
+     */
+    showSort?: boolean;
+    /**
+     * Parameters to carry through submission without showing a control.
+     *
+     * /search's `q` is the term the user already typed. It is not a filter, but
+     * a GET submit replaces the whole query string, so it has to be re-sent or
+     * the search is silently reset by changing any filter.
+     */
+    extraParams?: Record<string, string>;
   } = $props();
 
   /**
@@ -184,17 +210,19 @@
   <h2 class="mb-3 text-sm font-semibold tracking-tight text-accent">Filter</h2>
 
   <div class="flex flex-wrap items-end gap-3">
-    <label class="flex flex-col gap-1 text-xs text-ink-faint">
-      Search
-      <input
-        type="search"
-        name="search"
-        value={current.search ?? ""}
-        placeholder="Any"
-        autocomplete="off"
-        class={selectClass}
-      />
-    </label>
+    {#if showSearch}
+      <label class="flex flex-col gap-1 text-xs text-ink-faint">
+        Search
+        <input
+          type="search"
+          name="search"
+          value={current.search ?? ""}
+          placeholder="Any"
+          autocomplete="off"
+          class={selectClass}
+        />
+      </label>
+    {/if}
 
     <label class="flex flex-col gap-1 text-xs text-ink-faint">
       Type
@@ -256,17 +284,26 @@
       </select>
     </label>
 
-    <label class="flex flex-col gap-1 text-xs text-ink-faint">
-      Sort
-      <select name="sort" class={selectClass}>
-        {#each FILTER_SORT_VALUES as value (value)}
-          <option value={value} selected={current.sort === value}>
-            {SORT_LABELS[value]}
-          </option>
-        {/each}
-      </select>
-    </label>
+    {#if showSort}
+      <label class="flex flex-col gap-1 text-xs text-ink-faint">
+        Sort
+        <select name="sort" class={selectClass}>
+          {#each FILTER_SORT_VALUES as value (value)}
+            <option value={value} selected={current.sort === value}>
+              {SORT_LABELS[value]}
+            </option>
+          {/each}
+        </select>
+      </label>
+    {/if}
   </div>
+
+  <!-- Carried through submission without a control. A GET submit replaces the
+       whole query string, so anything not re-sent here is dropped -- which for
+       /search would silently reset the term on the next filter change. -->
+  {#each Object.entries(extraParams) as [name, value] (name)}
+    <input type="hidden" name={name} value={value} />
+  {/each}
 
   {#if hasCatalogue}
     <div class="mt-4 border-t border-border-subtle pt-4">

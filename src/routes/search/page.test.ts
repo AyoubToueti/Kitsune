@@ -208,8 +208,97 @@ describe("search page", () => {
 
     // Losing the query would turn paging into a search for nothing.
     const link = screen.getByRole("link", { name: "Next page" });
-    expect(link.getAttribute("href")).toContain("q=one%20piece");
-    expect(link.getAttribute("href")).toContain("page=2");
+    const href = link.getAttribute("href") ?? "";
+
+    // Assert on the decoded value rather than the spelling: URLSearchParams
+    // writes a space as `+` where encodeURIComponent writes `%20`, and both
+    // parse back to the same term.
+    expect(new URLSearchParams(href.split("?")[1]).get("q")).toBe("one piece");
+    expect(href).toContain("page=2");
+  });
+
+  // --- filters on top of the search -----------------------------------------
+
+  it("carries the term through filter submission", async () => {
+    withQuery("naruto");
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    // A GET submit replaces the whole query string, so if the term is not
+    // re-sent as a hidden field, changing any filter would silently wipe it.
+    const data = new FormData(screen.getByTestId("filter-form") as HTMLFormElement);
+    expect(data.get("q")).toBe("naruto");
+  });
+
+  it("does not render its own search field", async () => {
+    withQuery("naruto");
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
+
+    render(Page);
+
+    // The navbar's search box owns the term; two boxes writing different
+    // parameters to one URL would lose it.
+    expect(screen.queryByLabelText("Search")).toBeNull();
+  });
+
+  it("does not render sort options", async () => {
+    withQuery("naruto");
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
+
+    render(Page);
+
+    // A text search is ranked by relevance, and the panel deliberately does
+    // not offer relevance -- so it must not offer any other order either.
+    expect(screen.queryByLabelText("Sort")).toBeNull();
+  });
+
+  it("applies a tag filter alongside the search term", async () => {
+    // Built directly rather than through `withQuery`, which encodes its whole
+    // argument -- turning `&` into literal text and hiding the filter.
+    setUrl(new URL("http://localhost/search?q=naruto&tag=Isekai"));
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    // Both must reach the backend: the term AND the filter, with relevance
+    // still winning the ordering.
+    expect(browseAnimeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ search: "naruto", tags: ["Isekai"] }),
+      1,
+      30,
+    );
+  });
+
+  it("shows a pill for an applied tag", async () => {
+    setUrl(new URL("http://localhost/search?q=naruto&tag=Isekai"));
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    expect(
+      screen.getByRole("link", { name: /remove isekai filter/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("links filter removal back to /search", async () => {
+    setUrl(new URL("http://localhost/search?q=naruto&tag=Isekai"));
+    browseAnimeMock.mockResolvedValue(page([anime(1, "Naruto")]));
+
+    render(Page);
+    await screen.findByRole("heading", { name: /results for/i });
+
+    const href =
+      screen
+        .getByRole("link", { name: /remove isekai filter/i })
+        .getAttribute("href") ?? "";
+
+    // Removing a filter must not bounce the user to /filter and lose the term.
+    expect(href.startsWith("/search")).toBe(true);
+    expect(href).toContain("q=naruto");
   });
 
   it("marks the requested page as current", async () => {
