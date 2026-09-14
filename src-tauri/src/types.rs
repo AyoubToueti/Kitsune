@@ -290,6 +290,12 @@ pub struct Anime {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season_year: Option<u32>,
+    /// Release season in the provider's own wording, e.g. "FALL".
+    ///
+    /// Only meaningful alongside `season_year`, and providers may report one
+    /// without the other, so neither is required.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season: Option<String>,
     /// Official places to watch this legally, as reported by the provider.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub streaming_episodes: Vec<StreamingEpisode>,
@@ -376,6 +382,7 @@ mod tests {
             average_score: Some(88),
             popularity: Some(250_000),
             status: Some("RELEASING".into()),
+            season: Some("FALL".into()),
             season_year: Some(1999),
             streaming_episodes: vec![StreamingEpisode {
                 title: Some("Episode 1".into()),

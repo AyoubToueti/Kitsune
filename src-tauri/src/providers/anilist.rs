@@ -49,6 +49,7 @@ const MEDIA_FIELDS: &str = r#"
     genres
     averageScore
     status
+    season
     seasonYear
 "#;
 
@@ -619,6 +620,8 @@ struct Media {
     average_score: Option<u8>,
     #[serde(default)]
     status: Option<String>,
+    #[serde(default)]
+    season: Option<String>,
     #[serde(rename = "seasonYear", default)]
     season_year: Option<u32>,
 }
@@ -676,6 +679,7 @@ fn map_media(media: Media) -> Anime {
         average_score: media.average_score,
         popularity: media.popularity,
         status: non_empty(media.status),
+        season: non_empty(media.season),
         season_year: media.season_year,
         streaming_episodes: media
             .streaming_episodes
@@ -1493,6 +1497,7 @@ mod tests {
         media["duration"] = serde_json::json!(24);
         media["format"] = serde_json::json!("TV");
         media["popularity"] = serde_json::json!(250000);
+        media["season"] = serde_json::json!("FALL");
         media["streamingEpisodes"] = serde_json::json!([
             {
                 "title": "Episode 1",
@@ -1519,6 +1524,9 @@ mod tests {
         assert_eq!(first.duration_minutes, Some(24));
         assert_eq!(first.format.as_deref(), Some("TV"));
         assert_eq!(first.popularity, Some(250_000));
+        // The season is a separate field from the year: AniList reports them
+        // independently, and the home page renders them as one column.
+        assert_eq!(first.season.as_deref(), Some("FALL"));
     }
 
     #[tokio::test]
