@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 
 import type { Anime, AnimePage } from "$lib/types";
 
@@ -225,6 +225,8 @@ describe("search page", () => {
 
     render(Page);
     await screen.findByRole("heading", { name: /results for/i });
+    // The form only exists once the dropdown is open.
+    await fireEvent.click(screen.getByTestId("open-filters"));
 
     // A GET submit replaces the whole query string, so if the term is not
     // re-sent as a hidden field, changing any filter would silently wipe it.

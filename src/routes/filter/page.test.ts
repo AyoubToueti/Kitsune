@@ -161,8 +161,10 @@ describe("filter page", () => {
   it("loads the genre list for the panel", async () => {
     render(Page);
 
-    // Genres live inside the catalogue, which starts collapsed, so the toggle
-    // has to be pressed before they exist in the DOM.
+    // The panel lives in the dropdown, and the genres live in the catalogue
+    // inside it, which starts collapsed. Both disclosures have to be opened
+    // before the checkboxes exist in the DOM.
+    await fireEvent.click(await screen.findByTestId("open-filters"));
     await fireEvent.click(await screen.findByTestId("toggle-catalogue"));
 
     expect(
@@ -174,6 +176,7 @@ describe("filter page", () => {
     getGenresMock.mockRejectedValue("nope");
 
     render(Page);
+    await fireEvent.click(await screen.findByTestId("open-filters"));
 
     // No checkboxes, but the form is usable.
     expect(await screen.findByTestId("filter-form")).toBeInTheDocument();

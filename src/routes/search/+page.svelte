@@ -4,7 +4,7 @@
   import { browseAnime, errorMessage, getGenres, getTags } from "$lib/api/anime";
   import ActiveFilters from "$lib/components/ActiveFilters.svelte";
   import AnimeGrid from "$lib/components/AnimeGrid.svelte";
-  import FilterPanel from "$lib/components/FilterPanel.svelte";
+  import FilterBar from "$lib/components/FilterBar.svelte";
   import Pagination from "$lib/components/Pagination.svelte";
   import { filterHref, parseBrowseQuery } from "$lib/filter";
   import { clampPage } from "$lib/pagination";
@@ -129,7 +129,7 @@
 
 <!-- The term is not shown as a field: the navbar's search box already owns it.
      It rides along as a hidden parameter so changing a filter does not wipe it. -->
-<FilterPanel
+<FilterBar
   {genres}
   {tags}
   current={filters}
