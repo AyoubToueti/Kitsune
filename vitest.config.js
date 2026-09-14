@@ -18,6 +18,11 @@ export default defineConfig({
       "$app/state": fileURLToPath(
         new URL("./src/test/app-state-stub.ts", import.meta.url),
       ),
+      // Same reasoning: `goto` is virtual too, and a spec asserting that an
+      // episode click navigates needs a seam to observe it.
+      "$app/navigation": fileURLToPath(
+        new URL("./src/test/app-navigation-stub.ts", import.meta.url),
+      ),
     },
   },
   test: {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { goto } from "$app/navigation";
   import { page } from "$app/state";
 
   import { errorMessage, getAnime } from "$lib/api/anime";
@@ -55,6 +56,18 @@
   const backdrop = $derived(
     anime ? (anime.bannerImage ?? anime.coverImage) : null,
   );
+
+  /**
+   * Open the watch page for an episode.
+   *
+   * A named function rather than an inline arrow: the template narrows `anime`
+   * to non-null, but that narrowing does not survive into a callback, so the
+   * guard has to live inside the body.
+   */
+  function watchEpisode(index: number): void {
+    if (!anime) return;
+    void goto(`/watch/${anime.id}?ep=${index}`);
+  }
 </script>
 
 {#if loading}
@@ -123,7 +136,7 @@
       {#if anime.streamingEpisodes.length > 0}
         <!-- Prefer the thumbnail grid: it is the richer view and the data is
              already there. -->
-        <EpisodeList episodes={anime.streamingEpisodes} />
+        <EpisodeList episodes={anime.streamingEpisodes} onSelect={watchEpisode} />
       {:else}
         <!-- No streaming data, so fall back to the inert numbered grid the page
              used before, which at least shows the episode count. -->

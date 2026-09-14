@@ -1,5 +1,6 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
+  import { episodeNumber, indexOfEpisode } from "$lib/episode";
   import type { StreamingEpisode } from "$lib/types";
 
   let {
@@ -44,31 +45,6 @@
   }
 
   /**
-   * The episode number an entry represents, when one can be told.
-   *
-   * The provider sends no numeric field, so the number has to be read out of
-   * the title ("Episode 12 - Name") or the URL (".../episode-12"). The title
-   * is tried first because it is written for humans; the URL patterns catch
-   * entries whose title is a site name or blank.
-   */
-  function episodeNumber(ep: StreamingEpisode): number | undefined {
-    const patterns: RegExp[] = [
-      /(?:episode|ep)\.?\s*[-–:]?\s*(\d+)/i, // "Episode 12", "Ep. 12"
-      /(?:episode|ep)[-_](\d+)/i, // "episode-12" inside a URL
-      /(\d+)\s*$/, // a bare trailing number
-    ];
-
-    for (const source of [ep.title, ep.url]) {
-      if (source == null) continue;
-      for (const pattern of patterns) {
-        const match = source.match(pattern);
-        if (match) return Number(match[1]);
-      }
-    }
-    return undefined;
-  }
-
-  /**
    * Scroll the requested episode into view and highlight it briefly.
    *
    * A number that matches nothing is reported rather than ignored, so a typo
@@ -80,7 +56,7 @@
     if (query == null || !Number.isInteger(query) || query < 1) return;
     const requested = query;
 
-    const index = episodes.findIndex((ep) => episodeNumber(ep) === requested);
+    const index = indexOfEpisode(episodes, requested);
     if (index === -1) {
       notFound = requested;
       return;

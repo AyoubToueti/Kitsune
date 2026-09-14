@@ -27,7 +27,31 @@
   let files = $state<TorrentFile[]>([]);
   let chosen = $state<TorrentFile | null>(null);
   let streamUrl = $state<string | undefined>(undefined);
+
+  /**
+   * The episode the detail page linked to, from `?ep=`.
+   *
+   * Initialised from the URL so arriving from the episode grid lands on the
+   * right entry rather than the top of the list. A nonsense value is treated
+   * as "no selection" instead of being clamped to an arbitrary episode.
+   */
   let selectedEpisode = $state<number | undefined>(undefined);
+
+  const requestedEpisode = $derived.by(() => {
+    const raw = page.url.searchParams.get("ep");
+    if (raw === null) return undefined;
+    const value = Number(raw);
+    return Number.isInteger(value) && value >= 0 ? value : undefined;
+  });
+
+  // Applied once the episode list has loaded, so an out-of-range value can be
+  // ignored rather than shown as a phantom selection.
+  $effect(() => {
+    const wanted = requestedEpisode;
+    const count = episodes.length;
+    if (wanted === undefined || count === 0) return;
+    if (wanted < count) selectedEpisode = wanted;
+  });
   let loadingTorrent = $state(false);
   let torrentError = $state<string | null>(null);
 

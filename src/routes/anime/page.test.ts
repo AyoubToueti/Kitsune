@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/svelte";
+import { render, screen, fireEvent, within } from "@testing-library/svelte";
 
 import type { Anime } from "$lib/types";
+import { clearNavigations, navigations } from "../../test/app-navigation-stub";
 
 // Aliased to src/test/app-state-stub.ts in vitest.config.js. Each test sets
 // the params (and URL) before rendering.
@@ -50,6 +51,7 @@ function setId(id: string | number) {
 
 beforeEach(() => {
   getAnimeMock.mockReset();
+  clearNavigations();
   setId(21);
 });
 
@@ -243,5 +245,43 @@ describe("detail page", () => {
     expect(
       screen.queryByRole("heading", { name: /where to watch/i }),
     ).not.toBeInTheDocument();
+  });
+
+  // --- watch page wiring ---------------------------------------------------
+
+  it("navigates to the watch page when an episode is clicked", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({
+        streamingEpisodes: [
+          { url: "https://x.test/1", title: "Episode 1" },
+          { url: "https://x.test/2", title: "Episode 2" },
+        ],
+      }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    const list = screen.getByTestId("episode-list");
+    await fireEvent.click(within(list).getAllByRole("button")[1]);
+
+    // The episode index travels in the query string so the watch page opens
+    // on the entry the reader picked rather than the top of the list.
+    expect(navigations).toEqual(["/watch/21?ep=1"]);
+  });
+
+  it("does not open AniList's licensed link from the grid", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({ streamingEpisodes: [{ url: "https://x.test/1", title: "Episode 1" }] }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    const list = screen.getByTestId("episode-list");
+    await fireEvent.click(within(list).getAllByRole("button")[0]);
+
+    // The click must be a navigation now, not an external open.
+    expect(navigations).toHaveLength(1);
   });
 });
