@@ -24,8 +24,6 @@ pub fn run() {
             commands::get_trending,
             commands::get_list,
             commands::get_browse,
-            commands::search_anime,
-            commands::get_by_genre,
             commands::get_genres,
             commands::get_schedule,
             commands::get_anime,

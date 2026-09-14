@@ -19,9 +19,7 @@ export const COMMANDS = {
   trending: "get_trending",
   list: "get_list",
   browse: "get_browse",
-  search: "search_anime",
   byId: "get_anime",
-  byGenre: "get_by_genre",
   genres: "get_genres",
   schedule: "get_schedule",
 } as const;
@@ -49,11 +47,6 @@ export async function getTrending(limit?: number): Promise<Anime[]> {
   return invoke<Anime[]>(COMMANDS.trending, { limit });
 }
 
-/** Search by free text. A blank query resolves to an empty list. */
-export async function searchAnime(query: string, limit?: number): Promise<Anime[]> {
-  return invoke<Anime[]>(COMMANDS.search, { query, limit });
-}
-
 /** Look up a single title. Resolves to `null` when the id does not exist. */
 export async function getAnime(id: number): Promise<Anime | null> {
   return invoke<Anime | null>(COMMANDS.byId, { id });
@@ -67,8 +60,8 @@ export async function getList(filter: ListFilter, limit?: number): Promise<Anime
 /**
  * Browse with filters and paging.
  *
- * Supersedes `searchAnime` and `getByGenre`: those are this call with one
- * filter set, and neither could paginate.
+ * One parameterised call rather than one per filter combination, so adding a
+ * filter never changes this surface.
  *
  * `page` is 1-based. `perPage` is a request, not a guarantee -- the backend
  * clamps it, and the provider caps it at 50.
@@ -79,11 +72,6 @@ export async function browseAnime(
   perPage?: number,
 ): Promise<AnimePage> {
   return invoke<AnimePage>(COMMANDS.browse, { query, page, perPage });
-}
-
-/** Titles in a genre, most popular first. */
-export async function getByGenre(genre: string, limit?: number): Promise<Anime[]> {
-  return invoke<Anime[]>(COMMANDS.byGenre, { genre, limit });
 }
 
 /** The genres available for browsing. */

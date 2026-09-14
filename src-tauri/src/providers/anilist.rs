@@ -243,27 +243,6 @@ impl AnimeProvider for AniListProvider {
         ProviderId::AniList
     }
 
-    async fn by_genre(&self, genre: &str, limit: u32) -> Result<Vec<Anime>, ProviderError> {
-        // `$genre` must be declared in the operation header or AniList
-        // rejects the whole query with "Variable \"$genre\" is not defined."
-        let query = Self::list_query(
-            "$genre: String",
-            "type: ANIME, genre: $genre, sort: POPULARITY_DESC",
-        );
-        let data: PageData = self
-            .query(
-                &query,
-                serde_json::json!({
-                    "genre": genre,
-                    "page": 1,
-                    "perPage": clamp_limit(limit),
-                }),
-            )
-            .await?;
-
-        Ok(data.page.media.into_iter().map(map_media).collect())
-    }
-
     async fn genres(&self) -> Result<Vec<String>, ProviderError> {
         let data: GenreData = self
             .query("{ GenreCollection }", serde_json::json!({}))
@@ -337,24 +316,6 @@ impl AnimeProvider for AniListProvider {
             .query(
                 &query,
                 serde_json::json!({ "page": 1, "perPage": clamp_limit(limit) }),
-            )
-            .await?;
-
-        Ok(data.page.media.into_iter().map(map_media).collect())
-    }
-    async fn search(&self, query: &str, limit: u32) -> Result<Vec<Anime>, ProviderError> {
-        let gql = Self::list_query(
-            "$search: String",
-            "type: ANIME, sort: SEARCH_MATCH, search: $search",
-        );
-        let data: PageData = self
-            .query(
-                &gql,
-                serde_json::json!({
-                    "search": query,
-                    "page": 1,
-                    "perPage": clamp_limit(limit),
-                }),
             )
             .await?;
 
@@ -1049,37 +1010,6 @@ mod tests {
         assert_eq!(entries[0].anime.id, 21);
     }
 
-    /// A genre query must declare `$genre` in the operation header or AniList
-    /// rejects it with "Variable \"$genre\" is not defined." — the same failure
-    /// mode that broke the search query.
-    #[tokio::test]
-    async fn genre_query_declares_the_genre_variable() {
-        let (_server, provider) =
-            provider_expecting("query ($genre: String, $page: Int, $perPage: Int)").await;
-
-        assert!(provider.by_genre("Mecha", 3).await.is_ok());
-    }
-
-    /// The genre travels as a GraphQL variable rather than being interpolated
-    /// into the filter, so a name containing spaces cannot break the query.
-    #[tokio::test]
-    async fn by_genre_passes_the_genre_as_a_variable() {
-        let (_server, provider) = provider_expecting("\"genre\":\"Slice of Life\"").await;
-
-        let anime = provider.by_genre("Slice of Life", 1).await.unwrap();
-        assert_eq!(anime.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn by_genre_maps_anilist_fields_like_trending() {
-        let (_server, provider) = provider_expecting("genre: $genre").await;
-
-        let anime = provider.by_genre("Action", 1).await.unwrap();
-        assert_eq!(anime[0].id, 21);
-        assert_eq!(anime[0].provider, ProviderId::AniList);
-        assert_eq!(anime[0].average_score, Some(88));
-    }
-
     #[tokio::test]
     async fn genres_returns_the_collection() {
         let (_server, provider) =
@@ -1471,26 +1401,4 @@ mod tests {
         assert_eq!(AniListProvider::new().id(), ProviderId::AniList);
     }
 
-    /// The search query must declare the `$search` variable in the GraphQL
-    /// operation header, otherwise AniList rejects it with HTTP 400
-    /// "Variable "$search" is not defined."
-    #[tokio::test]
-    async fn search_query_declares_the_search_variable() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/"))
-            .and(body_string_contains("$search"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(page_response(vec![media_json()])),
-            )
-            .mount(&server)
-            .await;
-
-        let provider = AniListProvider::with_endpoint(server.uri());
-        let anime = provider
-            .search("one piece", 1)
-            .await
-            .expect("search should succeed");
-        assert_eq!(anime.len(), 1);
-    }
 }

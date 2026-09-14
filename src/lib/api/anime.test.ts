@@ -9,12 +9,10 @@ import {
   COMMANDS,
   errorMessage,
   getAnime,
-  getByGenre,
   getGenres,
   getList,
   getSchedule,
   getTrending,
-  searchAnime,
 } from "./anime";
 import type { Anime, ScheduledEpisode } from "$lib/types";
 
@@ -53,23 +51,6 @@ describe("command wrappers", () => {
     expect(invokeMock).toHaveBeenCalledWith(COMMANDS.trending, { limit: undefined });
   });
 
-  it("searchAnime passes the query through", async () => {
-    invokeMock.mockResolvedValue([sampleAnime()]);
-
-    await searchAnime("one piece", 5);
-
-    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.search, {
-      query: "one piece",
-      limit: 5,
-    });
-  });
-
-  it("searchAnime returns an empty list unchanged", async () => {
-    invokeMock.mockResolvedValue([]);
-
-    expect(await searchAnime("")).toEqual([]);
-  });
-
   it("getAnime passes the id", async () => {
     invokeMock.mockResolvedValue(sampleAnime());
 
@@ -104,17 +85,6 @@ describe("command wrappers", () => {
     expect(invokeMock).toHaveBeenCalledWith(COMMANDS.list, {
       filter: "latestCompleted",
       limit: undefined,
-    });
-  });
-
-  it("getByGenre passes the genre through", async () => {
-    invokeMock.mockResolvedValue([sampleAnime()]);
-
-    await getByGenre("Slice of Life", 20);
-
-    expect(invokeMock).toHaveBeenCalledWith(COMMANDS.byGenre, {
-      genre: "Slice of Life",
-      limit: 20,
     });
   });
 

@@ -74,31 +74,6 @@ pub async fn browse_from(
         .await
 }
 
-/// Search by free text.
-///
-/// A blank query short-circuits to an empty list rather than spending a
-/// request on something guaranteed to be meaningless.
-pub async fn search_from(
-    provider: &dyn AnimeProvider,
-    query: &str,
-    limit: Option<u32>,
-) -> Result<Vec<Anime>, ProviderError> {
-    let trimmed = query.trim();
-    if trimmed.is_empty() {
-        return Ok(Vec::new());
-    }
-    provider.search(trimmed, resolve_limit(limit)).await
-}
-
-/// Titles in a genre, most popular first.
-pub async fn by_genre_from(
-    provider: &dyn AnimeProvider,
-    genre: &str,
-    limit: Option<u32>,
-) -> Result<Vec<Anime>, ProviderError> {
-    provider.by_genre(genre, resolve_limit(limit)).await
-}
-
 /// Broadcasts within a time window, soonest first.
 pub async fn schedule_from(
     provider: &dyn AnimeProvider,
@@ -153,28 +128,6 @@ pub async fn get_list(
     limit: Option<u32>,
 ) -> Result<Vec<Anime>, String> {
     list_from(provider.inner().as_ref(), filter, limit)
-        .await
-        .map_err(to_message)
-}
-
-#[tauri::command]
-pub async fn search_anime(
-    provider: State<'_, SharedProvider>,
-    query: String,
-    limit: Option<u32>,
-) -> Result<Vec<Anime>, String> {
-    search_from(provider.inner().as_ref(), &query, limit)
-        .await
-        .map_err(to_message)
-}
-
-#[tauri::command]
-pub async fn get_by_genre(
-    provider: State<'_, SharedProvider>,
-    genre: String,
-    limit: Option<u32>,
-) -> Result<Vec<Anime>, String> {
-    by_genre_from(provider.inner().as_ref(), &genre, limit)
         .await
         .map_err(to_message)
 }
@@ -448,38 +401,6 @@ mod tests {
         assert_eq!(anime.len(), 1);
         assert_eq!(anime[0].id, 21);
         assert_eq!(anime[0].episode_count, Some(1100));
-    }
-
-    // --- search_from -----------------------------------------------------
-
-    #[tokio::test]
-    async fn search_from_maps_results() {
-        let response = serde_json::json!({
-            "data": { "Page": { "media": [media_json()] } }
-        });
-        let (_server, provider) = provider_with(response).await;
-
-        let anime = search_from(&provider, "one piece", None)
-            .await
-            .expect("should succeed");
-
-        assert_eq!(anime.len(), 1);
-    }
-
-    /// A blank query must not spend a request. The endpoint here is a
-    /// black hole, so any attempt to reach it would surface as a
-    /// transport error rather than `Ok`.
-    #[tokio::test]
-    async fn search_from_short_circuits_on_blank_query() {
-        let provider = AniListProvider::with_endpoint("http://127.0.0.1:1");
-
-        for query in ["", "   ", "\t\n"] {
-            let result = search_from(&provider, query, None).await;
-            assert!(
-                matches!(result, Ok(ref v) if v.is_empty()),
-                "blank query {query:?} should return an empty list, got {result:?}"
-            );
-        }
     }
 
     // --- anime_from ------------------------------------------------------

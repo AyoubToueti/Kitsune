@@ -56,17 +56,9 @@ pub trait AnimeProvider: Send + Sync {
     /// vocabulary out of this trait.
     async fn list(&self, filter: ListFilter, limit: u32) -> Result<Vec<Anime>, ProviderError>;
 
-    /// Free-text search.
-    async fn search(&self, query: &str, limit: u32) -> Result<Vec<Anime>, ProviderError>;
-
     /// Look up a single title. `Ok(None)` means "not found", which is not
     /// an error — callers may legitimately probe for ids that do not exist.
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError>;
-    /// Titles carrying a given genre, most popular first.
-    ///
-    /// `genre` is matched against the provider's own genre names, which
-    /// [`AnimeProvider::genres`] returns.
-    async fn by_genre(&self, genre: &str, limit: u32) -> Result<Vec<Anime>, ProviderError>;
 
     /// The genre names this provider recognises.
     ///
@@ -87,9 +79,9 @@ pub trait AnimeProvider: Send + Sync {
     ) -> Result<Vec<ScheduledEpisode>, ProviderError>;
     /// Browse with filters and paging.
     ///
-    /// Supersedes [`AnimeProvider::search`] and [`AnimeProvider::by_genre`]:
-    /// those are the same query with one filter set, so one parameterised
-    /// method covers both and adds paging they could not express.
+    /// One parameterised method rather than one per filter combination: a
+    /// filter is the same query with different arguments, so adding a filter
+    /// never changes this trait.
     ///
     /// `page` is 1-based, matching the providers' own numbering. `per_page`
     /// is a request, not a guarantee: providers cap it.
