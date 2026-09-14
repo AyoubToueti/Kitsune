@@ -10,6 +10,7 @@
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
   import StreamingLinks from "$lib/components/StreamingLinks.svelte";
+  import TrailerCard from "$lib/components/TrailerCard.svelte";
 
   // Reactive: navigating from /anime/1 to /anime/2 does NOT remount the
   // component in SvelteKit, so reading the param via $derived catches the
@@ -130,6 +131,7 @@
     </div>
 
     <aside>
+      <TrailerCard trailer={anime.trailer} />
       <RelatedAnimeList relations={anime.relations} />
     </aside>
   </div>
