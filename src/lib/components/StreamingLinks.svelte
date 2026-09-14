@@ -12,7 +12,7 @@
   }
 </script>
 
-<!-- {#if episodes.length > 0}
+{#if episodes.length > 0}
   <div>
     <h2 class="mb-3 text-lg font-semibold tracking-tight">Where to watch</h2>
     <ul class="flex flex-wrap gap-3">
@@ -29,4 +29,4 @@
       {/each}
     </ul>
   </div>
-{/if} -->
+{/if}

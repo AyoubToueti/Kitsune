@@ -211,7 +211,7 @@ describe("detail page", () => {
     );
   });
 
-  it("renders streaming links when present", async () => {
+  it("does not render a where-to-watch section", async () => {
     getAnimeMock.mockResolvedValue(
       anime({
         streamingEpisodes: [
@@ -227,14 +227,11 @@ describe("detail page", () => {
     render(Page);
     await screen.findByRole("heading", { name: "One Piece" });
 
-    // Scoped to the "Where to watch" section: the same site name also labels
-    // the episode card in the grid above, so an unscoped text match is ambiguous.
+    // The section moved to the dedicated watch page, so the detail page must
+    // not render it -- otherwise the same links appear in two places.
     expect(
-      screen.getByRole("heading", { name: /where to watch/i }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Crunchyroll" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("heading", { name: /where to watch/i }),
+    ).toBeNull();
   });
 
   it("does not render streaming links section when empty", async () => {

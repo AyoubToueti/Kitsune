@@ -16,9 +16,9 @@
   function watchUrl(video: Trailer): string | null {
     switch (video.site.toLowerCase()) {
       case "youtube":
-        return `https://youtube.com{video.id}`;
+        return `https://www.youtube.com/watch?v=${video.id}`;
       case "dailymotion":
-        return `https://dailymotion.com{video.id}`;
+        return `https://www.dailymotion.com/video/${video.id}`;
       default:
         return null;
     }

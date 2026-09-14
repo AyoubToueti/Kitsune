@@ -27,22 +27,28 @@ describe("TrailerCard", () => {
     expect(screen.getByRole("heading", { name: /trailer/i })).toBeInTheDocument();
   });
 
-  it("builds a YouTube watch url", async () => {
+  it("opens an in-app modal with the YouTube embed", async () => {
     render(TrailerCard, { props: { trailer: trailer({ site: "youtube", id: "abc123" }) } });
 
     await fireEvent.click(screen.getByRole("button", { name: /play trailer/i }));
 
-    expect(openUrlMock).toHaveBeenCalledWith("https://www.youtube.com/watch?v=abc123");
+    const frame = screen.getByTitle("Trailer Player");
+    expect(frame.getAttribute("src")).toBe(
+      "https://www.youtube.com/embed/abc123?autoplay=1",
+    );
   });
 
-  it("builds a Dailymotion url", async () => {
+  it("opens an in-app modal with the Dailymotion embed", async () => {
     render(TrailerCard, {
       props: { trailer: trailer({ site: "dailymotion", id: "x9abc" }) },
     });
 
     await fireEvent.click(screen.getByRole("button", { name: /play trailer/i }));
 
-    expect(openUrlMock).toHaveBeenCalledWith("https://www.dailymotion.com/video/x9abc");
+    const frame = screen.getByTitle("Trailer Player");
+    expect(frame.getAttribute("src")).toBe(
+      "https://www.dailymotion.com/embed/video/x9abc?autoplay=1",
+    );
   });
 
   it("is case-insensitive about the site", async () => {
@@ -50,9 +56,20 @@ describe("TrailerCard", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: /play trailer/i }));
 
-    expect(openUrlMock).toHaveBeenCalledWith(
-      expect.stringContaining("youtube.com"),
+    expect(screen.getByTitle("Trailer Player").getAttribute("src")).toContain(
+      "youtube.com/embed",
     );
+  });
+
+  it("closes the modal when Escape is pressed", async () => {
+    render(TrailerCard, { props: { trailer: trailer() } });
+
+    await fireEvent.click(screen.getByRole("button", { name: /play trailer/i }));
+    expect(screen.getByTitle("Trailer Player")).toBeInTheDocument();
+
+    await fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(screen.queryByTitle("Trailer Player")).toBeNull();
   });
 
   it("renders nothing for an unknown site, since there is no url to build", () => {
