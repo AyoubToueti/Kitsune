@@ -89,7 +89,7 @@
 
 <h1 class="mb-4 text-lg font-semibold tracking-tight">Filter anime</h1>
 
-<FilterBar {genres} {tags} current={query} />
+<FilterBar {params} {genres} {tags} current={query} />
 
 <div class="mt-4">
   <ActiveFilters {params} current={query} />

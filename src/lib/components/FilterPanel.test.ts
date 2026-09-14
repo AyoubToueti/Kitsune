@@ -107,10 +107,15 @@ describe("FilterPanel", () => {
       );
     });
 
-    it("offers the default sort when nothing is selected", () => {
+    /// The sort control lives in the toolbar now, but the panel still has to
+    /// submit it: a GET replace the whole query string, so omitting it would
+    /// reset the ordering every time a filter changed.
+    it("submits the sort without offering a control for it", () => {
       renderPanel();
 
-      expect(control("Sort")).toHaveValue("popularity");
+      const data = new FormData(form() as HTMLFormElement);
+      expect(data.get("sort")).toBe("popularity");
+      expect(screen.queryByLabelText("Sort")).toBeNull();
     });
 
     it("reflects the applied filters", () => {
@@ -130,7 +135,7 @@ describe("FilterPanel", () => {
       expect(control("Season")).toHaveValue("fall");
       expect(control("Year")).toHaveValue("2024");
       expect(control("Score")).toHaveValue("70");
-      expect(control("Sort")).toHaveValue("score");
+      expect(new FormData(form() as HTMLFormElement).get("sort")).toBe("score");
     });
 
     it("shows the search term", () => {

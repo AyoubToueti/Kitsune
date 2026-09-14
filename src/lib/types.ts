@@ -104,6 +104,13 @@ export type SortOption =
   | "score"
   | "newest"
   | "titleAz"
+  | "trending"
+  | "favorites"
+  /**
+   * Most recently added to the provider's catalogue, which is not the same as
+   * most recently aired -- that is `newest`.
+   */
+  | "dateAdded"
   /**
    * Closest textual match. Only meaningful alongside a search term; without
    * one the provider falls back to its default order.

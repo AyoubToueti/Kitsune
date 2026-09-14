@@ -43,25 +43,38 @@ export const SEASON_VALUES = [
   "fall",
 ] as const satisfies readonly SeasonFilter[];
 
+/**
+ * Every sort the parser accepts.
+ *
+ * Includes `searchMatch` so a hand-written `?sort=searchMatch` round-trips,
+ * even though no control offers it.
+ */
 export const SORT_VALUES = [
+  "titleAz",
   "popularity",
   "score",
+  "trending",
+  "favorites",
+  "dateAdded",
   "newest",
-  "titleAz",
   "searchMatch",
 ] as const satisfies readonly SortOption[];
 
 /**
- * Sorts offered on the filter page.
+ * Sorts offered in the sort menu, in the order the reference lists them.
  *
  * `searchMatch` is excluded: it orders by textual relevance, which means
- * nothing without a search term, and the filter page may be used without one.
+ * nothing without a search term, so it would be a control that does nothing
+ * on a page that has no query.
  */
-export const FILTER_SORT_VALUES = [
+export const SORT_MENU_VALUES = [
+  "titleAz",
   "popularity",
   "score",
+  "trending",
+  "favorites",
+  "dateAdded",
   "newest",
-  "titleAz",
 ] as const satisfies readonly SortOption[];
 
 /** Human labels for the select options. */
@@ -87,11 +100,20 @@ export const SEASON_LABELS: Record<SeasonFilter, string> = {
   fall: "Fall",
 };
 
+/**
+ * Labels follow the provider's own wording, so the menu reads the same as the
+ * site the ordering comes from.
+ */
 export const SORT_LABELS: Record<SortOption, string> = {
-  popularity: "Most popular",
-  score: "Highest rated",
-  newest: "Newest",
-  titleAz: "Name A–Z",
+  titleAz: "Title",
+  popularity: "Popularity",
+  score: "Average Score",
+  trending: "Trending",
+  favorites: "Favorites",
+  dateAdded: "Date Added",
+  // AniList calls this START_DATE_DESC, which its own UI labels "Release Date"
+  // rather than "newest".
+  newest: "Release Date",
   searchMatch: "Best match",
 };
 
@@ -197,6 +219,25 @@ export function filterHref(
   } else {
     next.set("page", String(page));
   }
+
+  const query = next.toString();
+  return query === "" ? base : `${base}?${query}`;
+}
+
+/**
+ * A link to the same view with a different sort.
+ *
+ * The page number is dropped: page 5 of a re-ordered list is not a meaningful
+ * place to land, and keeping it could show a page past the new end.
+ */
+export function sortHref(
+  params: URLSearchParams,
+  sort: SortOption,
+  base = "/filter",
+): string {
+  const next = new URLSearchParams(params);
+  next.set("sort", sort);
+  next.delete("page");
 
   const query = next.toString();
   return query === "" ? base : `${base}?${query}`;

@@ -1,12 +1,10 @@
 <script lang="ts">
   import {
-    FILTER_SORT_VALUES,
     FORMAT_LABELS,
     FORMAT_VALUES,
     SCORE_OPTIONS,
     SEASON_LABELS,
     SEASON_VALUES,
-    SORT_LABELS,
     STATUS_LABELS,
     STATUS_VALUES,
     categoryLabel,
@@ -21,7 +19,6 @@
     current,
     base = "/filter",
     showSearch = true,
-    showSort = true,
     extraParams = {},
   }: {
     /** Genre names to offer, from the provider. */
@@ -49,14 +46,6 @@
      * inputs writing different parameters to one URL would lose it.
      */
     showSearch?: boolean;
-    /**
-     * Whether to offer the sort options.
-     *
-     * /search hides them. A text search is ranked by relevance, and this panel
-     * deliberately does not offer relevance -- it means nothing without a term,
-     * so the filter page must not imply otherwise.
-     */
-    showSort?: boolean;
     /**
      * Parameters to carry through submission without showing a control.
      *
@@ -284,19 +273,12 @@
       </select>
     </label>
 
-    {#if showSort}
-      <label class="flex flex-col gap-1 text-xs text-ink-faint">
-        Sort
-        <select name="sort" class={selectClass}>
-          {#each FILTER_SORT_VALUES as value (value)}
-            <option value={value} selected={current.sort === value}>
-              {SORT_LABELS[value]}
-            </option>
-          {/each}
-        </select>
-      </label>
-    {/if}
   </div>
+
+  <!-- The sort lives in the toolbar now, but it still has to be re-sent: a GET
+       submit replaces the whole query string, so omitting it here would reset
+       the ordering every time a filter changed. -->
+  <input type="hidden" name="sort" value={current.sort} />
 
   <!-- Carried through submission without a control. A GET submit replaces the
        whole query string, so anything not re-sent here is dropped -- which for

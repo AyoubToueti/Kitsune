@@ -130,6 +130,7 @@
 <!-- The term is not shown as a field: the navbar's search box already owns it.
      It rides along as a hidden parameter so changing a filter does not wipe it. -->
 <FilterBar
+  {params}
   {genres}
   {tags}
   current={filters}

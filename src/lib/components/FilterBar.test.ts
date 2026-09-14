@@ -8,27 +8,46 @@ const GENRES = ["Action", "Comedy"];
 
 const TAGS: MediaTag[] = [{ name: "Isekai", category: "Theme-Fantasy" }];
 
-/** The button that opens the dropdown. */
-function toggle(): HTMLElement {
+/** The button that opens the filter dropdown. */
+function filtersButton(): HTMLElement {
   return screen.getByTestId("open-filters");
 }
 
+/** The button that opens the sort dropdown. */
+function sortButton(): HTMLElement {
+  return screen.getByTestId("open-sort");
+}
+
+/**
+ * The props every render supplies.
+ *
+ * Kept separate from the optional ones so `params` and friends are not
+ * `| undefined` at the call site -- the component requires them, and an
+ * all-optional interface would not satisfy it.
+ */
+interface RequiredBarProps {
+  params: URLSearchParams;
+  genres: string[];
+  current: BrowseQuery;
+}
+
+interface BarProps extends RequiredBarProps {
+  tags?: MediaTag[];
+  base?: string;
+  showSearch?: boolean;
+  showSort?: boolean;
+  extraParams?: Record<string, string>;
+}
+
 /** Render with sensible defaults, overriding only what a test cares about. */
-function renderBar(
-  overrides: {
-    genres?: string[];
-    tags?: MediaTag[];
-    current?: BrowseQuery;
-    base?: string;
-    showSearch?: boolean;
-    showSort?: boolean;
-    extraParams?: Record<string, string>;
-  } = {},
-) {
-  const props = {
+function renderBar(overrides: Partial<BarProps> = {}) {
+  // Built as one object: the component's props are a closed set, and an inline
+  // spread would defeat that check.
+  const props: BarProps = {
+    params: new URLSearchParams(),
     genres: GENRES,
     tags: TAGS,
-    current: { sort: "popularity" } as BrowseQuery,
+    current: { sort: "popularity" },
     ...overrides,
   };
 
@@ -36,101 +55,210 @@ function renderBar(
 }
 
 describe("FilterBar", () => {
-  it("starts with the dropdown closed", () => {
-    renderBar();
+  describe("the filter dropdown", () => {
+    it("starts closed", () => {
+      renderBar();
 
-    expect(toggle()).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByTestId("filter-dropdown")).toBeNull();
-  });
-
-  it("opens the dropdown when pressed", async () => {
-    renderBar();
-
-    await fireEvent.click(toggle());
-
-    expect(toggle()).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("filter-dropdown")).toBeInTheDocument();
-  });
-
-  it("closes again on a second press", async () => {
-    renderBar();
-
-    await fireEvent.click(toggle());
-    await fireEvent.click(toggle());
-
-    expect(screen.queryByTestId("filter-dropdown")).toBeNull();
-  });
-
-  it("shows no count when nothing is applied", () => {
-    renderBar();
-
-    expect(screen.queryByTestId("filter-count")).toBeNull();
-  });
-
-  it("counts every applied filter", () => {
-    renderBar({
-      current: {
-        tags: ["Isekai"],
-        excludedTags: ["Harem"],
-        genres: ["Action"],
-        sort: "popularity",
-      },
+      expect(filtersButton()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByTestId("filter-dropdown")).toBeNull();
     });
 
-    // The badge is the only sign of active filters while the dropdown is shut.
-    expect(screen.getByTestId("filter-count")).toHaveTextContent("3");
+    it("opens when pressed", async () => {
+      renderBar();
+
+      await fireEvent.click(filtersButton());
+
+      expect(filtersButton()).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByTestId("filter-dropdown")).toBeInTheDocument();
+    });
+
+    it("closes again on a second press", async () => {
+      renderBar();
+
+      await fireEvent.click(filtersButton());
+      await fireEvent.click(filtersButton());
+
+      expect(screen.queryByTestId("filter-dropdown")).toBeNull();
+    });
+
+    it("shows no count when nothing is applied", () => {
+      renderBar();
+
+      expect(screen.queryByTestId("filter-count")).toBeNull();
+    });
+
+    it("counts every applied filter", () => {
+      renderBar({
+        current: {
+          tags: ["Isekai"],
+          excludedTags: ["Harem"],
+          genres: ["Action"],
+          sort: "popularity",
+        },
+      });
+
+      // The badge is the only sign of active filters while the dropdown is shut.
+      expect(screen.getByTestId("filter-count")).toHaveTextContent("3");
+    });
+
+    /// Clicking a control inside the dropdown must not close it, or the panel
+    /// would vanish the moment the user touched it.
+    it("stays open when a click lands inside it", async () => {
+      renderBar();
+      await fireEvent.click(filtersButton());
+
+      await fireEvent.click(screen.getByTestId("filter-dropdown"));
+
+      expect(screen.getByTestId("filter-dropdown")).toBeInTheDocument();
+    });
+
+    it("closes when a click lands outside it", async () => {
+      renderBar();
+      await fireEvent.click(filtersButton());
+
+      // The window handler ignores clicks with no target, so give it a real one.
+      await fireEvent.click(document.body);
+
+      expect(screen.queryByTestId("filter-dropdown")).toBeNull();
+    });
+
+    it("hides the search field when asked", async () => {
+      renderBar({ showSearch: false });
+      await fireEvent.click(filtersButton());
+
+      expect(screen.queryByLabelText("Search")).toBeNull();
+    });
+
+    it("carries extra parameters into the form", async () => {
+      renderBar({ extraParams: { q: "naruto" } });
+      await fireEvent.click(filtersButton());
+
+      const data = new FormData(
+        screen.getByTestId("filter-form") as HTMLFormElement,
+      );
+
+      // /search relies on this: without it a submit would reset the term.
+      expect(data.get("q")).toBe("naruto");
+    });
+
+    it("points the form at the given base", async () => {
+      renderBar({ base: "/search" });
+      await fireEvent.click(filtersButton());
+
+      expect(screen.getByTestId("filter-form")).toHaveAttribute(
+        "action",
+        "/search",
+      );
+    });
   });
 
-  /// Clicking a control inside the dropdown must not close it, or the panel
-  /// would vanish the moment the user touched it.
-  it("stays open when a click lands inside it", async () => {
-    renderBar();
-    await fireEvent.click(toggle());
+  describe("the sort menu", () => {
+    it("starts closed", () => {
+      renderBar();
 
-    const panel = screen.getByTestId("filter-dropdown");
-    await fireEvent.click(panel);
+      expect(sortButton()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByTestId("sort-dropdown")).toBeNull();
+    });
 
-    expect(screen.getByTestId("filter-dropdown")).toBeInTheDocument();
-  });
+    it("shows the current sort's label on the button", () => {
+      renderBar({ current: { sort: "score" } });
 
-  it("closes when a click lands outside it", async () => {
-    renderBar();
-    await fireEvent.click(toggle());
+      // The label is the provider's wording, not the wire value.
+      expect(sortButton()).toHaveTextContent("Average Score");
+    });
 
-    // The window handler ignores clicks with no target, so give it a real one.
-    await fireEvent.click(document.body);
+    it("opens when pressed", async () => {
+      renderBar();
 
-    expect(screen.queryByTestId("filter-dropdown")).toBeNull();
-  });
+      await fireEvent.click(sortButton());
 
-  it("hides the search field when asked", async () => {
-    renderBar({ showSearch: false });
-    await fireEvent.click(toggle());
+      expect(screen.getByTestId("sort-dropdown")).toBeInTheDocument();
+    });
 
-    expect(screen.queryByLabelText("Search")).toBeNull();
-  });
+    it("offers every sort except relevance", async () => {
+      renderBar();
+      await fireEvent.click(sortButton());
 
-  it("hides the sort control when asked", async () => {
-    renderBar({ showSort: false });
-    await fireEvent.click(toggle());
+      for (const label of [
+        "Title",
+        "Popularity",
+        "Average Score",
+        "Trending",
+        "Favorites",
+        "Date Added",
+        "Release Date",
+      ]) {
+        expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
+      }
 
-    expect(screen.queryByLabelText("Sort")).toBeNull();
-  });
+      // Relevance means nothing without a query, so it is never offered.
+      expect(screen.queryByRole("link", { name: /best match/i })).toBeNull();
+    });
 
-  it("carries extra parameters into the form", async () => {
-    renderBar({ extraParams: { q: "naruto" } });
-    await fireEvent.click(toggle());
+    it("marks the active sort", async () => {
+      renderBar({ current: { sort: "score" } });
+      await fireEvent.click(sortButton());
 
-    const data = new FormData(screen.getByTestId("filter-form") as HTMLFormElement);
+      expect(
+        screen.getByRole("link", { name: "Average Score" }),
+      ).toHaveAttribute("aria-current", "true");
+    });
 
-    // /search relies on this: without it a submit would reset the term.
-    expect(data.get("q")).toBe("naruto");
-  });
+    /// The sort is part of the URL, so choosing one is navigation: the link has
+    /// to carry the current filters or they would be lost on the way.
+    it("keeps the filters when changing sort", async () => {
+      renderBar({
+        params: new URLSearchParams("tag=Isekai&genre=Action"),
+        current: { tags: ["Isekai"], genres: ["Action"], sort: "popularity" },
+      });
+      await fireEvent.click(sortButton());
 
-  it("points the form at the given base", async () => {
-    renderBar({ base: "/search" });
-    await fireEvent.click(toggle());
+      const href =
+        screen.getByRole("link", { name: "Average Score" }).getAttribute("href") ??
+        "";
 
-    expect(screen.getByTestId("filter-form")).toHaveAttribute("action", "/search");
+      expect(href).toContain("sort=score");
+      expect(href).toContain("tag=Isekai");
+      expect(href).toContain("genre=Action");
+    });
+
+    it("drops the page number, which a new ordering invalidates", async () => {
+      renderBar({ params: new URLSearchParams("page=5") });
+      await fireEvent.click(sortButton());
+
+      const href =
+        screen.getByRole("link", { name: "Trending" }).getAttribute("href") ?? "";
+
+      expect(href).not.toContain("page=");
+    });
+
+    it("links back to the given base", async () => {
+      renderBar({ params: new URLSearchParams("q=naruto"), base: "/search" });
+      await fireEvent.click(sortButton());
+
+      const href =
+        screen.getByRole("link", { name: "Popularity" }).getAttribute("href") ??
+        "";
+
+      expect(href.startsWith("/search?")).toBe(true);
+    });
+
+    it("is hidden when asked", () => {
+      renderBar({ showSort: false });
+
+      // /search ranks by relevance, so it offers no ordering.
+      expect(screen.queryByTestId("open-sort")).toBeNull();
+    });
+
+    /// Opening one dropdown must close the other, or they would overlap.
+    it("closes the filter dropdown when the sort menu opens", async () => {
+      renderBar();
+
+      await fireEvent.click(filtersButton());
+      await fireEvent.click(sortButton());
+
+      expect(screen.queryByTestId("filter-dropdown")).toBeNull();
+      expect(screen.getByTestId("sort-dropdown")).toBeInTheDocument();
+    });
   });
 });
