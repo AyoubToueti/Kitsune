@@ -71,7 +71,12 @@
         shellHook = ''
           # Point WebKitGTK at the GStreamer plugins from this shell, since
           # they are not installed system-wide on NixOS.
-          export GST_PLUGIN_SYSTEM_PATH_1_0="${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-ugly}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0"
+          # NOTE: `${pkgs.gst_all_1.gstreamer}` resolves to the `-bin` output,
+          # which holds no plugins. The CORE elements WebKitGTK needs --
+          # filesrc, typefind, fakesink, queue -- live in the `out` output, so
+          # `.out` must be named explicitly. Without it decodebin cannot build
+          # a pipeline and EVERY <video> playback fails, whatever the codec.
+          export GST_PLUGIN_SYSTEM_PATH_1_0="${pkgs.gst_all_1.gstreamer.out}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-ugly}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0"
           export GST_PLUGIN_PATH_1_0="$GST_PLUGIN_SYSTEM_PATH_1_0"
 
           # Same story for HTTPS: the GIO TLS module lives in the store, but
