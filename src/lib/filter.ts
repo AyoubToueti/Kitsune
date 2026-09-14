@@ -202,6 +202,159 @@ export function filterHref(
   return query === "" ? base : `${base}?${query}`;
 }
 
+/** One applied filter, as the active-filters bar presents it. */
+export interface ActiveFilter {
+  /** What the pill reads. */
+  label: string;
+  /** The URL parameter carrying it, for building a removal link. */
+  param: string;
+  /** The parameter's value, needed because some repeat (genre, tag). */
+  value: string;
+  /** Rejections render differently from requirements. */
+  excluded: boolean;
+}
+
+/**
+ * Every filter currently applied, in the order the panel presents them.
+ *
+ * Derived from the parsed query rather than from the raw parameters, so an
+ * unrecognised value that `parseBrowseQuery` dropped does not get a pill
+ * claiming it is active.
+ */
+export function activeFilters(query: BrowseQuery): ActiveFilter[] {
+  const filters: ActiveFilter[] = [];
+
+  if (query.search) {
+    filters.push({
+      label: `“${query.search}”`,
+      param: "search",
+      value: query.search,
+      excluded: false,
+    });
+  }
+
+  for (const genre of query.genres ?? []) {
+    filters.push({ label: genre, param: "genre", value: genre, excluded: false });
+  }
+
+  for (const tag of query.tags ?? []) {
+    filters.push({ label: tag, param: "tag", value: tag, excluded: false });
+  }
+
+  for (const tag of query.excludedTags ?? []) {
+    // Prefixed because inclusion and exclusion are different claims about the
+    // same tag, and a bare name would not say which one was meant.
+    filters.push({
+      label: `Not ${tag}`,
+      param: "exclude_tag",
+      value: tag,
+      excluded: true,
+    });
+  }
+
+  if (query.format) {
+    filters.push({
+      label: FORMAT_LABELS[query.format],
+      param: "format",
+      value: query.format,
+      excluded: false,
+    });
+  }
+
+  if (query.status) {
+    filters.push({
+      label: STATUS_LABELS[query.status],
+      param: "status",
+      value: query.status,
+      excluded: false,
+    });
+  }
+
+  if (query.season) {
+    filters.push({
+      label: SEASON_LABELS[query.season],
+      param: "season",
+      value: query.season,
+      excluded: false,
+    });
+  }
+
+  if (query.seasonYear !== undefined) {
+    filters.push({
+      label: String(query.seasonYear),
+      param: "year",
+      value: String(query.seasonYear),
+      excluded: false,
+    });
+  }
+
+  if (query.minScore !== undefined) {
+    filters.push({
+      label: `Score ${query.minScore}+`,
+      param: "score",
+      value: String(query.minScore),
+      excluded: false,
+    });
+  }
+
+  return filters;
+}
+
+/**
+ * A link to the same view with one filter removed.
+ *
+ * Rebuilds the query string rather than calling `delete`, because the repeated
+ * parameters (genre, tag) must keep their other values -- `delete` would drop
+ * every genre when the user only meant to remove one.
+ *
+ * `page` is dropped as well: page 5 of a different filter set is not a
+ * meaningful place to land.
+ */
+export function removeFilterHref(
+  params: URLSearchParams,
+  param: string,
+  value: string,
+  base = "/filter",
+): string {
+  const next = new URLSearchParams();
+
+  for (const [key, existing] of params) {
+    if (key === param && existing === value) continue;
+    next.append(key, existing);
+  }
+
+  next.delete("page");
+
+  const query = next.toString();
+  return query === "" ? base : `${base}?${query}`;
+}
+
+/**
+ * A link to the same view with every filter removed.
+ *
+ * Built from the applied filters rather than from a fixed list, so a parameter
+ * this module does not know about -- `/search`'s `q`, for instance -- survives.
+ * Clearing the filters should not also clear what the user searched for.
+ */
+export function clearFiltersHref(
+  params: URLSearchParams,
+  query: BrowseQuery,
+  base = "/filter",
+): string {
+  const drop = new Set(activeFilters(query).map((filter) => filter.param));
+  drop.add("page");
+
+  const next = new URLSearchParams();
+
+  for (const [key, value] of params) {
+    if (drop.has(key)) continue;
+    next.append(key, value);
+  }
+
+  const queryString = next.toString();
+  return queryString === "" ? base : `${base}?${queryString}`;
+}
+
 /**
  * The provider's tag names, grouped under their category for display.
  *

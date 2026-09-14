@@ -2,6 +2,7 @@
   import { page } from "$app/state";
 
   import { browseAnime, errorMessage, getGenres, getTags } from "$lib/api/anime";
+  import ActiveFilters from "$lib/components/ActiveFilters.svelte";
   import AnimeGrid from "$lib/components/AnimeGrid.svelte";
   import FilterPanel from "$lib/components/FilterPanel.svelte";
   import Pagination from "$lib/components/Pagination.svelte";
@@ -89,7 +90,9 @@
 <h1 class="mb-4 text-lg font-semibold tracking-tight">Filter anime</h1>
 
 <FilterPanel {genres} {tags} current={query} />
-
+  <div class="mt-4">
+    <ActiveFilters {params} current={query} />
+  </div>
 <div class="mt-8">
   {#if loading}
     <p class="py-16 text-center text-ink-muted">Loading…</p>
