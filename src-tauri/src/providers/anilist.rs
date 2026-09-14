@@ -20,14 +20,21 @@ use crate::types::{
 /// AniList's public GraphQL endpoint.
 pub const ANILIST_ENDPOINT: &str = "https://graphql.anilist.co";
 
-/// Fields shared by every media query, so the mapping code is written once.
+/// How strongly a work must carry a tag before the tag counts as a match.
+///
 /// Weak taggings are noise: one user tagging an unrelated work is enough to
 /// match it, which is why an unfiltered `tag_in: [Isekai]` surfaced BLEACH.
 /// AniList's own UI exposes this as "minimum tag percentage", defaulting to
 /// 18, but 40 is where results actually stabilise -- measured: 40 and 60
 /// returned the same set while 18 still let the noise through.
+///
+/// Verified to govern `tag_not_in` as well as `tag_in`: excluding a tag only
+/// drops works carrying it at or above this rank, so a work with a weaker
+/// tagging survives the exclusion. One floor for both directions keeps the
+/// two symmetric -- below-floor taggings are treated as noise either way.
 const MINIMUM_TAG_RANK: u32 = 40;
 
+/// Fields shared by every media query, so the mapping code is written once.
 const MEDIA_FIELDS: &str = r#"
     bannerImage
     duration
@@ -281,7 +288,7 @@ impl AnimeProvider for AniListProvider {
     async fn tags(&self) -> Result<Vec<MediaTag>, ProviderError> {
         let data: TagData = self
             .query(
-                "{ MediaTagCollection { name category isAdult } }",
+                "{ MediaTagCollection { name category description isAdult } }",
                 serde_json::json!({}),
             )
             .await?;
@@ -297,6 +304,9 @@ impl AnimeProvider for AniListProvider {
             .map(|tag| MediaTag {
                 name: tag.name,
                 category: tag.category,
+                // Blank prose is treated as absent, matching how every other
+                // optional string in this module is handled.
+                description: non_empty(tag.description),
             })
             .collect())
     }
@@ -514,6 +524,9 @@ struct TagWire {
     name: String,
     #[serde(default)]
     category: String,
+    /// Nullable on AniList, so a tag without prose still deserialises.
+    #[serde(default)]
+    description: Option<String>,
     #[serde(rename = "isAdult", default)]
     is_adult: bool,
 }
@@ -1047,14 +1060,15 @@ mod tests {
     }
 
     /// The root `MediaTagCollection` payload shape. Each entry is
-    /// `(name, category, isAdult)`.
-    fn tag_response(tags: Vec<(&str, &str, bool)>) -> serde_json::Value {
+    /// `(name, category, description, isAdult)`.
+    fn tag_response(tags: Vec<(&str, &str, Option<&str>, bool)>) -> serde_json::Value {
         let entries: Vec<serde_json::Value> = tags
             .into_iter()
-            .map(|(name, category, is_adult)| {
+            .map(|(name, category, description, is_adult)| {
                 serde_json::json!({
                     "name": name,
                     "category": category,
+                    "description": description,
                     "isAdult": is_adult,
                 })
             })
@@ -1202,51 +1216,90 @@ mod tests {
     async fn tags_carry_their_category() {
         let (_server, provider) = provider_with(
             tag_response(vec![
-                ("Isekai", "Theme-Fantasy", false),
-                ("School", "Setting-Scene", false),
-            ]),
-            200,
-        )
-        .await;
+                    ("Isekai", "Theme-Fantasy", None, false),
+                    ("School", "Setting-Scene", None, false),
+                ]),
+                200,
+            )
+            .await;
 
-        let tags = provider.tags().await.expect("tags should succeed");
+            let tags = provider.tags().await.expect("tags should succeed");
 
-        // The category is what the filter UI groups by, so losing it would
-        // leave every tag in one undifferentiated list.
-        assert_eq!(tags.len(), 2);
-        assert_eq!(tags[0].name, "Isekai");
-        assert_eq!(tags[0].category, "Theme-Fantasy");
-        assert_eq!(tags[1].category, "Setting-Scene");
-    }
+            // The category is what the filter UI groups by, so losing it would
+            // leave every tag in one undifferentiated list.
+            assert_eq!(tags.len(), 2);
+            assert_eq!(tags[0].name, "Isekai");
+            assert_eq!(tags[0].category, "Theme-Fantasy");
+            assert_eq!(tags[1].category, "Setting-Scene");
+        }
 
-    /// Adult tags sit interleaved in the collection, not behind their own
-    /// field, so they have to be filtered out by flag.
-    #[tokio::test]
-    async fn tags_drop_the_adult_entries() {
-        let (_server, provider) = provider_with(
-            tag_response(vec![
-                ("Isekai", "Theme-Fantasy", false),
-                ("Nudity", "Sexual Content", true),
-            ]),
-            200,
-        )
-        .await;
+        /// The provider's prose is what the chip tooltip shows, so it has to
+        /// survive the mapping rather than being dropped as unmapped.
+        #[tokio::test]
+        async fn tags_carry_their_description() {
+            let (_server, provider) = provider_with(
+                tag_response(vec![
+                    ("Isekai", "Theme-Fantasy", Some("Another world."), false),
+                ]),
+                200,
+            )
+            .await;
 
-        let tags = provider.tags().await.unwrap();
-        assert_eq!(tags.len(), 1);
-        assert_eq!(tags[0].name, "Isekai");
-    }
+            let tags = provider.tags().await.unwrap();
+            assert_eq!(tags[0].description.as_deref(), Some("Another world."));
+        }
 
-    /// The adult flag only arrives if it was asked for. Omitting it would leave
-    /// every entry deserialising as non-adult and let the adult tags through
-    /// while the filter above still looked correct.
-    #[tokio::test]
-    async fn tags_query_asks_for_the_adult_flag() {
-        let (_server, provider) =
-            provider_expecting("MediaTagCollection { name category isAdult }").await;
+        /// AniList leaves the field nullable, and some entries carry only
+        /// whitespace. Either way the chip should render without a tooltip
+        /// rather than with an empty one.
+        #[tokio::test]
+        async fn tags_treat_a_blank_description_as_absent() {
+            let (_server, provider) = provider_with(
+                tag_response(vec![
+                    ("Isekai", "Theme-Fantasy", None, false),
+                    ("School", "Setting-Scene", Some("   "), false),
+                ]),
+                200,
+            )
+            .await;
 
-        provider.tags().await.expect("tags should succeed");
-    }
+            let tags = provider.tags().await.unwrap();
+            assert_eq!(tags[0].description, None);
+            assert_eq!(tags[1].description, None);
+        }
+
+        /// Adult tags sit interleaved in the collection, not behind their own
+        /// field, so they have to be filtered out by flag.
+        #[tokio::test]
+        async fn tags_drop_the_adult_entries() {
+            let (_server, provider) = provider_with(
+                tag_response(vec![
+                    ("Isekai", "Theme-Fantasy", None, false),
+                    ("Nudity", "Sexual Content", None, true),
+                ]),
+                200,
+            )
+            .await;
+
+            let tags = provider.tags().await.unwrap();
+            assert_eq!(tags.len(), 1);
+            assert_eq!(tags[0].name, "Isekai");
+        }
+
+        /// The adult flag and the description only arrive if they were asked
+        /// for. Omitting the flag would leave every entry deserialising as
+        /// non-adult and let the adult tags through while the filter above
+        /// still looked correct; omitting the description would silently empty
+        /// every tooltip.
+        #[tokio::test]
+        async fn tags_query_asks_for_the_adult_flag_and_description() {
+            let (_server, provider) = provider_expecting(
+                "MediaTagCollection { name category description isAdult }",
+            )
+            .await;
+
+            provider.tags().await.expect("tags should succeed");
+        }
 
     /// Mount a mock that only answers when the request body contains
     /// `expected`, so the assertion is about the query actually sent.

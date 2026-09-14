@@ -13,6 +13,12 @@ const TAGS: MediaTag[] = [
   { name: "Shounen", category: "Demographic" },
 ];
 
+/** A catalogue where one tag carries prose and the rest do not. */
+const TAGS_WITH_DESCRIPTION: MediaTag[] = [
+  { name: "Isekai", category: "Theme-Fantasy", description: "Another world." },
+  { name: "School", category: "Setting-Scene" },
+];
+
 /** The form element, which carries the submit target. */
 function form(): HTMLElement {
   return screen.getByTestId("filter-form");
@@ -171,6 +177,34 @@ describe("FilterPanel", () => {
 
     expect(screen.getByRole("checkbox", { name: "Isekai" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Magic" })).not.toBeChecked();
+  });
+
+  it("shows the provider's description as a tooltip", () => {
+    render(FilterPanel, {
+      props: {
+        genres: GENRES,
+        tags: TAGS_WITH_DESCRIPTION,
+        current: { sort: "popularity" },
+      },
+    });
+
+    const chip = screen.getByText("Isekai").closest("label");
+    expect(chip).toHaveAttribute("title", "Another world.");
+  });
+
+  /// A tag with no prose must not get `title=""`, which some browsers render as
+  /// an empty tooltip box rather than no tooltip at all.
+  it("omits the tooltip for a tag with no description", () => {
+    render(FilterPanel, {
+      props: {
+        genres: GENRES,
+        tags: TAGS_WITH_DESCRIPTION,
+        current: { sort: "popularity" },
+      },
+    });
+
+    const chip = screen.getByText("School").closest("label");
+    expect(chip).not.toHaveAttribute("title");
   });
 
   it("shows every category by default", () => {

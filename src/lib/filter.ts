@@ -199,8 +199,8 @@ export function filterHref(params: URLSearchParams, page: number): string {
  */
 export function groupTagsByCategory(
   tags: readonly MediaTag[],
-): { category: string; names: string[] }[] {
-  const groups: { category: string; names: string[] }[] = [];
+): { category: string; tags: MediaTag[] }[] {
+  const groups: { category: string; tags: MediaTag[] }[] = [];
   const index = new Map<string, number>();
 
   for (const tag of tags) {
@@ -208,9 +208,12 @@ export function groupTagsByCategory(
     if (at === undefined) {
       at = groups.length;
       index.set(tag.category, at);
-      groups.push({ category: tag.category, names: [] });
+      groups.push({ category: tag.category, tags: [] });
     }
-    groups[at].names.push(tag.name);
+    // The whole tag travels, not just its name: the chip needs the
+    // description for its tooltip, and re-looking it up by name would be a
+    // second source of truth.
+    groups[at].tags.push(tag);
   }
 
   return groups;

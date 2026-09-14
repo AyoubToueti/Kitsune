@@ -236,6 +236,12 @@ pub struct MediaTag {
     pub name: String,
     /// Grouping label, e.g. "Setting-Scene" or "Demographic".
     pub category: String,
+    /// The provider's own prose for what the tag means, shown on hover.
+    ///
+    /// Optional because the provider may have no description for a tag;
+    /// a tooltip-less chip is fine, an empty tooltip is not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// A work (anime now; movies and series later) as presented in the UI.

@@ -61,9 +61,11 @@
     return tagGroups
       .map((group) => ({
         category: group.category,
-        names: group.names.filter((name) => name.toLowerCase().includes(needle)),
+        tags: group.tags.filter((tag) =>
+          tag.name.toLowerCase().includes(needle),
+        ),
       }))
-      .filter((group) => group.names.length > 0);
+      .filter((group) => group.tags.length > 0);
   });
 
   /** Whether a search term excluded everything, so we can say so. */
@@ -230,16 +232,19 @@
             <p class={groupHeadingClass}>{categoryLabel(group.category)}</p>
 
             <div class="flex flex-wrap gap-2">
-              {#each group.names as name (name)}
-                <label class={chipClass}>
+              {#each group.tags as tag (tag.name)}
+                <!-- The provider's own prose rides along as a native tooltip.
+                     No positioning code, and it degrades to nothing when a
+                     tag has no description. -->
+                <label class={chipClass} title={tag.description ?? undefined}>
                   <input
                     type="checkbox"
                     name="tag"
-                    value={name}
-                    checked={selectedTags.has(name)}
+                    value={tag.name}
+                    checked={selectedTags.has(tag.name)}
                     class="sr-only"
                   />
-                  {name}
+                  {tag.name}
                 </label>
               {/each}
             </div>

@@ -199,10 +199,22 @@ describe("groupTagsByCategory", () => {
       { name: "School", category: "Setting-Scene" },
     ]);
 
-    expect(groups).toEqual([
-      { category: "Theme-Fantasy", names: ["Isekai", "Magic"] },
-      { category: "Setting-Scene", names: ["School"] },
+    expect(groups.map((g) => g.category)).toEqual([
+      "Theme-Fantasy",
+      "Setting-Scene",
     ]);
+    expect(groups[0].tags.map((t) => t.name)).toEqual(["Isekai", "Magic"]);
+    expect(groups[1].tags.map((t) => t.name)).toEqual(["School"]);
+  });
+
+  it("keeps each tag's description, which the chip tooltip needs", () => {
+    // The whole tag travels rather than just its name: dropping the
+    // description here would silently empty every tooltip.
+    const groups = groupTagsByCategory([
+      { name: "Isekai", category: "Theme-Fantasy", description: "Another world." },
+    ]);
+
+    expect(groups[0].tags[0].description).toBe("Another world.");
   });
 
   it("preserves the provider's category order", () => {

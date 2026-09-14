@@ -45,6 +45,13 @@ export type ListFilter =
 export interface MediaTag {
   name: string;
   category: string;
+  /**
+   * The provider's own prose for what the tag means.
+   *
+   * Optional: the provider may have no description for a tag, and the chip
+   * simply renders without a tooltip rather than with an empty one.
+   */
+  description?: string;
 }
 
 /** A work as presented in the UI. */
