@@ -63,6 +63,32 @@ describe("parseBrowseQuery", () => {
     expect(parse("").tags).toBeUndefined();
   });
 
+  it("reads every excluded tag, not just the first", () => {
+    expect(parse("exclude_tag=Harem&exclude_tag=Ecchi").excludedTags).toEqual([
+      "Harem",
+      "Ecchi",
+    ]);
+  });
+
+  it("drops blank excluded tags", () => {
+    expect(parse("exclude_tag=Harem&exclude_tag=%20").excludedTags).toEqual([
+      "Harem",
+    ]);
+  });
+
+  it("omits excluded tags entirely when none are given", () => {
+    expect(parse("").excludedTags).toBeUndefined();
+  });
+
+  // The two directions are independent parameters, not a sign on one value:
+  // a tag can be included and another excluded in the same view.
+  it("keeps inclusions and exclusions separate", () => {
+    const query = parse("tag=Isekai&exclude_tag=Harem");
+
+    expect(query.tags).toEqual(["Isekai"]);
+    expect(query.excludedTags).toEqual(["Harem"]);
+  });
+
   it("reads each enum filter", () => {
     const query = parse("format=tv&status=finished&season=fall");
 
@@ -177,6 +203,28 @@ describe("filterHref", () => {
 
   it("returns a bare path when there is nothing left", () => {
     expect(filterHref(new URLSearchParams("page=2"), 1)).toBe("/filter");
+  });
+
+  it("keeps excluded tags alongside inclusions when paging", () => {
+    const params = new URLSearchParams("tag=Isekai&exclude_tag=Harem");
+
+    expect(filterHref(params, 2)).toBe(
+      "/filter?tag=Isekai&exclude_tag=Harem&page=2",
+    );
+  });
+
+  // A shared filter bar has to link back to whichever route hosts it, so the
+  // base path cannot be hard-coded to /filter.
+  it("uses the given base path", () => {
+    const params = new URLSearchParams("format=tv");
+
+    expect(filterHref(params, 2, "/search")).toBe("/search?format=tv&page=2");
+  });
+
+  it("returns a bare base path when there is nothing left", () => {
+    expect(filterHref(new URLSearchParams("page=2"), 1, "/search")).toBe(
+      "/search",
+    );
   });
 
   it("does not mutate the parameters it is given", () => {

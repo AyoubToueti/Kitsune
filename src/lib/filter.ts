@@ -148,6 +148,14 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   const tags = params.getAll("tag").filter((t) => t.trim() !== "");
   if (tags.length > 0) query.tags = tags;
 
+  // Exclusion travels as its own parameter rather than as a sign on the tag.
+  // A tag name may legitimately be repeated, and overloading `tag=Isekai` to
+  // mean both directions would make the URL ambiguous.
+  const excludedTags = params
+    .getAll("exclude_tag")
+    .filter((t) => t.trim() !== "");
+  if (excludedTags.length > 0) query.excludedTags = excludedTags;
+
   const format = oneOf(params.get("format"), FORMAT_VALUES);
   if (format) query.format = format;
 
@@ -177,7 +185,11 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
  * Page 1 is written without a `page` parameter, so a filtered view has one
  * canonical URL rather than two spellings of the same results.
  */
-export function filterHref(params: URLSearchParams, page: number): string {
+export function filterHref(
+  params: URLSearchParams,
+  page: number,
+  base = "/filter",
+): string {
   const next = new URLSearchParams(params);
 
   if (page <= 1) {
@@ -187,7 +199,7 @@ export function filterHref(params: URLSearchParams, page: number): string {
   }
 
   const query = next.toString();
-  return query === "" ? "/filter" : `/filter?${query}`;
+  return query === "" ? base : `${base}?${query}`;
 }
 
 /**

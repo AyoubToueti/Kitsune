@@ -134,6 +134,14 @@ export interface BrowseQuery {
    * than erroring, so a typo would look like an empty result set.
    */
   tags?: string[];
+  /**
+   * Tags to reject, by name. Combined with AND, like `tags`.
+   *
+   * The provider's rank floor governs this direction too, so excluding a tag
+   * only drops works carrying it at or above that rank. Only names that came
+   * from `getTags()` may be sent, for the same reason as `tags`.
+   */
+  excludedTags?: string[];
   format?: FormatFilter;
   status?: StatusFilter;
   season?: SeasonFilter;
