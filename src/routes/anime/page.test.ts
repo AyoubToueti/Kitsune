@@ -179,6 +179,38 @@ describe("detail page", () => {
     );
   });
 
+  it("renders the recommendations row", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({
+        recommendations: [
+          {
+            anime: {
+              id: 16498,
+              provider: "anilist",
+              title: { romaji: "Fullmetal Alchemist" },
+              genres: [],
+              streamingEpisodes: [],
+              relations: [],
+              recommendations: [],
+            },
+            rating: 42,
+          },
+        ],
+      }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    expect(
+      screen.getByRole("heading", { name: /recommended/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /fullmetal/i })).toHaveAttribute(
+      "href",
+      "/anime/16498",
+    );
+  });
+
   it("renders streaming links when present", async () => {
     getAnimeMock.mockResolvedValue(
       anime({

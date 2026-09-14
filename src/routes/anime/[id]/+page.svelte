@@ -7,6 +7,7 @@
   import Synopsis from "$lib/components/Synopsis.svelte";
   import EpisodeGrid from "$lib/components/EpisodeGrid.svelte";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
+  import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
   import StreamingLinks from "$lib/components/StreamingLinks.svelte";
 
@@ -137,4 +138,8 @@
   <div class="mt-8">
     <StreamingLinks episodes={anime.streamingEpisodes} />
   </div>
+
+  <!-- Recommendations, full width below the grid: a poster row needs the room,
+       and it reads as "more like this" rather than part of the sidebar. -->
+  <Recommendations recommendations={anime.recommendations} />
 {/if}
