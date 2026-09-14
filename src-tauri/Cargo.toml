@@ -25,7 +25,7 @@ serde_json = "1"
 librqbit = { version = "9.0.1", features = ["http-api", "tracing-subscriber-utils"] }
 anyhow = "1.0.104"
 librqbit-dualstack-sockets = "0.7.0"
-tokio = { version = "1.53.1", features = ["rt"] }
+tokio = { version = "1.53.1", features = ["rt", "sync", "time"] }
 tracing = "0.1.44"
 reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
 async-trait = "0.1.92"

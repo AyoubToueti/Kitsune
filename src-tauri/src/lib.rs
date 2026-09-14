@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod player;
 pub mod providers;
 pub mod torrent;
 pub mod types;
@@ -19,6 +20,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(provider)
+        .manage(player::PlayerState::new())
         .invoke_handler(tauri::generate_handler![
             greet,
             commands::get_trending,
@@ -28,6 +30,12 @@ pub fn run() {
             commands::get_tags,
             commands::get_schedule,
             commands::get_anime,
+            player::commands::add_torrent,
+            player::commands::get_stream_url,
+            player::commands::open_in_player,
+            player::commands::get_player,
+            player::commands::set_player,
+            player::commands::suggested_players,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
