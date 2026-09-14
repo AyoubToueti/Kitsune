@@ -40,22 +40,49 @@
   const tagGroups = $derived(groupTagsByCategory(tags));
 
   /**
-   * Whether a category should start expanded.
+   * What the user typed into the tag search box.
    *
-   * A group holding an applied tag opens, otherwise the user cannot see which
-   * tags are active without hunting through collapsed sections.
+   * Lives outside the form's data: the box carries no `name`, so it narrows
+   * what is visible without ever being submitted as a filter.
    */
-  function startsOpen(names: string[]): boolean {
-    return names.some((name) => selectedTags.has(name));
-  }
+  let tagFilter = $state("");
 
-  /** Shared styling for the select controls. */
+  /**
+   * The groups to render, narrowed by the search box.
+   *
+   * A group whose tags all fail to match is dropped entirely -- an empty
+   * heading would just be noise. With no search term this is the full
+   * catalogue, so the common case costs nothing.
+   */
+  const visibleGroups = $derived.by(() => {
+    const needle = tagFilter.trim().toLowerCase();
+    if (needle === "") return tagGroups;
+
+    return tagGroups
+      .map((group) => ({
+        category: group.category,
+        names: group.names.filter((name) => name.toLowerCase().includes(needle)),
+      }))
+      .filter((group) => group.names.length > 0);
+  });
+
+  /** Whether a search term excluded everything, so we can say so. */
+  const nothingMatched = $derived(
+    tagFilter.trim() !== "" && visibleGroups.length === 0,
+  );
+
+  const hasCatalogue = $derived(genres.length > 0 || tagGroups.length > 0);
+
+  /** Shared styling for the select and search controls. */
   const selectClass =
     "rounded-lg border border-border-subtle bg-surface-hover px-3 py-1.5 text-sm text-ink focus:ring-2 focus:ring-accent focus:outline-none";
 
   /** Shared styling for a genre or tag checkbox chip. */
   const chipClass =
     "cursor-pointer rounded-full border border-border-subtle px-3 py-1 text-xs transition-colors has-checked:border-accent has-checked:bg-accent has-checked:text-white hover:text-ink";
+
+  /** Shared styling for a group heading inside the catalogue. */
+  const groupHeadingClass = "mb-2 text-xs font-medium text-ink-muted";
 </script>
 
 <!-- A plain GET form rather than a JS submit handler. The browser builds the
@@ -154,49 +181,55 @@
     </label>
   </div>
 
-  {#if genres.length}
-    <fieldset class="mt-4">
-      <legend class="mb-2 text-xs text-ink-faint">Genre</legend>
+  {#if hasCatalogue}
+    <fieldset class="mt-4 border-t border-border-subtle pt-4">
+      <legend class="mb-2 text-xs text-ink-faint">Genres &amp; tags</legend>
 
-      <div class="flex flex-wrap gap-2">
-        {#each genres as genre (genre)}
-          <!-- Checkboxes rather than a multi-select: every genre is visible at
-               once, and the browser sends repeated `genre` parameters. -->
-          <label class={chipClass}>
-            <input
-              type="checkbox"
-              name="genre"
-              value={genre}
-              checked={selectedGenres.has(genre)}
-              class="sr-only"
-            />
-            {genre}
-          </label>
-        {/each}
-      </div>
-    </fieldset>
-  {/if}
+      {#if tagGroups.length}
+        <!-- Deliberately carries no `name`: this narrows what is shown and must
+             not be submitted as a filter of its own. -->
+        <label class="mb-3 flex flex-col gap-1 text-xs text-ink-faint">
+          Filter tags
+          <input
+            type="search"
+            bind:value={tagFilter}
+            placeholder="Type to narrow the list"
+            autocomplete="off"
+            class={selectClass}
+          />
+        </label>
+      {/if}
 
-  {#if tagGroups.length}
-    <fieldset class="mt-4">
-      <legend class="mb-2 text-xs text-ink-faint">Tags</legend>
+      <div class="flex flex-col gap-3">
+        {#if genres.length}
+          <div>
+            <p class={groupHeadingClass}>Genres</p>
 
-      <!-- Native <details> rather than a JS toggle: it collapses without
-           JavaScript, and a closed <details> still submits its inputs because
-           they stay in the DOM -- only their rendering is hidden. -->
-      <div class="flex flex-col gap-2">
-        {#each tagGroups as group (group.category)}
-          <details
-            open={startsOpen(group.names)}
-            class="rounded-lg border border-border-subtle px-3 py-2"
-          >
-            <summary
-              class="cursor-pointer text-xs font-medium text-ink-muted transition-colors hover:text-ink"
-            >
-              {categoryLabel(group.category)}
-            </summary>
+            <div class="flex flex-wrap gap-2">
+              {#each genres as genre (genre)}
+                <!-- Checkboxes rather than a multi-select: every genre is
+                     visible at once, and the browser sends repeated `genre`
+                     parameters. -->
+                <label class={chipClass}>
+                  <input
+                    type="checkbox"
+                    name="genre"
+                    value={genre}
+                    checked={selectedGenres.has(genre)}
+                    class="sr-only"
+                  />
+                  {genre}
+                </label>
+              {/each}
+            </div>
+          </div>
+        {/if}
 
-            <div class="mt-2 flex flex-wrap gap-2">
+        {#each visibleGroups as group (group.category)}
+          <div>
+            <p class={groupHeadingClass}>{categoryLabel(group.category)}</p>
+
+            <div class="flex flex-wrap gap-2">
               {#each group.names as name (name)}
                 <label class={chipClass}>
                   <input
@@ -210,8 +243,12 @@
                 </label>
               {/each}
             </div>
-          </details>
+          </div>
         {/each}
+
+        {#if nothingMatched}
+          <p class="text-xs text-ink-faint">No tags match “{tagFilter}”.</p>
+        {/if}
       </div>
     </fieldset>
   {/if}

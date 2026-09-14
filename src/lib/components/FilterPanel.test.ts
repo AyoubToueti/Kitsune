@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen } from "@testing-library/svelte";
 
 import FilterPanel from "./FilterPanel.svelte";
 import type { BrowseQuery, MediaTag } from "$lib/types";
@@ -113,10 +113,30 @@ describe("FilterPanel", () => {
     }
   });
 
-  it("renders no tag section when the catalogue is empty", () => {
-    render(FilterPanel, { props: { genres: GENRES, current: { sort: "popularity" } } });
+  it("renders no catalogue section when there is nothing to show", () => {
+    render(FilterPanel, {
+      props: { genres: [], tags: [], current: { sort: "popularity" } },
+    });
 
-    expect(screen.queryByRole("group", { name: "Tags" })).toBeNull();
+    // An empty fieldset would be a heading with nothing under it.
+    expect(screen.queryByRole("group", { name: /genres/i })).toBeNull();
+  });
+
+  it("offers a tag search box when a catalogue exists", () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    expect(screen.getByLabelText("Filter tags")).toBeInTheDocument();
+  });
+
+  it("offers no tag search box when there are no tags", () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: [], current: { sort: "popularity" } },
+    });
+
+    // A search box that can never match anything is worse than none.
+    expect(screen.queryByLabelText("Filter tags")).toBeNull();
   });
 
   it("groups tags under their category", () => {
@@ -153,32 +173,76 @@ describe("FilterPanel", () => {
     expect(screen.getByRole("checkbox", { name: "Magic" })).not.toBeChecked();
   });
 
-  /// A collapsed section hides its chips, so an applied tag inside one would be
-  /// invisible: the user would see an active filter with no way to spot it.
-  it("expands the category holding an applied tag", () => {
+  it("shows every category by default", () => {
     render(FilterPanel, {
-      props: {
-        genres: GENRES,
-        tags: TAGS,
-        current: { tags: ["School"], sort: "popularity" },
-      },
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
     });
 
-    const section = screen.getByText("Setting / Scene").closest("details");
-    expect(section).toHaveAttribute("open");
+    for (const label of ["Theme / Fantasy", "Setting / Scene", "Demographic"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
   });
 
-  it("leaves categories without applied tags collapsed", () => {
+  it("narrows the catalogue to tags matching the search term", async () => {
     render(FilterPanel, {
-      props: {
-        genres: GENRES,
-        tags: TAGS,
-        current: { tags: ["School"], sort: "popularity" },
-      },
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
     });
 
-    const section = screen.getByText("Theme / Fantasy").closest("details");
-    expect(section).not.toHaveAttribute("open");
+    await fireEvent.input(screen.getByLabelText("Filter tags"), {
+      target: { value: "school" },
+    });
+
+    expect(screen.getByRole("checkbox", { name: "School" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Isekai" })).toBeNull();
+  });
+
+  it("matches a search term case-insensitively", async () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    await fireEvent.input(screen.getByLabelText("Filter tags"), {
+      target: { value: "ISeK" },
+    });
+
+    expect(screen.getByRole("checkbox", { name: "Isekai" })).toBeInTheDocument();
+  });
+
+  /// A heading with no chips under it is just noise once a search is active.
+  it("hides a category whose tags all fail to match", async () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    await fireEvent.input(screen.getByLabelText("Filter tags"), {
+      target: { value: "school" },
+    });
+
+    expect(screen.getByText("Setting / Scene")).toBeInTheDocument();
+    expect(screen.queryByText("Theme / Fantasy")).toBeNull();
+  });
+
+  it("says so when a search term matches nothing", async () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    await fireEvent.input(screen.getByLabelText("Filter tags"), {
+      target: { value: "zzzz" },
+    });
+
+    // Silence would look like a broken list rather than an empty result.
+    expect(screen.getByText(/no tags match/i)).toBeInTheDocument();
+  });
+
+  it("keeps the catalogue hidden behind the search box out of the submission", () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    // The search box narrows the view; if it were submitted it would become a
+    // filter the backend never asked for.
+    expect(screen.getByLabelText("Filter tags")).not.toHaveAttribute("name");
   });
 
   it("has a submit button", () => {
