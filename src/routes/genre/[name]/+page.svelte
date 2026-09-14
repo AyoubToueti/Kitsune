@@ -3,6 +3,7 @@
 
   import { browseAnime } from "$lib/api/anime";
   import AnimeGrid from "$lib/components/AnimeGrid.svelte";
+  import AnimeGridSkeleton from "$lib/components/AnimeGridSkeleton.svelte";
   import { createInfiniteScroll } from "$lib/infinite-scroll.svelte";
   import type { AnimePage } from "$lib/types";
 
@@ -43,7 +44,7 @@
 {#if genre === ""}
   <p class="py-16 text-center text-ink-muted">No genre selected.</p>
 {:else if scroll.loading}
-  <p class="py-16 text-center text-ink-muted">Loading…</p>
+  <AnimeGridSkeleton count={PER_PAGE} />
 {:else if scroll.items.length === 0 && scroll.error}
   <div class="py-16 text-center">
     <p class="text-ink">Could not load that genre.</p>
@@ -64,7 +65,9 @@
   <AnimeGrid anime={scroll.items} />
 
   {#if scroll.loadingMore}
-    <p class="py-6 text-center text-sm text-ink-faint">Loading more…</p>
+    <div class="mt-4">
+      <AnimeGridSkeleton count={6} />
+    </div>
   {/if}
 
   {#if scroll.error}

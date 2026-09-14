@@ -5,6 +5,7 @@
   import { formatSeason, nextSeason, seasonHref, seasonQuery } from "$lib/season";
   import type { Anime } from "$lib/types";
   import AnimeCard from "./AnimeCard.svelte";
+  import AnimeGridSkeleton from "./AnimeGridSkeleton.svelte";
 
   /** Six columns at the widest, so two rows. */
   const LIMIT = 12;
@@ -51,7 +52,7 @@
   </div>
 
   {#if loading}
-    <p class="text-xs text-ink-faint">Loading…</p>
+    <AnimeGridSkeleton count={LIMIT} />
   {:else if error}
     <p class="text-xs text-ink-faint">
       Could not load. <span class="text-ink-muted">{error}</span>

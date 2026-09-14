@@ -4,6 +4,7 @@
   import { browseAnime, errorMessage } from "$lib/api/anime";
   import type { Anime } from "$lib/types";
   import TopList from "./TopList.svelte";
+  import TopListSkeleton from "./TopListSkeleton.svelte";
 
   /**
    * How many rows the preview shows.
@@ -51,7 +52,9 @@
   </div>
 
   {#if loading}
-    <p class="text-xs text-ink-faint">Loading…</p>
+    <div class="rounded-xl border border-border-subtle py-1">
+      <TopListSkeleton count={PREVIEW} />
+    </div>
   {:else if error}
     <p class="text-xs text-ink-faint">
       Could not load. <span class="text-ink-muted">{error}</span>

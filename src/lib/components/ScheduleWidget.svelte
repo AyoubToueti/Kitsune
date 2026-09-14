@@ -4,6 +4,7 @@
   import { errorMessage, getSchedule } from "$lib/api/anime";
   import { buildDayStrip, formatTime } from "$lib/schedule";
   import { displayTitle, type ScheduledEpisode } from "$lib/types";
+  import Skeleton from "./Skeleton.svelte";
 
   /**
    * Per-day cap.
@@ -137,7 +138,22 @@
       Could not load that day. <span class="text-ink-muted">{error}</span>
     </p>
   {:else if loading || entries === null}
-    <p class="py-4 text-sm text-ink-faint">Loading…</p>
+    <!-- Mirrors the entry rows: a time bar, a title line, and an episode chip. -->
+    <div
+      role="status"
+      aria-busy="true"
+      class="divide-y divide-border-subtle"
+      data-testid="schedule-skeleton"
+    >
+      <span class="sr-only">Loading…</span>
+      {#each Array(5) as _, i (i)}
+        <div class="flex items-center gap-3 py-2">
+          <Skeleton class="h-3 w-12 shrink-0" />
+          <Skeleton class="h-4 min-w-0 flex-1" />
+          <Skeleton class="h-5 w-20 shrink-0 rounded" />
+        </div>
+      {/each}
+    </div>
   {:else if entries.length === 0}
     <p class="py-4 text-sm text-ink-faint">Nothing scheduled.</p>
   {:else}

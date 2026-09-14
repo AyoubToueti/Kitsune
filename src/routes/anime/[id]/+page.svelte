@@ -4,6 +4,7 @@
   import { errorMessage, getAnime } from "$lib/api/anime";
   import { displayTitle, type Anime } from "$lib/types";
   import MetadataStrip from "$lib/components/MetadataStrip.svelte";
+  import DetailPageSkeleton from "$lib/components/DetailPageSkeleton.svelte";
   import Synopsis from "$lib/components/Synopsis.svelte";
   import EpisodeGrid from "$lib/components/EpisodeGrid.svelte";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
@@ -57,7 +58,7 @@
 </script>
 
 {#if loading}
-  <p class="py-16 text-center text-ink-muted">Loading…</p>
+  <DetailPageSkeleton />
 {:else if error}
   <div class="py-16 text-center">
     <p class="text-ink">Could not load details.</p>

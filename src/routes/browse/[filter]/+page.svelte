@@ -3,6 +3,7 @@
 
   import { errorMessage, getList } from "$lib/api/anime";
   import AnimeCard from "$lib/components/AnimeCard.svelte";
+  import AnimeGridSkeleton from "$lib/components/AnimeGridSkeleton.svelte";
   import type { Anime, ListFilter } from "$lib/types";
 
   const LIMIT = 30;
@@ -84,7 +85,7 @@
 {#if filter === null}
   <p class="py-16 text-center text-ink-muted">Unknown list.</p>
 {:else if loading}
-  <p class="py-16 text-center text-ink-muted">Loading…</p>
+  <AnimeGridSkeleton count={LIMIT} />
 {:else if error}
   <div class="py-16 text-center">
     <p class="text-ink">Could not load that list.</p>

@@ -3,6 +3,7 @@
 
   import { browseAnime, errorMessage } from "$lib/api/anime";
   import Pagination from "$lib/components/Pagination.svelte";
+  import TopListSkeleton from "$lib/components/TopListSkeleton.svelte";
   import TopList from "$lib/components/TopList.svelte";
   import { filterHref } from "$lib/filter";
   import { clampPage } from "$lib/pagination";
@@ -69,7 +70,9 @@
 <h1 class="mb-4 text-lg font-semibold tracking-tight">Top rated anime</h1>
 
 {#if loading}
-  <p class="py-16 text-center text-ink-muted">Loading…</p>
+  <div class="rounded-xl border border-border-subtle py-1">
+    <TopListSkeleton count={PER_PAGE} />
+  </div>
 {:else if error}
   <div class="py-16 text-center">
     <p class="text-ink">Could not load the ranking.</p>

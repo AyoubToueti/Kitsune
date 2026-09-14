@@ -4,6 +4,7 @@
   import { errorMessage } from "$lib/api/anime";
   import type { Anime } from "$lib/types";
   import PosterRow from "./PosterRow.svelte";
+  import AnimeCardSkeleton from "./AnimeCardSkeleton.svelte";
 
   let {
     title,
@@ -46,7 +47,12 @@
        section does not pop into existence and shift the page as it loads. -->
   <section class="mt-8">
     <h2 class="mb-3 text-lg font-semibold tracking-tight">{title}</h2>
-    <p class="text-sm text-ink-faint">Loading…</p>
+    <div role="status" aria-busy="true" class="flex gap-4 overflow-hidden">
+      <span class="sr-only">Loading…</span>
+      {#each Array(6) as _, i (i)}
+        <AnimeCardSkeleton />
+      {/each}
+    </div>
   </section>
 {:else if error}
   <section class="mt-8">

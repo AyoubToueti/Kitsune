@@ -4,6 +4,7 @@
   import { errorMessage } from "$lib/api/anime";
   import type { Anime, ListFilter } from "$lib/types";
   import ListBlock from "./ListBlock.svelte";
+  import AnimeCardSkeleton from "./AnimeCardSkeleton.svelte";
 
   let {
     title,
@@ -45,7 +46,14 @@
     <h2 class="mb-2 text-sm font-semibold tracking-tight text-accent">
       {title}
     </h2>
-    <p class="text-xs text-ink-faint">Loading…</p>
+    <div role="status" aria-busy="true" class="flex gap-3 overflow-hidden">
+      <span class="sr-only">Loading…</span>
+      {#each Array(4) as _, i (i)}
+        <div class="w-24 shrink-0">
+          <AnimeCardSkeleton />
+        </div>
+      {/each}
+    </div>
   </section>
 {:else if error}
   <section class="rounded-xl border border-border-subtle p-3">

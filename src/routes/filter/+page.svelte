@@ -4,6 +4,7 @@
   import { browseAnime, getGenres, getTags } from "$lib/api/anime";
   import ActiveFilters from "$lib/components/ActiveFilters.svelte";
   import AnimeGrid from "$lib/components/AnimeGrid.svelte";
+  import AnimeGridSkeleton from "$lib/components/AnimeGridSkeleton.svelte";
   import FilterBar from "$lib/components/FilterBar.svelte";
   import { parseBrowseQuery } from "$lib/filter";
   import { createInfiniteScroll } from "$lib/infinite-scroll.svelte";
@@ -71,7 +72,7 @@
 
 <div class="mt-8">
   {#if scroll.loading}
-    <p class="py-16 text-center text-ink-muted">Loading…</p>
+    <AnimeGridSkeleton count={PER_PAGE} />
   {:else if scroll.items.length === 0 && scroll.error}
     <div class="py-16 text-center">
       <p class="text-ink">Could not load results.</p>
@@ -90,7 +91,9 @@
     <AnimeGrid anime={scroll.items} />
 
     {#if scroll.loadingMore}
-      <p class="py-6 text-center text-sm text-ink-faint">Loading more…</p>
+      <div class="mt-4">
+        <AnimeGridSkeleton count={6} />
+      </div>
     {/if}
 
     {#if scroll.error}
