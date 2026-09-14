@@ -119,6 +119,14 @@ export type SeasonFilter = "winter" | "spring" | "summer" | "fall";
 export interface BrowseQuery {
   search?: string;
   genres?: string[];
+  /**
+   * Tags to require, by name. Combined with AND, like `genres`.
+   *
+   * These are the provider's tag namespace, not its genres. Only names that
+   * came from `getTags()` may be sent: an unknown tag matches nothing rather
+   * than erroring, so a typo would look like an empty result set.
+   */
+  tags?: string[];
   format?: FormatFilter;
   status?: StatusFilter;
   season?: SeasonFilter;

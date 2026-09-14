@@ -7,6 +7,7 @@
 import type {
   BrowseQuery,
   FormatFilter,
+  MediaTag,
   SeasonFilter,
   SortOption,
   StatusFilter,
@@ -140,6 +141,13 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   const genres = params.getAll("genre").filter((g) => g.trim() !== "");
   if (genres.length > 0) query.genres = genres;
 
+  // Tags are not validated against a known list here: the catalogue is fetched
+  // at runtime, and this function is pure. The backend treats an unrecognised
+  // tag as matching nothing rather than erroring, so a hand-edited value
+  // degrades to an empty result instead of a failure.
+  const tags = params.getAll("tag").filter((t) => t.trim() !== "");
+  if (tags.length > 0) query.tags = tags;
+
   const format = oneOf(params.get("format"), FORMAT_VALUES);
   if (format) query.format = format;
 
@@ -180,6 +188,46 @@ export function filterHref(params: URLSearchParams, page: number): string {
 
   const query = next.toString();
   return query === "" ? "/filter" : `/filter?${query}`;
+}
+
+/**
+ * The provider's tag names, grouped under their category for display.
+ *
+ * Order is preserved from the input rather than sorted: a provider that
+ * already returns categories in a sensible order should keep it, and
+ * re-sorting here would silently undo that.
+ */
+export function groupTagsByCategory(
+  tags: readonly MediaTag[],
+): { category: string; names: string[] }[] {
+  const groups: { category: string; names: string[] }[] = [];
+  const index = new Map<string, number>();
+
+  for (const tag of tags) {
+    let at = index.get(tag.category);
+    if (at === undefined) {
+      at = groups.length;
+      index.set(tag.category, at);
+      groups.push({ category: tag.category, names: [] });
+    }
+    groups[at].names.push(tag.name);
+  }
+
+  return groups;
+}
+
+/**
+ * Turn a provider's category key into a heading.
+ *
+ * The provider packs a hierarchy into one string with a hyphen
+ * ("Cast-Main Cast", "Theme-Game-Sport"). Only the FIRST hyphen is a
+ * separator -- later ones are part of the name, as in "Game-Card & Board" --
+ * so this must not replace every occurrence.
+ */
+export function categoryLabel(category: string): string {
+  const at = category.indexOf("-");
+  if (at === -1) return category;
+  return `${category.slice(0, at)} / ${category.slice(at + 1)}`;
 }
 
 /** Years offered in the year select, newest first. */

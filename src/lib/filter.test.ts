@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  categoryLabel,
   filterHref,
+  groupTagsByCategory,
   parseBrowseQuery,
   yearOptions,
   FORMAT_VALUES,
@@ -47,6 +49,18 @@ describe("parseBrowseQuery", () => {
 
   it("omits genres entirely when none are given", () => {
     expect(parse("").genres).toBeUndefined();
+  });
+
+  it("reads every tag, not just the first", () => {
+    expect(parse("tag=Isekai&tag=School").tags).toEqual(["Isekai", "School"]);
+  });
+
+  it("drops blank tags", () => {
+    expect(parse("tag=Isekai&tag=%20").tags).toEqual(["Isekai"]);
+  });
+
+  it("omits tags entirely when none are given", () => {
+    expect(parse("").tags).toBeUndefined();
   });
 
   it("reads each enum filter", () => {
@@ -174,6 +188,54 @@ describe("filterHref", () => {
 
     expect(params.get("page")).toBeNull();
     expect(params.toString()).toBe("format=tv");
+  });
+});
+
+describe("groupTagsByCategory", () => {
+  it("collects tags under their category", () => {
+    const groups = groupTagsByCategory([
+      { name: "Isekai", category: "Theme-Fantasy" },
+      { name: "Magic", category: "Theme-Fantasy" },
+      { name: "School", category: "Setting-Scene" },
+    ]);
+
+    expect(groups).toEqual([
+      { category: "Theme-Fantasy", names: ["Isekai", "Magic"] },
+      { category: "Setting-Scene", names: ["School"] },
+    ]);
+  });
+
+  it("preserves the provider's category order", () => {
+    // Re-sorting here would silently undo whatever order the provider chose.
+    const groups = groupTagsByCategory([
+      { name: "Shounen", category: "Demographic" },
+      { name: "Isekai", category: "Theme-Fantasy" },
+    ]);
+
+    expect(groups.map((g) => g.category)).toEqual([
+      "Demographic",
+      "Theme-Fantasy",
+    ]);
+  });
+
+  it("returns nothing for an empty catalogue", () => {
+    expect(groupTagsByCategory([])).toEqual([]);
+  });
+});
+
+describe("categoryLabel", () => {
+  it("splits on the first hyphen", () => {
+    expect(categoryLabel("Cast-Main Cast")).toBe("Cast / Main Cast");
+  });
+
+  it("leaves later hyphens alone", () => {
+    // "Theme-Game-Sport" is three levels, not a typo. Replacing every hyphen
+    // would render it "Theme / Game / Sport", which is a different taxonomy.
+    expect(categoryLabel("Theme-Game-Sport")).toBe("Theme / Game-Sport");
+  });
+
+  it("passes a category with no hyphen through unchanged", () => {
+    expect(categoryLabel("Technical")).toBe("Technical");
   });
 });
 
