@@ -2,7 +2,26 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { StreamingEpisode } from "$lib/types";
 
-  let { episodes = [] }: { episodes?: StreamingEpisode[] } = $props();
+  let {
+    episodes = [],
+    selected,
+    onSelect,
+  }: {
+    episodes?: StreamingEpisode[];
+    /**
+     * Index of the episode to mark as playing. Only meaningful alongside
+     * `onSelect`; the list stays a set of links without one.
+     */
+    selected?: number;
+    /**
+     * Called with the chosen index instead of opening the entry's stream URL.
+     *
+     * The watch page passes this so a click picks an episode to play from the
+     * reader's own torrent, where the detail page leaves it undefined and the
+     * card opens AniList's licensed link as before.
+     */
+    onSelect?: (index: number) => void;
+  } = $props();
 
   /** How long a jumped-to episode stays highlighted, in milliseconds. */
   const HIGHLIGHT_MS = 3000;
@@ -131,12 +150,15 @@
           <li data-episode-index={index}>
             <button
               type="button"
-              onclick={() => openUrl(ep.url)}
+              onclick={() => (onSelect ? onSelect(index) : openUrl(ep.url))}
               aria-label={label(ep)}
+              aria-current={selected === index ? "true" : undefined}
               data-highlighted={highlighted === index ? "true" : undefined}
               class="group relative block aspect-video w-full overflow-hidden rounded-lg border bg-surface-hover text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {highlighted === index
                 ? 'border-accent ring-2 ring-accent'
-                : 'border-border-subtle hover:border-accent'}"
+                : selected === index
+                  ? 'border-accent'
+                  : 'border-border-subtle hover:border-accent'}"
             >
               {#if ep.thumbnail}
                 <img

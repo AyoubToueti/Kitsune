@@ -88,6 +88,41 @@ describe("EpisodeList", () => {
     expect(openUrlMock).toHaveBeenCalledWith("https://example.test/watch/1");
   });
 
+  it("calls onSelect with the index instead of opening a url", async () => {
+    const onSelect = vi.fn();
+    render(EpisodeList, {
+      props: {
+        episodes: [
+          episode({ title: "Episode 1" }),
+          episode({ title: "Episode 2", url: "https://x.test/2" }),
+        ],
+        onSelect,
+      },
+    });
+
+    await fireEvent.click(episodeCards()[1]);
+
+    // The watch page plays the reader's own file, so the licensed link must
+    // not be opened as well.
+    expect(onSelect).toHaveBeenCalledWith(1);
+    expect(openUrlMock).not.toHaveBeenCalled();
+  });
+
+  it("marks the selected episode as current", () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [
+          episode({ title: "Episode 1" }),
+          episode({ title: "Episode 2", url: "https://x.test/2" }),
+        ],
+        selected: 1,
+      },
+    });
+
+    expect(episodeCards()[1]).toHaveAttribute("aria-current", "true");
+    expect(episodeCards()[0]).not.toHaveAttribute("aria-current");
+  });
+
   it("renders nothing when there are no episodes", () => {
     const { container } = render(EpisodeList, { props: { episodes: [] } });
 
