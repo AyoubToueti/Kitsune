@@ -137,9 +137,9 @@
   </div>
 
   <!-- Where to watch -->
-  <div class="mt-8">
+  <!-- <div class="mt-8">
     <StreamingLinks episodes={anime.streamingEpisodes} />
-  </div>
+  </div> -->
 
   <!-- Recommendations, full width below the grid: a poster row needs the room,
        and it reads as "more like this" rather than part of the sidebar. -->
