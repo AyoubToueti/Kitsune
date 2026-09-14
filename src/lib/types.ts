@@ -233,6 +233,29 @@ export interface ScheduledEpisode {
 }
 
 /**
+ * One file inside a torrent.
+ *
+ * Mirrors the Rust `TorrentFile`. `idx` is what the stream URL is built from,
+ * so it is the value the UI passes back rather than the array position.
+ */
+export interface TorrentFile {
+  idx: number;
+  name: string;
+  lengthBytes: number;
+}
+
+/**
+ * A torrent that has been added, with the files it resolved.
+ *
+ * Mirrors the Rust `TorrentHandle`. `id` and a file's `idx` together identify
+ * one stream URL.
+ */
+export interface TorrentHandle {
+  id: number;
+  files: TorrentFile[];
+}
+
+/**
  * Best available title, following the same preference order as the Rust
  * `Title::display`: user's own choice, then English, then romaji, then the
  * native form.
