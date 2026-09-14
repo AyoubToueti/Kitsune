@@ -33,11 +33,55 @@
     current: BrowseQuery;
   } = $props();
 
+  /**
+   * What a tag chip is currently doing.
+   *
+   * Absent from the map means "off", so the map only ever holds the tags the
+   * user has actually touched. That keeps the common case (nothing selected)
+   * allocation-free and makes "is this tag on?" a single lookup.
+   */
+  type TagState = "include" | "exclude";
+
   const years = yearOptions();
   const selectedGenres = $derived(new Set(current.genres ?? []));
-  const selectedTags = $derived(new Set(current.tags ?? []));
 
   const tagGroups = $derived(groupTagsByCategory(tags));
+
+  /**
+   * The chip states, seeded from the URL.
+   *
+   * Seeded once rather than derived: the user's clicks are the source of truth
+   * while the form is open, and the URL is re-read on the next page load after
+   * a submit. Deriving would fight the clicks.
+   */
+  function initialTagStates(): Record<string, TagState> {
+    const states: Record<string, TagState> = {};
+    for (const name of current.tags ?? []) states[name] = "include";
+    for (const name of current.excludedTags ?? []) states[name] = "exclude";
+    return states;
+  }
+
+  let tagStates = $state<Record<string, TagState>>(initialTagStates());
+
+  /**
+   * Advance one tag through off -> include -> exclude -> off.
+   *
+   * Replaced rather than mutated so the `$state` proxy sees the change; a
+   * delete on the proxy would not notify anything reading the key.
+   */
+  function cycleTag(name: string) {
+    const updated = { ...tagStates };
+
+    if (updated[name] === undefined) {
+      updated[name] = "include";
+    } else if (updated[name] === "include") {
+      updated[name] = "exclude";
+    } else {
+      delete updated[name];
+    }
+
+    tagStates = updated;
+  }
 
   /**
    * What the user typed into the tag search box.
@@ -79,17 +123,37 @@
   const selectClass =
     "rounded-lg border border-border-subtle bg-surface-hover px-3 py-1.5 text-sm text-ink focus:ring-2 focus:ring-accent focus:outline-none";
 
-  /** Shared styling for a genre or tag checkbox chip. */
-  const chipClass =
+  /** Shared styling for a genre chip, which stays a plain checkbox. */
+  const genreChipClass =
     "cursor-pointer rounded-full border border-border-subtle px-3 py-1 text-xs transition-colors has-checked:border-accent has-checked:bg-accent has-checked:text-white hover:text-ink";
+
+  /**
+   * Styling for a tag chip, which carries its own state.
+   *
+   * Three visual states rather than two: a rejected tag has to be as legible
+   * as a required one, or the user cannot tell which direction they picked.
+   */
+  function tagChipClass(state: TagState | undefined): string {
+    const base =
+      "cursor-pointer rounded-full border px-3 py-1 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent";
+
+    if (state === "include") {
+      return `${base} border-accent bg-accent text-white`;
+    }
+    if (state === "exclude") {
+      return `${base} border-danger bg-danger text-white`;
+    }
+    return `${base} border-border-subtle text-ink hover:text-accent`;
+  }
 
   /** Shared styling for a group heading inside the catalogue. */
   const groupHeadingClass = "mb-2 text-xs font-medium text-ink-muted";
 </script>
 
-<!-- A plain GET form rather than a JS submit handler. The browser builds the
-     query string, the page reads it back, and the whole thing works without
-     JavaScript and is testable without SvelteKit's runtime. -->
+<!-- A plain GET form. The browser builds the query string, the page reads it
+     back, and the filters survive a reload with no state store. Tag cycling
+     needs script, but the submission itself does not: the hidden inputs are
+     real form fields, so the resulting URL is still the whole truth. -->
 <form
   action="/filter"
   method="GET"
@@ -209,10 +273,9 @@
 
             <div class="flex flex-wrap gap-2">
               {#each genres as genre (genre)}
-                <!-- Checkboxes rather than a multi-select: every genre is
-                     visible at once, and the browser sends repeated `genre`
-                     parameters. -->
-                <label class={chipClass}>
+                <!-- Genres stay plain checkboxes: a genre is only ever required
+                     or absent, so there is no third state to cycle through. -->
+                <label class={genreChipClass}>
                   <input
                     type="checkbox"
                     name="genre"
@@ -233,19 +296,25 @@
 
             <div class="flex flex-wrap gap-2">
               {#each group.tags as tag (tag.name)}
-                <!-- The provider's own prose rides along as a native tooltip.
-                     No positioning code, and it degrades to nothing when a
-                     tag has no description. -->
-                <label class={chipClass} title={tag.description ?? undefined}>
-                  <input
-                    type="checkbox"
-                    name="tag"
-                    value={tag.name}
-                    checked={selectedTags.has(tag.name)}
-                    class="sr-only"
-                  />
+                <button
+                  type="button"
+                  data-testid="tag-chip"
+                  data-state={tagStates[tag.name] ?? "off"}
+                  title={tag.description ?? undefined}
+                  onclick={() => cycleTag(tag.name)}
+                  class={tagChipClass(tagStates[tag.name])}
+                >
                   {tag.name}
-                </label>
+                </button>
+
+                <!-- The chip is a button, so the submission is carried by these
+                     hidden fields. Exactly one exists per active tag, which is
+                     what keeps the URL unambiguous about the direction. -->
+                {#if tagStates[tag.name] === "include"}
+                  <input type="hidden" name="tag" value={tag.name} />
+                {:else if tagStates[tag.name] === "exclude"}
+                  <input type="hidden" name="exclude_tag" value={tag.name} />
+                {/if}
               {/each}
             </div>
           </div>

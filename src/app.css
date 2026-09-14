@@ -14,6 +14,9 @@
   --color-accent: #7c5cff;
   --color-accent-hover: #8f74ff;
   --color-score: #ffc857;
+  /* Marks an exclusion. A rejected filter is not an error, but it is the
+     opposite of the accent-coloured inclusion, so it needs its own hue. */
+  --color-danger: #e5484d;
 }
 
 /* Base look. Kept minimal: component styling lives in the components. */

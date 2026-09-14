@@ -156,17 +156,17 @@ describe("FilterPanel", () => {
     }
   });
 
-  it("renders a checkbox per tag", () => {
+  it("renders a chip per tag", () => {
     render(FilterPanel, {
       props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
     });
 
     for (const tag of TAGS) {
-      expect(screen.getByRole("checkbox", { name: tag.name })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: tag.name })).toBeInTheDocument();
     }
   });
 
-  it("checks the tags that are applied", () => {
+  it("seeds the chip state from the applied filters", () => {
     render(FilterPanel, {
       props: {
         genres: GENRES,
@@ -175,8 +175,29 @@ describe("FilterPanel", () => {
       },
     });
 
-    expect(screen.getByRole("checkbox", { name: "Isekai" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Magic" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Isekai" })).toHaveAttribute(
+      "data-state",
+      "include",
+    );
+    expect(screen.getByRole("button", { name: "Magic" })).toHaveAttribute(
+      "data-state",
+      "off",
+    );
+  });
+
+  it("seeds an excluded chip from the applied filters", () => {
+    render(FilterPanel, {
+      props: {
+        genres: GENRES,
+        tags: TAGS,
+        current: { excludedTags: ["Harem"], sort: "popularity" },
+      },
+    });
+
+    // The two directions must not be confused on the way in from the URL.
+    expect(
+      screen.getByRole("button", { name: "Isekai" }),
+    ).toHaveAttribute("data-state", "off");
   });
 
   it("shows the provider's description as a tooltip", () => {
@@ -188,12 +209,12 @@ describe("FilterPanel", () => {
       },
     });
 
-    const chip = screen.getByText("Isekai").closest("label");
+    const chip = screen.getByRole("button", { name: "Isekai" });
     expect(chip).toHaveAttribute("title", "Another world.");
   });
 
-  /// A tag with no prose must not get `title=""`, which some browsers render as
-  /// an empty tooltip box rather than no tooltip at all.
+  // A tag with no prose must not get `title=""`, which some browsers render as
+  // an empty tooltip box rather than no tooltip at all.
   it("omits the tooltip for a tag with no description", () => {
     render(FilterPanel, {
       props: {
@@ -203,7 +224,7 @@ describe("FilterPanel", () => {
       },
     });
 
-    const chip = screen.getByText("School").closest("label");
+    const chip = screen.getByRole("button", { name: "School" });
     expect(chip).not.toHaveAttribute("title");
   });
 
@@ -226,8 +247,8 @@ describe("FilterPanel", () => {
       target: { value: "school" },
     });
 
-    expect(screen.getByRole("checkbox", { name: "School" })).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "Isekai" })).toBeNull();
+    expect(screen.getByRole("button", { name: "School" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Isekai" })).toBeNull();
   });
 
   it("matches a search term case-insensitively", async () => {
@@ -239,7 +260,76 @@ describe("FilterPanel", () => {
       target: { value: "ISeK" },
     });
 
-    expect(screen.getByRole("checkbox", { name: "Isekai" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Isekai" })).toBeInTheDocument();
+  });
+
+  /** Every chip's submission state, as the browser would build it. */
+  function submitted(): { tag: string[]; exclude_tag: string[] } {
+    const data = new FormData(form() as HTMLFormElement);
+    return {
+      tag: data.getAll("tag").map(String),
+      exclude_tag: data.getAll("exclude_tag").map(String),
+    };
+  }
+
+  it("cycles a tag off -> include -> exclude -> off", async () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    const chip = screen.getByRole("button", { name: "Isekai" });
+
+    // Untouched: present but inert.
+    expect(chip).toHaveAttribute("data-state", "off");
+    expect(submitted().tag).toEqual([]);
+    expect(submitted().exclude_tag).toEqual([]);
+
+    await fireEvent.click(chip);
+    expect(chip).toHaveAttribute("data-state", "include");
+    expect(submitted().tag).toEqual(["Isekai"]);
+
+    await fireEvent.click(chip);
+    expect(chip).toHaveAttribute("data-state", "exclude");
+    expect(submitted().exclude_tag).toEqual(["Isekai"]);
+    // The include must be gone, or the tag would be required AND rejected.
+    expect(submitted().tag).toEqual([]);
+
+    await fireEvent.click(chip);
+    expect(chip).toHaveAttribute("data-state", "off");
+    expect(submitted().exclude_tag).toEqual([]);
+  });
+
+  it("tracks each tag's state independently", async () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Isekai" }));
+    await fireEvent.click(screen.getByRole("button", { name: "School" }));
+    await fireEvent.click(screen.getByRole("button", { name: "School" }));
+
+    expect(screen.getByRole("button", { name: "Isekai" })).toHaveAttribute(
+      "data-state",
+      "include",
+    );
+    expect(screen.getByRole("button", { name: "School" })).toHaveAttribute(
+      "data-state",
+      "exclude",
+    );
+  });
+
+  it("submits inclusions and exclusions as separate parameters", async () => {
+    render(FilterPanel, {
+      props: { genres: GENRES, tags: TAGS, current: { sort: "popularity" } },
+    });
+
+    await fireEvent.click(screen.getByRole("button", { name: "Isekai" }));
+    await fireEvent.click(screen.getByRole("button", { name: "School" }));
+    await fireEvent.click(screen.getByRole("button", { name: "School" }));
+
+    const { tag, exclude_tag } = submitted();
+    expect(tag).toEqual(["Isekai"]);
+    expect(exclude_tag).toEqual(["School"]);
   });
 
   /// A heading with no chips under it is just noise once a search is active.
