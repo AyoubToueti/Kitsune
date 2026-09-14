@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/svelte";
+import { render, screen, waitFor } from "@testing-library/svelte";
 
 import type { Anime, AnimePage } from "$lib/types";
 
@@ -212,14 +212,19 @@ describe("home page", () => {
     expect(screen.getAllByText("Block Title")).not.toHaveLength(0);
   });
 
-  it("omits the genre grid when no genres come back", () => {
+  it("omits the genre grid when no genres come back", async () => {
     getGenresMock.mockResolvedValue([]);
 
     render(Page);
 
-    expect(
-      screen.queryByRole("heading", { name: /browse by genre/i }),
-    ).toBeNull();
+    // The skeleton shows the heading while the request is in flight; the
+    // grid is only omitted once the empty response has landed.
+    await screen.findByTestId("genre-skeleton");
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: /browse by genre/i }),
+      ).toBeNull(),
+    );
   });
 
   it("mounts the schedule without the page passing it any data", () => {

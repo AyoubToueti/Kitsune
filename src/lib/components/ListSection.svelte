@@ -4,7 +4,7 @@
   import { errorMessage } from "$lib/api/anime";
   import type { Anime, ListFilter } from "$lib/types";
   import ListBlock from "./ListBlock.svelte";
-  import AnimeCardSkeleton from "./AnimeCardSkeleton.svelte";
+  import Skeleton from "./Skeleton.svelte";
 
   let {
     title,
@@ -42,17 +42,39 @@
 {#if loading}
   <!-- The heading is kept during loading so the grid does not reflow as the
        four blocks arrive at different times. -->
-  <section class="rounded-xl border border-border-subtle p-3">
+  <section class="flex flex-col rounded-xl border border-border-subtle p-3">
     <h2 class="mb-2 text-sm font-semibold tracking-tight text-accent">
       {title}
     </h2>
-    <div role="status" aria-busy="true" class="flex gap-3 overflow-hidden">
+    <!-- Mirrors ListBlock: rows of small thumb + title + chips, with the
+         "View more" footer pinned at the bottom. -->
+    <div
+      role="status"
+      aria-busy="true"
+      class="flex flex-1 flex-col"
+      data-testid="list-block-skeleton"
+    >
       <span class="sr-only">Loading…</span>
-      {#each Array(4) as _, i (i)}
-        <div class="w-24 shrink-0">
-          <AnimeCardSkeleton />
-        </div>
-      {/each}
+
+      <div class="flex-1 divide-y divide-border-subtle">
+        {#each Array(5) as _, i (i)}
+          <div class="flex gap-3 p-2">
+            <Skeleton class="aspect-[2/3] w-16 shrink-0" />
+            <div class="min-w-0 flex-1">
+              <Skeleton class="h-4 w-3/4" />
+              <div class="mt-1.5 flex gap-1.5">
+                <Skeleton class="h-4 w-8 rounded" />
+                <Skeleton class="h-4 w-6 rounded" />
+                <Skeleton class="h-4 w-10" />
+              </div>
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <div class="mt-auto pt-3">
+        <Skeleton class="h-4 w-20" />
+      </div>
     </div>
   </section>
 {:else if error}

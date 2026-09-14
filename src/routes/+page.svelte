@@ -1,12 +1,15 @@
 <script lang="ts">
   import { getGenres, getList, getTrending } from "$lib/api/anime";
   import GenreGrid from "$lib/components/GenreGrid.svelte";
+  import GenreGridSkeleton from "$lib/components/GenreGridSkeleton.svelte";
   import HeroCarousel from "$lib/components/HeroCarousel.svelte";
+  import HeroCarouselSkeleton from "$lib/components/HeroCarouselSkeleton.svelte";
   import ListSection from "$lib/components/ListSection.svelte";
   import ScheduleWidget from "$lib/components/ScheduleWidget.svelte";
   import SeasonSection from "$lib/components/SeasonSection.svelte";
   import Top100Section from "$lib/components/Top100Section.svelte";
   import TrendingRail from "$lib/components/TrendingRail.svelte";
+  import TrendingRailSkeleton from "$lib/components/TrendingRailSkeleton.svelte";
   import type { Anime } from "$lib/types";
 
   /** Enough to fill the rail without over-fetching. */
@@ -25,6 +28,7 @@
 
   let hero = $state<Anime[]>([]);
   let rail = $state<Anime[]>([]);
+  let trendingLoading = $state(true);
 
   // One call, split between the two consumers. Fetching the list twice would
   // hit AniList for identical data and show the same titles in both the
@@ -38,6 +42,9 @@
     .catch(() => {
       hero = [];
       rail = [];
+    })
+    .finally(() => {
+      trendingLoading = false;
     });
 
   // --- genres -------------------------------------------------------------
@@ -45,6 +52,7 @@
   // loading, so the page does not need to know its window.
 
   let genres = $state<string[]>([]);
+  let genresLoading = $state(true);
 
   getGenres()
     .then((found) => {
@@ -53,6 +61,9 @@
     .catch(() => {
       // A missing genre grid is a missing widget, not a broken page.
       genres = [];
+    })
+    .finally(() => {
+      genresLoading = false;
     });
 
   // --- the four list blocks -----------------------------------------------
@@ -65,11 +76,17 @@
   const latestCompleted = () => getList("latestCompleted", BLOCK_LIMIT);
 </script>
 
-{#if hero.length}
-  <HeroCarousel anime={hero} />
-{/if}
+{#if trendingLoading}
+  <!-- The hero and the rail draw on one request, so they skeleton together. -->
+  <HeroCarouselSkeleton />
+  <TrendingRailSkeleton />
+{:else}
+  {#if hero.length}
+    <HeroCarousel anime={hero} />
+  {/if}
 
-<TrendingRail anime={rail} />
+  <TrendingRail anime={rail} />
+{/if}
 
 <div class="mt-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
   <ListSection title="Top airing" filter="topAiring" load={topAiring} />
@@ -82,7 +99,11 @@
   />
 </div>
 
-<GenreGrid {genres} />
+{#if genresLoading}
+  <GenreGridSkeleton />
+{:else}
+  <GenreGrid {genres} />
+{/if}
 <ScheduleWidget />
 <SeasonSection />
 <Top100Section />
