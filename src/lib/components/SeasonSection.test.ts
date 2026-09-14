@@ -19,6 +19,8 @@ function anime(id: number, title: string): Anime {
     title: { romaji: title },
     genres: [],
     streamingEpisodes: [],
+    relations: [],
+    recommendations: [],
   };
 }
 

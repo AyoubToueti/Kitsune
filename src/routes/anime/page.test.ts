@@ -23,6 +23,8 @@ function anime(overrides: Partial<Anime> = {}): Anime {
     title: { romaji: "One Piece" },
     genres: ["Action", "Adventure"],
     streamingEpisodes: [],
+    relations: [],
+    recommendations: [],
     ...overrides,
   };
 }

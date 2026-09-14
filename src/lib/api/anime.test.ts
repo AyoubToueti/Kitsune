@@ -25,6 +25,8 @@ function sampleAnime(): Anime {
     title: { romaji: "One Piece" },
     genres: ["Action"],
     streamingEpisodes: [],
+    relations: [],
+    recommendations: [],
   };
 }
 

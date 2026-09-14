@@ -10,6 +10,8 @@ function anime(id: number): Anime {
     title: { romaji: `Title ${id}` },
     genres: [],
     streamingEpisodes: [],
+    relations: [],
+    recommendations: [],
   };
 }
 

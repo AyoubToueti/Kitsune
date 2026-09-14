@@ -73,6 +73,58 @@ export interface Anime {
   season?: string;
   seasonYear?: number;
   streamingEpisodes: StreamingEpisode[];
+  /**
+   * Other works this one is connected to, as the provider links them.
+   *
+   * Populated only by the single-title lookup; list results leave it empty,
+   * since a card has nowhere to render it.
+   */
+  relations: RelatedAnime[];
+  /** Community recommendations, highest-rated first. Detail-only. */
+  recommendations: RecommendedAnime[];
+  /** The work's trailer, when the provider has one. Detail-only. */
+  trailer?: Trailer;
+}
+
+/**
+ * A work connected to another, as the provider links them.
+ *
+ * `relationType` is the provider's own vocabulary ("SEQUEL", "PREQUEL",
+ * "SIDE_STORY", ...) and is surfaced verbatim: the set is open-ended, so
+ * translating it into our own union would drop anything new.
+ */
+export interface RelatedAnime {
+  id: number;
+  title: Title;
+  coverImage?: string;
+  format?: string;
+  status?: string;
+  episodeCount?: number;
+  /** How this work relates to the one being viewed, e.g. "SEQUEL". */
+  relationType: string;
+}
+
+/** A community recommendation for a work. */
+export interface RecommendedAnime {
+  /** The recommended work, carried whole so a card renders without a lookup. */
+  anime: Anime;
+  /** Upvotes the recommendation received on the provider. */
+  rating: number;
+}
+
+/**
+ * A promotional video for a work.
+ *
+ * `site` and `id` travel apart because the provider reports them separately
+ * and each platform spells its watch URL differently; composing the link is
+ * the UI's job.
+ */
+export interface Trailer {
+  /** The video id on `site`, e.g. a YouTube video id. */
+  id: string;
+  /** Hosting platform, e.g. "youtube" or "dailymotion". */
+  site: string;
+  thumbnail?: string;
 }
 
 /**
