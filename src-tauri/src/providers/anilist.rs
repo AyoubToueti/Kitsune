@@ -190,12 +190,27 @@ impl AnimeProvider for AniListProvider {
         }
 
         if !query.tags.is_empty() {
-            // The rank floor travels with the tags: it is only meaningful
-            // alongside `tag_in`, and sending it unconditionally would be a
-            // filter the caller never asked for.
-            filter.push_str(", tag_in: $tags, minimumTagRank: $minimumTagRank");
-            declarations.push("$tags: [String], $minimumTagRank: Int");
+            filter.push_str(", tag_in: $tags");
+            declarations.push("$tags: [String]");
             variables.insert("tags".into(), serde_json::json!(query.tags));
+        }
+
+        if !query.excluded_tags.is_empty() {
+            filter.push_str(", tag_not_in: $excludedTags");
+            declarations.push("$excludedTags: [String]");
+            variables.insert(
+                "excludedTags".into(),
+                serde_json::json!(query.excluded_tags),
+            );
+        }
+
+        // The rank floor governs BOTH tag directions (verified against the
+        // live API), so it is emitted once whenever either list is present
+        // rather than duplicated per direction. Sending it on its own would
+        // apply a filter the caller never asked for.
+        if !query.tags.is_empty() || !query.excluded_tags.is_empty() {
+            filter.push_str(", minimumTagRank: $minimumTagRank");
+            declarations.push("$minimumTagRank: Int");
             variables.insert(
                 "minimumTagRank".into(),
                 serde_json::json!(MINIMUM_TAG_RANK),
@@ -790,6 +805,8 @@ mod tests {
             "status:",
             "season:",
             "tag_in",
+            "tag_not_in",
+            "excludedTags",
             "minimumTagRank",
         ] {
             assert!(
@@ -818,6 +835,7 @@ mod tests {
             min_score: Some(70),
             sort: SortOption::Score,
             tags: Vec::new(),
+            excluded_tags: Vec::new(),
         };
 
         assert!(provider.browse(query, 1, 24).await.is_ok());
@@ -902,6 +920,96 @@ mod tests {
         let body = captured.lock().unwrap().clone();
         assert!(!body.contains("minimumTagRank"), "body was {body}");
         assert!(!body.contains("tag_in"), "body was {body}");
+        assert!(!body.contains("tag_not_in"), "body was {body}");
+    }
+
+    /// Exclusion travels as its own variable and its own AniList argument. It
+    /// brings the rank floor with it, because the floor governs both tag
+    /// directions -- verified against the live API, where a work tagged below
+    /// the floor survived its own exclusion.
+    #[tokio::test]
+    async fn browse_sends_excluded_tags_with_the_rank_floor() {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(200).set_body_json(browse_response(
+                    vec![media_json()],
+                    1,
+                    1,
+                    1,
+                ))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        let query = BrowseQuery {
+            excluded_tags: vec!["Harem".into()],
+            ..BrowseQuery::default()
+        };
+
+        provider.browse(query, 1, 24).await.expect("should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(body.contains("tag_not_in: $excludedTags"), "body was {body}");
+        assert!(body.contains("\"Harem\""), "body was {body}");
+        assert!(
+            body.contains("minimumTagRank: $minimumTagRank"),
+            "the rank floor must travel with exclusions too; body was {body}"
+        );
+        assert!(
+            body.contains("$excludedTags: [String]"),
+            "the variable must be declared or AniList rejects the query; body was {body}"
+        );
+        // Exclusion must not smuggle in an inclusion filter.
+        assert!(!body.contains("tag_in"), "body was {body}");
+    }
+
+    /// The two directions are independent: sending both must produce both
+    /// arguments, not one overwriting the other.
+    #[tokio::test]
+    async fn browse_sends_included_and_excluded_tags_together() {
+        let server = MockServer::start().await;
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let sink = captured.clone();
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |req: &wiremock::Request| {
+                *sink.lock().unwrap() = String::from_utf8_lossy(&req.body).to_string();
+                ResponseTemplate::new(200).set_body_json(browse_response(
+                    vec![media_json()],
+                    1,
+                    1,
+                    1,
+                ))
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        let query = BrowseQuery {
+            tags: vec!["Isekai".into()],
+            excluded_tags: vec!["Harem".into()],
+            ..BrowseQuery::default()
+        };
+
+        provider.browse(query, 1, 24).await.expect("should succeed");
+
+        let body = captured.lock().unwrap().clone();
+        assert!(body.contains("tag_in: $tags"), "body was {body}");
+        assert!(body.contains("tag_not_in: $excludedTags"), "body was {body}");
+        // One floor serves both directions, so it must appear exactly once.
+        assert_eq!(
+            body.matches("minimumTagRank: $minimumTagRank").count(),
+            1,
+            "the floor should be emitted once, not per direction; body was {body}"
+        );
     }
 
     /// Enum filters go out as AniList's own literals, mapped from our enum

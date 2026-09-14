@@ -150,6 +150,14 @@ pub struct BrowseQuery {
     /// [`MediaTag`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Tags to reject, by name. Combined with AND, like `tags`.
+    ///
+    /// The provider's rank floor governs this direction too -- verified
+    /// against the live API, not assumed -- so excluding a tag only drops
+    /// works carrying it at or above that rank. A work whose tagging is
+    /// weaker survives the exclusion.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<FormatFilter>,
     #[serde(skip_serializing_if = "Option::is_none")]
