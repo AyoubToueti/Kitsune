@@ -11,9 +11,15 @@
 //! a bencoded scrape response -- is pure and unit tested here. The network
 //! calls themselves are thin wrappers over these.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+
 use crate::torrent::magnet::percent_decode;
+use crate::types::Release;
 
 /// Trackers we could not ask, or that answered with something unusable.
 ///
@@ -785,7 +791,8 @@ pub const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 /// `resolved` is the headline: a magnet whose metadata a peer actually served
 /// is a torrent that exists, which is a much stronger statement than a
 /// seeder count on a web page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MetadataProbe {
     /// Whether the metadata arrived before the timeout.
     pub resolved: bool,
@@ -901,6 +908,160 @@ fn unresolved(started: &std::time::Instant) -> MetadataProbe {
         total_bytes: None,
         duration_ms: started.elapsed().as_millis() as u64,
     }
+}
+
+/// How many tracker scrapes may be in flight at once.
+///
+/// A popular episode returns twenty releases, each naming four or five
+/// trackers, and the same handful of tracker hosts appears across all of them.
+/// Probing everything at once would open a hundred sockets against a few
+/// hosts, which is both wasteful and rude. Metadata probes are deliberately
+/// *not* capped: they are bounded by the swarm answering, not by our socket
+/// use, and each one is a single session-level operation.
+pub const MAX_CONCURRENT_TRACKER_SCRAPES: usize = 5;
+
+/// What one tracker said about a release, with the bookkeeping the UI needs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackerScrape {
+    pub seeders: u32,
+    pub leechers: u32,
+    pub completed: u32,
+    /// The tracker that answered. A count is only as good as its source, and
+    /// the UI shows which one it came from.
+    pub tracker_url: String,
+    pub duration_ms: u64,
+}
+
+/// The outcome of probing one release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeResult {
+    /// The release this describes, by info hash. Empty when the release
+    /// carried none, in which case there is nothing to probe.
+    pub info_hash: String,
+    /// The best tracker answer, or `None` when no tracker replied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrape: Option<TrackerScrape>,
+    /// What the metadata probe learned. Always present when the probe ran;
+    /// `None` only if it was skipped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<MetadataProbe>,
+    /// Wall-clock time for the whole probe, both halves together.
+    pub total_duration_ms: u64,
+}
+
+/// Ask a release's trackers for live stats, and its swarm for metadata.
+///
+/// The two halves run concurrently and neither can fail the other: a release
+/// with no reachable tracker can still prove itself by serving metadata, and a
+/// release whose swarm is asleep can still have an accurate seeder count. The
+/// result reports whichever halves answered.
+pub async fn probe_release(
+    session: &Arc<librqbit::Session>,
+    client: &reqwest::Client,
+    release: &Release,
+    semaphore: &Arc<Semaphore>,
+) -> ProbeResult {
+    let started = std::time::Instant::now();
+
+    // Prefer the release's own hash, but fall back to parsing the magnet so a
+    // release built by a provider that left the field empty still probes.
+    let info_hash = release
+        .info_hash
+        .clone()
+        .or_else(|| crate::torrent::magnet::parse_info_hash(&release.magnet_uri).ok())
+        .unwrap_or_default();
+
+    let scrape = scrape_release(client, release, &info_hash, semaphore);
+    let metadata = probe_metadata(session, &release.magnet_uri, METADATA_TIMEOUT);
+
+    let (scrape, metadata) = tokio::join!(scrape, metadata);
+
+    ProbeResult {
+        info_hash,
+        scrape,
+        metadata: Some(metadata),
+        total_duration_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+/// Try every tracker a release lists until one answers.
+///
+/// Trackers are tried in order rather than raced: the first one that answers
+/// is enough, and racing them would triple the request count for no better
+/// answer. A permit is held across the whole release, so the concurrency cap
+/// counts releases being scraped, not individual tracker requests.
+async fn scrape_release(
+    client: &reqwest::Client,
+    release: &Release,
+    info_hash: &str,
+    semaphore: &Arc<Semaphore>,
+) -> Option<TrackerScrape> {
+    let hash = decode_info_hash(info_hash).ok()?;
+    let trackers = extract_trackers(&release.magnet_uri);
+    if trackers.is_empty() {
+        return None;
+    }
+
+    // `.ok()?` rather than unwrap: a closed semaphore means the probe batch is
+    // shutting down, and giving up quietly is the right response.
+    let _permit = semaphore.acquire().await.ok()?;
+
+    for tracker in &trackers {
+        let started = std::time::Instant::now();
+        if let Ok(stats) = scrape_tracker(client, tracker, &hash, TRACKER_TIMEOUT).await {
+            return Some(TrackerScrape {
+                seeders: stats.seeders,
+                leechers: stats.leechers,
+                completed: stats.completed,
+                tracker_url: tracker.clone(),
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+        }
+    }
+
+    None
+}
+
+/// Probe every release concurrently, returning `(index, result)` pairs.
+///
+/// The index is carried through rather than relying on completion order, so
+/// the caller can match each result back to the release it describes even
+/// though a fast probe for release 7 lands before a slow one for release 1.
+/// Results come back sorted by index for convenience.
+pub async fn probe_releases(
+    session: &Arc<librqbit::Session>,
+    client: reqwest::Client,
+    releases: &[Release],
+) -> Vec<(usize, ProbeResult)> {
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TRACKER_SCRAPES));
+    let mut set = JoinSet::new();
+
+    for (index, release) in releases.iter().enumerate() {
+        // Cloned per task: each spawned future must own what it touches, and
+        // the session is shared behind the same `Arc` rather than restarted.
+        let session = Arc::clone(session);
+        let client = client.clone();
+        let semaphore = Arc::clone(&semaphore);
+        let release = release.clone();
+
+        set.spawn(async move {
+            let result = probe_release(&session, &client, &release, &semaphore).await;
+            (index, result)
+        });
+    }
+
+    let mut results = Vec::with_capacity(releases.len());
+    while let Some(joined) = set.join_next().await {
+        // A panicking task loses only its own result; the rest still arrive.
+        if let Ok(pair) = joined {
+            results.push(pair);
+        }
+    }
+
+    results.sort_by_key(|(index, _)| *index);
+    results
 }
 
 #[cfg(test)]
@@ -1764,6 +1925,157 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(30),
             "the probe must return on its own timeout"
+        );
+
+        session.stop().await;
+    }
+
+    // --- orchestrator -----------------------------------------------------
+
+    fn release_with_magnet(title: &str, magnet: &str) -> Release {
+        crate::types::Release {
+            title: title.to_string(),
+            indexer: crate::types::ProviderId::Nyaa,
+            magnet_uri: magnet.to_string(),
+            torrent_url: None,
+            info_hash: None,
+            size_bytes: None,
+            seeders: Some(10),
+            leechers: None,
+            resolution: crate::types::Resolution::R1080p,
+            source: crate::types::ReleaseSource::WebDl,
+            remux: false,
+            trusted: false,
+            parsed: Default::default(),
+            score: 0,
+        }
+    }
+
+    fn magnet_for(hash: &str, trackers: &[&str]) -> String {
+        let mut uri = format!("magnet:?xt=urn:btih:{hash}");
+        for tracker in trackers {
+            uri.push_str(&format!("&tr={}", percent_encode_bytes(tracker.as_bytes())));
+        }
+        uri
+    }
+
+    #[test]
+    fn scrape_release_is_none_without_trackers() {
+        // Nothing to ask. Returning `None` is the honest answer; it must not
+        // be an error, since a magnet with no tracker is still playable over
+        // DHT.
+        let client = reqwest::Client::new();
+        let release = release_with_magnet("no trackers", &format!("magnet:?xt=urn:btih:{HASH}"));
+        let semaphore = Arc::new(Semaphore::new(1));
+
+        let result = tokio_test::block_on(scrape_release(&client, &release, HASH, &semaphore));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn scrape_release_is_none_for_an_unparseable_hash() {
+        let client = reqwest::Client::new();
+        let release = release_with_magnet(
+            "bad hash",
+            &magnet_for("not-a-valid-hash", &["udp://tracker.test:80/announce"]),
+        );
+        let semaphore = Arc::new(Semaphore::new(1));
+
+        let result =
+            tokio_test::block_on(scrape_release(&client, &release, "not-a-valid-hash", &semaphore));
+        assert!(result.is_none());
+    }
+
+    /// The concurrency cap must actually cap.
+    ///
+    /// Asserted by holding every permit and checking that a scrape to a
+    /// tracker that *would* answer does not complete, then releasing one
+    /// permit and checking that it does. A test that only asserted "it
+    /// returned" would pass with no semaphore at all.
+    #[tokio::test]
+    async fn scrape_release_waits_for_a_permit() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(scrape_response(3, 0, 1)))
+            .mount(&server)
+            .await;
+
+        let semaphore = Arc::new(Semaphore::new(1));
+        // Take the only permit, so the scrape below must block.
+        let held = Arc::clone(&semaphore).acquire_owned().await.expect("permit");
+
+        let release = release_with_magnet(
+            "held",
+            &magnet_for(HASH, &[&format!("{}/announce", server.uri())]),
+        );
+        let client = reqwest::Client::new();
+
+        let mut task = tokio::spawn({
+            let client = client.clone();
+            let release = release.clone();
+            let semaphore = Arc::clone(&semaphore);
+            async move { scrape_release(&client, &release, HASH, &semaphore).await }
+        });
+
+        // With no permit free, the scrape cannot have completed. A short wait
+        // is enough: an unblocked scrape against a local mock returns in
+        // microseconds.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut task)
+                .await
+                .is_err(),
+            "the scrape should be blocked on the semaphore"
+        );
+
+        // Release the permit; the scrape should now finish.
+        drop(held);
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("scrape should finish once a permit is free")
+            .expect("task should not panic");
+
+        assert!(result.is_some(), "the mock tracker should have answered");
+    }
+
+    /// Probes a real batch of releases over the real network.
+    ///
+    /// Ignored by default. Run with `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore = "starts a session and scrapes live trackers"]
+    async fn probes_a_batch_of_releases_without_losing_any() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = Arc::new(
+            librqbit::Session::new(dir.path().to_path_buf())
+                .await
+                .expect("session should start"),
+        );
+
+        // Big Buck Bunny, a long-lived well-seeded torrent, repeated so the
+        // batch has several members that should all probe successfully.
+        let magnet = magnet_for(
+            "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c",
+            &["udp://tracker.opentrackr.org:1337/announce"],
+        );
+
+        let releases: Vec<Release> = (0..3)
+            .map(|i| release_with_magnet(&format!("bbb-{i}"), &magnet))
+            .collect();
+
+        let results = probe_releases(&session, reqwest::Client::new(), &releases).await;
+
+        assert_eq!(results.len(), 3, "every release must yield a result");
+        // Indices must come back in input order even though the tasks finish
+        // in whatever order the network allows.
+        assert_eq!(
+            results.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(
+            results.iter().any(|(_, r)| r.metadata.as_ref().is_some_and(|m| m.resolved)),
+            "at least one probe should have resolved metadata"
         );
 
         session.stop().await;
