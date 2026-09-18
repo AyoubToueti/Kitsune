@@ -29,6 +29,8 @@
   let failed = $state(false);
   /** True until the element reports it can play. */
   let buffering = $state(true);
+  /** Tracks if the user has clicked play at least once. */
+  let hasPlayed = $state(false);
 
   // A new source is a new load, so the previous failure and buffering state
   // must not carry over -- otherwise a second attempt would show the first
@@ -37,6 +39,7 @@
     void src;
     failed = false;
     buffering = true;
+    hasPlayed = false; // Reset interaction state when the video changes
   });
 </script>
 
@@ -56,6 +59,7 @@
       controls
       preload="metadata"
       class="h-full w-full"
+      onplay={() => (hasPlayed = true)}
       oncanplay={() => (buffering = false)}
       onerror={() => {
         buffering = false;
@@ -63,7 +67,7 @@
       }}
     ></video>
 
-    {#if buffering && !failed}
+    {#if hasPlayed && buffering && !failed}
       <p
         class="pointer-events-none absolute inset-0 flex items-center justify-center text-sm text-white/80"
       >

@@ -4,7 +4,11 @@
 
   import { errorMessage, getAnime } from "$lib/api/anime";
   import { addMagnet, addTorrent, getStreamUrl } from "$lib/api/player";
-  import { onProbeResult, probeReleases, searchReleases } from "$lib/api/releases";
+  import {
+    onProbeResult,
+    probeReleases,
+    searchReleases,
+  } from "$lib/api/releases";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
   import {
     displayTitle,
@@ -115,7 +119,9 @@
     const seeders = outcome.probe.scrape?.seeders;
     if (seeders !== undefined) parts.push(`${seeders} seeders on tracker`);
     parts.push(
-      outcome.probe.metadata?.resolved ? "metadata confirmed" : "metadata not found",
+      outcome.probe.metadata?.resolved
+        ? "metadata confirmed"
+        : "metadata not found",
     );
     return parts.join(" · ");
   }
@@ -197,7 +203,9 @@
     };
   });
 
-  const title = $derived(anime ? (displayTitle(anime.title) ?? "Untitled") : null);
+  const title = $derived(
+    anime ? (displayTitle(anime.title) ?? "Untitled") : null,
+  );
   const episodes = $derived(anime?.streamingEpisodes ?? []);
 
   /**
@@ -279,52 +287,52 @@
     };
   });
 
-    /**
-     * Probe the found releases for swarm health, once a search settles.
-     *
-     * Keyed on the release list itself, so it runs when a search produces a new
-     * set, not when the stream or file state changes. Results arrive as events
-     * and are written into `probeOutcomes` by position; the promise's return
-     * value is ignored because the events already delivered it.
-     *
-     * A failure is swallowed: probing enhances the ranking, so an unreachable
-     * DHT should leave the static order alone rather than surface an error the
-     * reader cannot act on.
-     */
-    $effect(() => {
-      const found = releases;
-      if (found.length === 0) return;
+  /**
+   * Probe the found releases for swarm health, once a search settles.
+   *
+   * Keyed on the release list itself, so it runs when a search produces a new
+   * set, not when the stream or file state changes. Results arrive as events
+   * and are written into `probeOutcomes` by position; the promise's return
+   * value is ignored because the events already delivered it.
+   *
+   * A failure is swallowed: probing enhances the ranking, so an unreachable
+   * DHT should leave the static order alone rather than surface an error the
+   * reader cannot act on.
+   */
+  $effect(() => {
+    const found = releases;
+    if (found.length === 0) return;
 
-      let cancelled = false;
-      probing = true;
-      // Reset to the list's length so an index always lands in bounds, even
-      // for an event that arrives before this effect finishes setting up.
-      probeOutcomes = new Array(found.length).fill(undefined);
+    let cancelled = false;
+    probing = true;
+    // Reset to the list's length so an index always lands in bounds, even
+    // for an event that arrives before this effect finishes setting up.
+    probeOutcomes = new Array(found.length).fill(undefined);
 
-      const unlisten = onProbeResult((outcome) => {
+    const unlisten = onProbeResult((outcome) => {
+      if (cancelled) return;
+      if (outcome.index < 0 || outcome.index >= probeOutcomes.length) return;
+      // Replace the array rather than mutating a slot: Svelte tracks the
+      // binding, and an in-place write would not re-run the derived ranking.
+      const next = probeOutcomes.slice();
+      next[outcome.index] = outcome;
+      probeOutcomes = next;
+    });
+
+    probeReleases(found)
+      .catch(() => {
+        // Already handled by the events; nothing to surface.
+      })
+      .finally(() => {
         if (cancelled) return;
-        if (outcome.index < 0 || outcome.index >= probeOutcomes.length) return;
-        // Replace the array rather than mutating a slot: Svelte tracks the
-        // binding, and an in-place write would not re-run the derived ranking.
-        const next = probeOutcomes.slice();
-        next[outcome.index] = outcome;
-        probeOutcomes = next;
+        probing = false;
       });
 
-      probeReleases(found)
-        .catch(() => {
-          // Already handled by the events; nothing to surface.
-        })
-        .finally(() => {
-          if (cancelled) return;
-          probing = false;
-        });
-
-      return () => {
-        cancelled = true;
-        unlisten.then((fn) => fn());
-      };
-    });
+    return () => {
+      cancelled = true;
+      unlisten.then((fn) => fn());
+    };
+  });
   /**
    * The file that best matches an episode number, or `null` when nothing does.
    *
@@ -511,7 +519,11 @@
           disabled={loadingTorrent}
           class="rounded-lg border border-border-subtle px-4 py-2 text-sm font-medium text-ink-muted transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {loadingTorrent ? "Loading…" : files.length ? "Change torrent" : "Load torrent"}
+          {loadingTorrent
+            ? "Loading…"
+            : files.length
+              ? "Change torrent"
+              : "Load torrent"}
         </button>
 
         <ExternalPlayerButton url={streamUrl} />
@@ -524,64 +536,6 @@
       <!-- The releases the app found on its own. The reader no longer has to
            supply a torrent for the common case: picking a row resolves its
            magnet and plays the file matching the selected episode. -->
-      <div class="mt-6">
-        <h2 class="mb-2 text-sm font-semibold tracking-tight">Releases</h2>
-
-        {#if searching}
-          <p class="text-sm text-ink-muted" data-testid="releases-loading">Searching…</p>
-        {:else if releaseError}
-          <p class="text-sm text-ink-faint">{releaseError}</p>
-        {:else if releases.length === 0}
-          <p class="text-sm text-ink-muted" data-testid="releases-empty">
-            No releases found. Load a torrent by hand instead.
-          </p>
-        {:else}
-          <ResolutionFilter
-            available={resolutionOptions}
-            selected={resolutionFilter}
-            onToggle={toggleResolution}
-          />
-
-          <div
-            data-testid="release-scroller"
-            class="max-h-[24rem] overflow-y-auto pr-1"
-          >
-            <ul class="flex flex-col gap-1" data-testid="releases">
-              {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
-                <li class="flex items-start gap-2">
-                  <!-- A dot rather than a word: the badge is a glanceable signal
-                       beside a row already dense with text, and the explanation
-                       lives in the title attribute. -->
-                  <span
-                    class="mt-1 size-2 shrink-0 rounded-full {badgeClass(badgeFor(index))}"
-                    data-testid="release-badge"
-                    data-badge={badgeFor(index) ?? "pending"}
-                    title={badgeTitle(index)}
-                    aria-hidden="true"
-                  ></span>
-                  <button
-                    type="button"
-                    onclick={() => playRelease(release)}
-                    disabled={loadingRelease}
-                    class="w-full rounded-lg border px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {chosenRelease?.title ===
-                    release.title
-                      ? 'border-accent bg-surface-hover text-ink'
-                      : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
-                  >
-                    <span class="block truncate">{release.title}</span>
-                    <span class="mt-0.5 block text-ink-faint">
-                      {#if release.resolution !== "unknown"}{release.resolution}{/if}
-                      {#if release.source !== "unknown"}· {release.source}{/if}
-                      {#if release.seeders !== undefined}· {release.seeders} seeders{/if}
-                      {#if formatSize(release.sizeBytes)}· {formatSize(release.sizeBytes)}{/if}
-                    </span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </div>
-        {/if}
-      </div>
 
       {#if files.length > 0}
         <!-- The files the torrent actually holds, since the reader owns the
@@ -590,7 +544,7 @@
           <h2 class="mb-2 text-sm font-semibold tracking-tight">Files</h2>
           <div
             data-testid="file-scroller"
-            class="max-h-96 overflow-y-auto pr-1"
+            class="max-h-55 overflow-y-auto pr-1"
           >
             <ul class="flex flex-col gap-1" data-testid="torrent-files">
               {#each files as file (file.idx)}
@@ -612,9 +566,78 @@
         </div>
       {/if}
 
+      <div class="mt-6">
+        <h2 class="mb-2 text-sm font-semibold tracking-tight">Releases</h2>
+
+        {#if searching}
+          <p class="text-sm text-ink-muted" data-testid="releases-loading">
+            Searching…
+          </p>
+        {:else if releaseError}
+          <p class="text-sm text-ink-faint">{releaseError}</p>
+        {:else if releases.length === 0}
+          <p class="text-sm text-ink-muted" data-testid="releases-empty">
+            No releases found. Load a torrent by hand instead.
+          </p>
+        {:else}
+          <ResolutionFilter
+            available={resolutionOptions}
+            selected={resolutionFilter}
+            onToggle={toggleResolution}
+          />
+
+          <div
+            data-testid="release-scroller"
+            class="max-h-60 overflow-y-auto pr-1 m-2"
+          >
+            <ul class="flex flex-col gap-1" data-testid="releases">
+              {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
+                <li class="flex items-start gap-2">
+                  <!-- A dot rather than a word: the badge is a glanceable signal
+                       beside a row already dense with text, and the explanation
+                       lives in the title attribute. -->
+                  <span
+                    class="mt-1.5 size-2 shrink-0 rounded-full {badgeClass(
+                      badgeFor(index),
+                    )}"
+                    data-testid="release-badge"
+                    data-badge={badgeFor(index) ?? "pending"}
+                    title={badgeTitle(index)}
+                    aria-hidden="true"
+                  ></span>
+                  <button
+                    type="button"
+                    onclick={() => playRelease(release)}
+                    disabled={loadingRelease}
+                    class="w-full rounded-lg border px-3 py-2 mb-0.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {chosenRelease?.title ===
+                    release.title
+                      ? 'border-accent bg-surface-hover text-ink'
+                      : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
+                  >
+                    <span class="block truncate">{release.title}</span>
+                    <span class="mt-0.5 block text-ink-faint">
+                      {#if release.resolution !== "unknown"}{release.resolution}{/if}
+                      {#if release.source !== "unknown"}· {release.source}{/if}
+                      {#if release.seeders !== undefined}· {release.seeders} seeders{/if}
+                      {#if formatSize(release.sizeBytes)}· {formatSize(
+                          release.sizeBytes,
+                        )}{/if}
+                    </span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+      </div>
+
       {#if episodes.length > 0}
         <div class="mt-6">
-          <EpisodeList {episodes} selected={selectedEpisode} onSelect={selectEpisode} />
+          <EpisodeList
+            {episodes}
+            selected={selectedEpisode}
+            onSelect={selectEpisode}
+          />
         </div>
       {/if}
     </div>
