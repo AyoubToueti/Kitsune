@@ -114,7 +114,11 @@ pub fn combined_score(static_score: i64, probe: &ProbeResult) -> i64 {
 /// confident Green.
 pub fn health_badge(probe: &ProbeResult) -> HealthBadge {
     let resolved = metadata_resolved(probe);
-    let seeders = probe.scrape.as_ref().map(|scrape| scrape.seeders).unwrap_or(0);
+    let seeders = probe
+        .scrape
+        .as_ref()
+        .map(|scrape| scrape.seeders)
+        .unwrap_or(0);
 
     if resolved && seeders > 10 {
         HealthBadge::Green
@@ -208,6 +212,38 @@ fn speed_bonus(metadata: &MetadataProbe) -> i64 {
 
     let saved_ms = budget.saturating_sub(used);
     ((saved_ms as i64) / 100).clamp(0, SPEED_BONUS_MAX)
+}
+
+/// One probe's effect on one release, as the frontend consumes it.
+///
+/// Bundles the raw probe with the two derived answers the UI needs -- the
+/// health badge and the release's combined score -- so the frontend does not
+/// re-implement the weighting and risk disagreeing with the backend about what
+/// makes a release good.
+///
+/// `index` is the release's position in the list the frontend sent, which is
+/// how an event for release 7 is matched back to release 7.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProbeOutcome {
+    pub index: usize,
+    pub probe: ProbeResult,
+    pub badge: HealthBadge,
+    /// The release's static score plus the probe's contribution.
+    pub combined_score: i64,
+}
+
+/// Build the frontend-facing outcome for one probed release.
+///
+/// `base_score` is the release's static score, supplied by the caller because
+/// only it holds the [`ReleasePreference`].
+pub fn outcome(index: usize, base_score: i64, probe: &ProbeResult) -> ProbeOutcome {
+    ProbeOutcome {
+        index,
+        probe: probe.clone(),
+        badge: health_badge(probe),
+        combined_score: combined_score(base_score, probe),
+    }
 }
 
 #[cfg(test)]
@@ -368,6 +404,44 @@ mod tests {
         );
     }
 
+    // --- outcome ----------------------------------------------------------
+
+    #[test]
+    fn an_outcome_carries_the_badge_and_the_combined_score() {
+        let mut probe = empty_probe();
+        probe.metadata = Some(resolved_metadata(1_000));
+        probe.scrape = Some(scrape_with(50));
+
+        let outcome = outcome(3, 12_345, &probe);
+
+        assert_eq!(outcome.index, 3);
+        assert_eq!(outcome.badge, HealthBadge::Green);
+        assert_eq!(outcome.combined_score, combined_score(12_345, &probe));
+        assert_eq!(outcome.probe, probe);
+    }
+
+    #[test]
+    fn an_outcome_for_a_dead_release_keeps_the_static_score() {
+        // A failed probe adds nothing, so the combined score is exactly the
+        // static one -- a dead release is ranked on its own merits, not
+        // pushed down for our timeout.
+        let outcome = outcome(0, 999, &empty_probe());
+
+        assert_eq!(outcome.badge, HealthBadge::Red);
+        assert_eq!(outcome.combined_score, 999);
+    }
+
+    #[test]
+    fn outcomes_serialise_to_camel_case() {
+        let outcome = outcome(1, 100, &empty_probe());
+        let json = serde_json::to_value(&outcome).expect("serialize");
+
+        assert!(json.get("combinedScore").is_some());
+        assert!(json.get("combined_score").is_none());
+        assert!(json.get("badge").is_some());
+        assert_eq!(json["badge"], "red");
+    }
+
     #[test]
     fn combined_score_adds_the_two_halves() {
         let mut probe = empty_probe();
@@ -478,7 +552,12 @@ mod tests {
         // must not stack the probe bonus again.
         let preference = ReleasePreference::default();
 
-        let mut releases = vec![release_with("a", Resolution::R1080p, ReleaseSource::WebDl, 5)];
+        let mut releases = vec![release_with(
+            "a",
+            Resolution::R1080p,
+            ReleaseSource::WebDl,
+            5,
+        )];
 
         let mut probe = empty_probe();
         probe.scrape = Some(scrape_with(100));
@@ -497,7 +576,12 @@ mod tests {
     #[test]
     fn an_out_of_range_probe_index_is_ignored() {
         let preference = ReleasePreference::default();
-        let mut releases = vec![release_with("only", Resolution::R1080p, ReleaseSource::WebDl, 5)];
+        let mut releases = vec![release_with(
+            "only",
+            Resolution::R1080p,
+            ReleaseSource::WebDl,
+            5,
+        )];
 
         let mut probe = empty_probe();
         probe.metadata = Some(resolved_metadata(0));

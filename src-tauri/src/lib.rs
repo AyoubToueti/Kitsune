@@ -38,6 +38,7 @@ pub fn run() {
             commands::get_anime,
             indexer::commands::search_releases,
             indexer::commands::download_torrent,
+            indexer::commands::probe_releases,
             player::commands::add_torrent,
             player::commands::add_magnet,
             player::commands::get_stream_url,

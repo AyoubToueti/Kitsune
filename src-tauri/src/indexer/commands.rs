@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use super::probe_rank::ProbeOutcome;
 use super::{search, Indexer, ReleaseRequest};
 use crate::types::{Release, ReleasePreference};
 
@@ -168,6 +169,75 @@ impl std::fmt::Display for DownloadError {
 
 impl std::error::Error for DownloadError {}
 
+/// Probe a list of releases and report each result as it lands.
+///
+/// The releases are the ones a search just returned, so the frontend already
+/// has them; sending them back costs one round trip but keeps the command
+/// stateless.
+///
+/// Progress arrives as `probe-result` events, one per release, so the list can
+/// re-rank while slower probes are still running. The return value is the whole
+/// set, sorted by index, for a caller that would rather wait.
+///
+/// Probing never fails the command: a session that will not start, or a release
+/// nobody will talk to, simply yields no result for that release and the static
+/// ranking stands.
+#[tauri::command]
+pub async fn probe_releases(
+    app: tauri::AppHandle,
+    releases: Vec<Release>,
+    preference: Option<ReleasePreference>,
+) -> Result<Vec<ProbeOutcome>, String> {
+    use tauri::Emitter;
+
+    let preference = preference.unwrap_or_default();
+
+    // The static half of every score, computed once. A probe only adds to it,
+    // so re-deriving it per event would be wasted work.
+    let base: Arc<Vec<i64>> = Arc::new(
+        releases
+            .iter()
+            .map(|release| super::rank::score(release, &preference))
+            .collect(),
+    );
+
+    let for_events = Arc::clone(&base);
+    let events = app.clone();
+
+    let probed = super::probe::probe_releases_on_own_session(
+        probe_download_dir(),
+        reqwest::Client::new(),
+        &releases,
+        move |index, probe| {
+            let outcome = super::probe_rank::outcome(
+                index,
+                for_events.get(index).copied().unwrap_or(0),
+                probe,
+            );
+            // A closed window makes emit fail; the probe is still valid, so
+            // the error is dropped rather than aborting the batch.
+            let _ = events.emit("probe-result", &outcome);
+        },
+    )
+    .await;
+
+    Ok(probed
+        .into_iter()
+        .map(|(index, probe)| {
+            super::probe_rank::outcome(index, base.get(index).copied().unwrap_or(0), &probe)
+        })
+        .collect())
+}
+
+/// Where a probe batch writes its (empty) downloads.
+///
+/// The probe selects no files, so nothing is written; the directory exists only
+/// because a librqbit session requires an output folder. Kept apart from the
+/// player's directory so a probe can never be mistaken for downloaded content.
+fn probe_download_dir() -> PathBuf {
+    std::env::temp_dir().join("kitsune-probes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,8 +248,7 @@ mod tests {
         Release {
             title: title.to_string(),
             indexer: ProviderId::Nyaa,
-            magnet_uri: "magnet:?xt=urn:btih:cab507494d02ebb1178b38f2e9d7be299c86b862"
-                .into(),
+            magnet_uri: "magnet:?xt=urn:btih:cab507494d02ebb1178b38f2e9d7be299c86b862".into(),
             torrent_url: None,
             info_hash: None,
             size_bytes: None,

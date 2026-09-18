@@ -254,11 +254,7 @@ pub fn parse_bencode(input: &[u8]) -> Result<Bencode, BencodeError> {
 }
 
 /// Parse one value starting at `cursor`, advancing it past the value.
-fn parse_value(
-    input: &[u8],
-    cursor: &mut usize,
-    depth: usize,
-) -> Result<Bencode, BencodeError> {
+fn parse_value(input: &[u8], cursor: &mut usize, depth: usize) -> Result<Bencode, BencodeError> {
     if depth > MAX_DEPTH {
         return Err(BencodeError::DepthExceeded);
     }
@@ -324,8 +320,8 @@ fn parse_length(input: &[u8], cursor: &mut usize) -> Result<usize, BencodeError>
         return Err(BencodeError::InvalidLength);
     }
 
-    let digits = std::str::from_utf8(&input[start..end])
-        .map_err(|_| BencodeError::InvalidLength)?;
+    let digits =
+        std::str::from_utf8(&input[start..end]).map_err(|_| BencodeError::InvalidLength)?;
     let length = digits
         .parse::<usize>()
         .map_err(|_| BencodeError::InvalidLength)?;
@@ -362,8 +358,7 @@ fn parse_int(input: &[u8], cursor: &mut usize) -> Result<Bencode, BencodeError> 
         return Err(BencodeError::InvalidInteger);
     }
 
-    let text = std::str::from_utf8(&input[start..end])
-        .map_err(|_| BencodeError::InvalidInteger)?;
+    let text = std::str::from_utf8(&input[start..end]).map_err(|_| BencodeError::InvalidInteger)?;
     let value = text
         .parse::<i64>()
         .map_err(|_| BencodeError::InvalidInteger)?;
@@ -373,11 +368,7 @@ fn parse_int(input: &[u8], cursor: &mut usize) -> Result<Bencode, BencodeError> 
 }
 
 /// Parse `l<value>...e`.
-fn parse_list(
-    input: &[u8],
-    cursor: &mut usize,
-    depth: usize,
-) -> Result<Bencode, BencodeError> {
+fn parse_list(input: &[u8], cursor: &mut usize, depth: usize) -> Result<Bencode, BencodeError> {
     *cursor += 1; // consume 'l'
 
     let mut items = Vec::new();
@@ -394,11 +385,7 @@ fn parse_list(
 }
 
 /// Parse `d<key><value>...e`, where every key is a byte string.
-fn parse_dict(
-    input: &[u8],
-    cursor: &mut usize,
-    depth: usize,
-) -> Result<Bencode, BencodeError> {
+fn parse_dict(input: &[u8], cursor: &mut usize, depth: usize) -> Result<Bencode, BencodeError> {
     *cursor += 1; // consume 'd'
 
     let mut pairs = Vec::new();
@@ -448,9 +435,7 @@ pub fn scrape_stats_from_bencode(
         None => &root,
     };
 
-    let stats = files
-        .get(info_hash)
-        .ok_or(ScrapeError::UnknownTorrent)?;
+    let stats = files.get(info_hash).ok_or(ScrapeError::UnknownTorrent)?;
 
     Ok(ScrapeStats {
         seeders: count(stats.get(b"complete")),
@@ -601,7 +586,9 @@ pub fn parse_udp_connect_response(
         )));
     }
 
-    Ok(u64::from_be_bytes(response[8..16].try_into().expect("8 bytes")))
+    Ok(u64::from_be_bytes(
+        response[8..16].try_into().expect("8 bytes"),
+    ))
 }
 
 /// Build a UDP scrape request for one torrent.
@@ -813,9 +800,7 @@ pub struct MetadataProbe {
 const METADATA_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Read a torrent's file count and total size from resolved metadata.
-fn metadata_summary(
-    handle: &librqbit::ManagedTorrent,
-) -> Option<(u32, u64)> {
+fn metadata_summary(handle: &librqbit::ManagedTorrent) -> Option<(u32, u64)> {
     let mut summary = None;
 
     // `with_metadata` only invokes the closure once the info dictionary is
@@ -1036,6 +1021,26 @@ pub async fn probe_releases(
     client: reqwest::Client,
     releases: &[Release],
 ) -> Vec<(usize, ProbeResult)> {
+    probe_releases_reporting(session, client, releases, |_, _| {}).await
+}
+
+/// Probe every release concurrently, reporting each result as it lands.
+///
+/// The callback runs in completion order, before the caller's list is
+/// assembled. That is what lets the UI re-rank progressively: a slow probe for
+/// release 1 must not hold back the verdict for release 7. The returned list is
+/// still sorted by index, so a caller that ignores the callback gets the same
+/// answer as [`probe_releases`].
+///
+/// The callback takes a reference because it fires for every result and the
+/// results are also returned; handing out a clone each time would copy every
+/// probe's data for no reason.
+pub async fn probe_releases_reporting(
+    session: &Arc<librqbit::Session>,
+    client: reqwest::Client,
+    releases: &[Release],
+    mut on_result: impl FnMut(usize, &ProbeResult),
+) -> Vec<(usize, ProbeResult)> {
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_TRACKER_SCRAPES));
     let mut set = JoinSet::new();
 
@@ -1056,12 +1061,44 @@ pub async fn probe_releases(
     let mut results = Vec::with_capacity(releases.len());
     while let Some(joined) = set.join_next().await {
         // A panicking task loses only its own result; the rest still arrive.
-        if let Ok(pair) = joined {
-            results.push(pair);
+        if let Ok((index, result)) = joined {
+            on_result(index, &result);
+            results.push((index, result));
         }
     }
 
     results.sort_by_key(|(index, _)| *index);
+    results
+}
+
+/// Run a probe batch on a session of its own, then shut it down.
+///
+/// A dedicated session is not a nicety: `add_torrent` returns
+/// `AlreadyManaged` for an info hash it already holds, before applying the
+/// new call's options. If the probe registered a release with an empty file
+/// selection on the *player's* session, a later playback request for the same
+/// torrent would keep that empty selection and download nothing.
+/// `tests/probe_session_conflict.rs` pins that behaviour down.
+///
+/// The session is per batch rather than long-lived so probed torrents cannot
+/// accumulate: it is dropped when the batch ends, which releases every
+/// registration with it.
+///
+/// A session that will not start yields no results rather than an error. The
+/// probe is an enhancement to the ranking, so failing to run it should leave
+/// the static order in place, not turn a working search into a failure.
+pub async fn probe_releases_on_own_session(
+    download_dir: std::path::PathBuf,
+    client: reqwest::Client,
+    releases: &[Release],
+    on_result: impl FnMut(usize, &ProbeResult),
+) -> Vec<(usize, ProbeResult)> {
+    let Ok(session) = librqbit::Session::new(download_dir).await else {
+        return Vec::new();
+    };
+
+    let results = probe_releases_reporting(&session, client, releases, on_result).await;
+    session.stop().await;
     results
 }
 
@@ -1171,10 +1208,7 @@ mod tests {
     fn percent_encoding_escapes_every_byte_outside_the_unreserved_set() {
         // A raw info hash is not printable text, so almost every byte must be
         // escaped; this is exactly why the hex form cannot be sent.
-        assert_eq!(
-            percent_encode_bytes(&[0x00, 0xAB, 0xFF]),
-            "%00%AB%FF"
-        );
+        assert_eq!(percent_encode_bytes(&[0x00, 0xAB, 0xFF]), "%00%AB%FF");
     }
 
     #[test]
@@ -1193,7 +1227,10 @@ mod tests {
             encoded,
             "%CA%B5%07IM%02%EB%B1%17%8B8%F2%E9%D7%BE%29%9C%86%B8b"
         );
-        assert!(encoded.contains("IM"), "unreserved bytes must not be escaped");
+        assert!(
+            encoded.contains("IM"),
+            "unreserved bytes must not be escaped"
+        );
     }
 
     // --- bencode ----------------------------------------------------------
@@ -1244,7 +1281,10 @@ mod tests {
     fn parses_a_nested_dictionary() {
         let parsed = parse_bencode(b"d1:ad1:bi2eee").unwrap();
         assert_eq!(
-            parsed.get(b"a").and_then(|inner| inner.get(b"b")).and_then(Bencode::as_int),
+            parsed
+                .get(b"a")
+                .and_then(|inner| inner.get(b"b"))
+                .and_then(Bencode::as_int),
             Some(2)
         );
     }
@@ -1257,10 +1297,7 @@ mod tests {
 
     #[test]
     fn rejects_trailing_data() {
-        assert_eq!(
-            parse_bencode(b"i1ei2e"),
-            Err(BencodeError::TrailingData(3))
-        );
+        assert_eq!(parse_bencode(b"i1ei2e"), Err(BencodeError::TrailingData(3)));
     }
 
     #[test]
@@ -1300,7 +1337,10 @@ mod tests {
 
     #[test]
     fn rejects_a_dictionary_key_that_is_not_a_string() {
-        assert_eq!(parse_bencode(b"di1ei2ee"), Err(BencodeError::UnexpectedByte(b'i')));
+        assert_eq!(
+            parse_bencode(b"di1ei2ee"),
+            Err(BencodeError::UnexpectedByte(b'i'))
+        );
     }
 
     #[test]
@@ -1919,7 +1959,6 @@ mod tests {
         session.stop().await;
     }
 
-
     /// Sum the size of every file under `root`, recursively.
     fn total_bytes_in(root: &std::path::Path) -> u64 {
         let mut total = 0;
@@ -1936,7 +1975,7 @@ mod tests {
         }
         total
     }
- 
+
     /// A magnet nothing is seeding must time out, not hang.
     ///
     /// Ignored for the same reason as the test above. A syntactically valid
@@ -2017,8 +2056,12 @@ mod tests {
         );
         let semaphore = Arc::new(Semaphore::new(1));
 
-        let result =
-            tokio_test::block_on(scrape_release(&client, &release, "not-a-valid-hash", &semaphore));
+        let result = tokio_test::block_on(scrape_release(
+            &client,
+            &release,
+            "not-a-valid-hash",
+            &semaphore,
+        ));
         assert!(result.is_none());
     }
 
@@ -2041,7 +2084,10 @@ mod tests {
 
         let semaphore = Arc::new(Semaphore::new(1));
         // Take the only permit, so the scrape below must block.
-        let held = Arc::clone(&semaphore).acquire_owned().await.expect("permit");
+        let held = Arc::clone(&semaphore)
+            .acquire_owned()
+            .await
+            .expect("permit");
 
         let release = release_with_magnet(
             "held",
@@ -2100,7 +2146,17 @@ mod tests {
             .map(|i| release_with_magnet(&format!("bbb-{i}"), &magnet))
             .collect();
 
-        let results = probe_releases(&session, reqwest::Client::new(), &releases).await;
+        // Collect the callback's reports separately from the returned list, so
+        // the two can be compared: the callback is what drives progressive
+        // re-ranking, and it must see every release the return value does.
+        let mut reported: Vec<usize> = Vec::new();
+        let results = probe_releases_reporting(
+            &session,
+            reqwest::Client::new(),
+            &releases,
+            |index, _| reported.push(index),
+        )
+        .await;
 
         assert_eq!(results.len(), 3, "every release must yield a result");
         // Indices must come back in input order even though the tasks finish
@@ -2110,8 +2166,21 @@ mod tests {
             vec![0, 1, 2]
         );
         assert!(
-            results.iter().any(|(_, r)| r.metadata.as_ref().is_some_and(|m| m.resolved)),
+            results
+                .iter()
+                .any(|(_, r)| r.metadata.as_ref().is_some_and(|m| m.resolved)),
             "at least one probe should have resolved metadata"
+        );
+
+        // The callback must have fired once per release. Without this, a
+        // callback that never runs -- or runs for only some releases -- would
+        // leave the UI's list permanently partly ranked, and nothing else in
+        // the test would notice.
+        reported.sort_unstable();
+        assert_eq!(
+            reported,
+            vec![0, 1, 2],
+            "the progress callback must report every release exactly once"
         );
 
         session.stop().await;
