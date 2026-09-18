@@ -11,6 +11,8 @@
 //! a bencoded scrape response -- is pure and unit tested here. The network
 //! calls themselves are thin wrappers over these.
 
+use std::time::Duration;
+
 use crate::torrent::magnet::percent_decode;
 
 /// Trackers we could not ask, or that answered with something unusable.
@@ -451,6 +453,41 @@ pub fn scrape_stats_from_bencode(
     })
 }
 
+/// How long one tracker gets before it is considered unreachable.
+///
+/// Three seconds is a compromise: a tracker that is up answers in tens of
+/// milliseconds, so this only ever expires on a genuinely dead or filtered
+/// host, and a release rarely lists more than a handful of trackers.
+pub const TRACKER_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The `scrape` URL corresponding to an `announce` URL (BEP 0010).
+///
+/// Trackers are announced to at `.../announce` and scraped at `.../scrape`,
+/// so the final path segment is what changes. A URL that does not end in
+/// `announce` cannot be rewritten mechanically and is reported as `None`
+/// rather than guessed at, since a wrong URL is only a wasted request.
+pub fn scrape_url_from_announce(announce_url: &str) -> Option<String> {
+    let trimmed = announce_url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return None;
+    }
+
+    match trimmed.rsplit_once("announce") {
+        // Only the final segment is rewritten: a tracker whose host happens
+        // to contain "announce" must not have the host mangled.
+        //
+        // An empty, path or query suffix is all legitimate. A passkey is
+        // usually carried as a query on the announce URL, so rejecting a
+        // `?` suffix would silently disable scraping on private trackers.
+        Some((prefix, suffix))
+            if suffix.is_empty() || suffix.starts_with('/') || suffix.starts_with('?') =>
+        {
+            Some(format!("{prefix}scrape{suffix}"))
+        }
+        _ => None,
+    }
+}
+
 /// Read a bencode integer as an unsigned count.
 ///
 /// A negative or oversized value is treated as zero rather than failing the
@@ -461,6 +498,277 @@ fn count(value: Option<&Bencode>) -> u32 {
         .and_then(Bencode::as_int)
         .and_then(|raw| u32::try_from(raw).ok())
         .unwrap_or(0)
+}
+
+/// Ask one HTTP tracker for a torrent's stats (BEP 0010).
+///
+/// The info hash is sent as percent-encoded raw bytes, not hex: the two look
+/// similar but are different requests, and a tracker will not recognise the
+/// hex form.
+pub async fn scrape_http(
+    client: &reqwest::Client,
+    announce_url: &str,
+    info_hash: &[u8; 20],
+    timeout: Duration,
+) -> Result<ScrapeStats, ScrapeError> {
+    let base = scrape_url_from_announce(announce_url).ok_or_else(|| {
+        ScrapeError::Decode(format!("'{announce_url}' is not an http announce URL"))
+    })?;
+
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let url = format!(
+        "{base}{separator}info_hash={}",
+        percent_encode_bytes(info_hash)
+    );
+
+    let response = tokio::time::timeout(timeout, client.get(&url).send())
+        .await
+        .map_err(|_| ScrapeError::Transport(format!("{announce_url} timed out")))?
+        .map_err(|e| ScrapeError::Transport(e.to_string()))?;
+
+    let status = response.status();
+    let body = response
+        .bytes()
+        .await
+        .map_err(|e| ScrapeError::Transport(e.to_string()))?;
+
+    if !status.is_success() {
+        // Report the scrape URL, not the announce URL: they differ, and a
+        // message naming the wrong one sends a reader to the wrong request.
+        return Err(ScrapeError::Transport(format!(
+            "{url} answered HTTP {status}"
+        )));
+    }
+
+    scrape_stats_from_bencode(&body, info_hash)
+}
+
+/// The UDP tracker protocol's magic connection constant (BEP 0015).
+///
+/// Every connect request must begin with it; a tracker that does not see it
+/// ignores the packet. It is a fixed value from the specification, not a
+/// per-request secret.
+const UDP_PROTOCOL_ID: u64 = 0x0000_0417_2710_1980;
+
+/// UDP action codes: 0 connects, 2 scrapes.
+const UDP_ACTION_CONNECT: u32 = 0;
+const UDP_ACTION_SCRAPE: u32 = 2;
+
+/// Build a UDP connect request.
+///
+/// Pure and separated from the socket so the byte layout -- the part that is
+/// easy to get wrong and impossible to eyeball -- is asserted in a test rather
+/// than inferred from a working connection.
+pub fn build_udp_connect_request(transaction_id: u32) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out[..8].copy_from_slice(&UDP_PROTOCOL_ID.to_be_bytes());
+    out[8..12].copy_from_slice(&UDP_ACTION_CONNECT.to_be_bytes());
+    out[12..16].copy_from_slice(&transaction_id.to_be_bytes());
+    out
+}
+
+/// Read the connection id out of a connect response.
+pub fn parse_udp_connect_response(
+    response: &[u8],
+    transaction_id: u32,
+) -> Result<u64, ScrapeError> {
+    if response.len() < 16 {
+        return Err(ScrapeError::Decode(format!(
+            "connect response was {} bytes, expected 16",
+            response.len()
+        )));
+    }
+
+    let action = u32::from_be_bytes(response[0..4].try_into().expect("4 bytes"));
+    if action != UDP_ACTION_CONNECT {
+        return Err(ScrapeError::Decode(format!(
+            "expected a connect action, got {action}"
+        )));
+    }
+
+    // The transaction id is echoed back specifically so a stale reply to an
+    // earlier request cannot be mistaken for this one's answer.
+    let echoed = u32::from_be_bytes(response[4..8].try_into().expect("4 bytes"));
+    if echoed != transaction_id {
+        return Err(ScrapeError::Decode(format!(
+            "connect response carried transaction {echoed}, expected {transaction_id}"
+        )));
+    }
+
+    Ok(u64::from_be_bytes(response[8..16].try_into().expect("8 bytes")))
+}
+
+/// Build a UDP scrape request for one torrent.
+pub fn build_udp_scrape_request(
+    connection_id: u64,
+    transaction_id: u32,
+    info_hash: &[u8; 20],
+) -> [u8; 36] {
+    let mut out = [0u8; 36];
+    out[..8].copy_from_slice(&connection_id.to_be_bytes());
+    out[8..12].copy_from_slice(&UDP_ACTION_SCRAPE.to_be_bytes());
+    out[12..16].copy_from_slice(&transaction_id.to_be_bytes());
+    out[16..36].copy_from_slice(info_hash);
+    out
+}
+
+/// Read the stats for one torrent out of a UDP scrape response.
+pub fn parse_udp_scrape_response(
+    response: &[u8],
+    transaction_id: u32,
+) -> Result<ScrapeStats, ScrapeError> {
+    // 8 bytes of header plus three 4-byte counts for a single torrent.
+    if response.len() < 20 {
+        return Err(ScrapeError::Decode(format!(
+            "scrape response was {} bytes, expected at least 20",
+            response.len()
+        )));
+    }
+
+    let action = u32::from_be_bytes(response[0..4].try_into().expect("4 bytes"));
+    if action != UDP_ACTION_SCRAPE {
+        return Err(ScrapeError::Decode(format!(
+            "expected a scrape action, got {action}"
+        )));
+    }
+
+    let echoed = u32::from_be_bytes(response[4..8].try_into().expect("4 bytes"));
+    if echoed != transaction_id {
+        return Err(ScrapeError::Decode(format!(
+            "scrape response carried transaction {echoed}, expected {transaction_id}"
+        )));
+    }
+
+    Ok(ScrapeStats {
+        seeders: u32::from_be_bytes(response[8..12].try_into().expect("4 bytes")),
+        completed: u32::from_be_bytes(response[12..16].try_into().expect("4 bytes")),
+        leechers: u32::from_be_bytes(response[16..20].try_into().expect("4 bytes")),
+    })
+}
+
+/// Split a `udp://host:port` tracker URL into its host and port.
+///
+/// Returns the parts rather than a `SocketAddr` because a tracker is named by
+/// host, not by IP. Resolving that host is I/O, so it happens in the caller;
+/// keeping this pure is what makes it testable without a network.
+pub fn udp_authority(tracker_url: &str) -> Result<(String, u16), ScrapeError> {
+    let rest = tracker_url
+        .strip_prefix("udp://")
+        .ok_or_else(|| ScrapeError::Decode(format!("'{tracker_url}' is not a udp tracker")))?;
+
+    // A tracker URL may carry a path (`udp://host:80/announce`); only the
+    // authority is needed to dial it.
+    let authority = rest.split('/').next().unwrap_or(rest);
+
+    // `rsplit_once` so an IPv6 literal's own colons are not mistaken for the
+    // port separator.
+    let (host, port) = authority
+        .rsplit_once(':')
+        .ok_or_else(|| ScrapeError::Decode(format!("'{authority}' has no port")))?;
+
+    let port = port
+        .parse::<u16>()
+        .map_err(|e| ScrapeError::Decode(format!("'{port}' is not a port: {e}")))?;
+
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return Err(ScrapeError::Decode(format!("'{authority}' has no host")));
+    }
+
+    Ok((host.to_string(), port))
+}
+
+/// A transaction id for one UDP request pair.
+///
+/// Only needs to be unlikely to collide with a concurrent request, and the
+/// sockets here are per-scrape, so a counter is enough. It is not a security
+/// value.
+fn next_transaction_id() -> u32 {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Ask one UDP tracker for a torrent's stats (BEP 0015).
+///
+/// Two round trips: a connect handshake that yields a short-lived connection
+/// id, then the scrape itself. UDP is preferred over HTTP because it avoids a
+/// TCP handshake and a full HTTP exchange, which matters when several
+/// trackers are being asked at once.
+pub async fn scrape_udp(
+    tracker_url: &str,
+    info_hash: &[u8; 20],
+    timeout: Duration,
+) -> Result<ScrapeStats, ScrapeError> {
+    let (host, port) = udp_authority(tracker_url)?;
+
+    // Bind on the wildcard address with an OS-chosen port: the tracker
+    // replies to the address the request came from, so any ephemeral port
+    // works.
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
+        .await
+        .map_err(|e| ScrapeError::Transport(format!("could not open a UDP socket: {e}")))?;
+
+    // Connecting by host lets the resolver pick an address, and remembers it
+    // so a reply is matched to this peer rather than any sender.
+    socket
+        .connect((host.as_str(), port))
+        .await
+        .map_err(|e| ScrapeError::Transport(format!("could not reach {host}:{port}: {e}")))?;
+
+    let connect_id = next_transaction_id();
+    let connect_request = build_udp_connect_request(connect_id);
+
+    // One buffer is reused for both replies; a tracker response is far
+    // smaller than this, and `recv` reports the actual length.
+    let mut buffer = [0u8; 2048];
+
+    tokio::time::timeout(timeout, socket.send(&connect_request))
+        .await
+        .map_err(|_| ScrapeError::Transport(format!("{tracker_url} timed out on connect")))?
+        .map_err(|e| ScrapeError::Transport(e.to_string()))?;
+
+    let read = tokio::time::timeout(timeout, socket.recv(&mut buffer))
+        .await
+        .map_err(|_| ScrapeError::Transport(format!("{tracker_url} timed out on connect")))?
+        .map_err(|e| ScrapeError::Transport(e.to_string()))?;
+
+    let connection_id = parse_udp_connect_response(&buffer[..read], connect_id)?;
+
+    let scrape_id = next_transaction_id();
+    let scrape_request = build_udp_scrape_request(connection_id, scrape_id, info_hash);
+
+    tokio::time::timeout(timeout, socket.send(&scrape_request))
+        .await
+        .map_err(|_| ScrapeError::Transport(format!("{tracker_url} timed out on scrape")))?
+        .map_err(|e| ScrapeError::Transport(e.to_string()))?;
+
+    let read = tokio::time::timeout(timeout, socket.recv(&mut buffer))
+        .await
+        .map_err(|_| ScrapeError::Transport(format!("{tracker_url} timed out on scrape")))?
+        .map_err(|e| ScrapeError::Transport(e.to_string()))?;
+
+    parse_udp_scrape_response(&buffer[..read], scrape_id)
+}
+
+/// Ask whichever protocol a tracker URL names for a torrent's stats.
+///
+/// A `udp://` tracker is scraped over UDP and everything else over HTTP, so a
+/// caller can hand over whatever the magnet listed without inspecting the
+/// scheme itself.
+pub async fn scrape_tracker(
+    client: &reqwest::Client,
+    tracker_url: &str,
+    info_hash: &[u8; 20],
+    timeout: Duration,
+) -> Result<ScrapeStats, ScrapeError> {
+    let trimmed = tracker_url.trim();
+
+    if trimmed.starts_with("udp://") {
+        return scrape_udp(trimmed, info_hash, timeout).await;
+    }
+
+    scrape_http(client, trimmed, info_hash, timeout).await
 }
 
 #[cfg(test)]
@@ -835,5 +1143,411 @@ mod tests {
     fn scrape_error_is_a_std_error() {
         fn assert_error<T: std::error::Error>() {}
         assert_error::<ScrapeError>();
+    }
+
+    // --- scrape URL rewriting ---------------------------------------------
+
+    #[test]
+    fn rewrites_an_announce_url_to_scrape() {
+        assert_eq!(
+            scrape_url_from_announce("http://tracker.test/announce").as_deref(),
+            Some("http://tracker.test/scrape")
+        );
+    }
+
+    #[test]
+    fn rewrites_announce_in_a_subdirectory() {
+        assert_eq!(
+            scrape_url_from_announce("http://tracker.test/tracker/announce").as_deref(),
+            Some("http://tracker.test/tracker/scrape")
+        );
+    }
+
+    #[test]
+    fn keeps_a_passkey_query_after_announce() {
+        // Private trackers carry a passkey as a query on the announce URL.
+        // Dropping it would make every scrape 404, so the query must survive.
+        assert_eq!(
+            scrape_url_from_announce("https://tracker.test/a/announce?passkey=abc").as_deref(),
+            Some("https://tracker.test/a/scrape?passkey=abc")
+        );
+    }
+
+    #[test]
+    fn does_not_rewrite_a_url_without_announce() {
+        assert_eq!(scrape_url_from_announce("http://tracker.test/scrape"), None);
+    }
+
+    #[test]
+    fn does_not_rewrite_a_udp_url() {
+        assert_eq!(
+            scrape_url_from_announce("udp://tracker.test:80/announce"),
+            None
+        );
+    }
+
+    // --- HTTP scrape ------------------------------------------------------
+
+    #[tokio::test]
+    async fn http_scrape_reads_stats_and_sends_the_hash_percent_encoded() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let info_hash = hash_bytes();
+
+        Mock::given(method("GET"))
+            .and(path("/scrape"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(scrape_response(4, 1, 20)))
+            .mount(&server)
+            .await;
+
+        let stats = scrape_http(
+            &reqwest::Client::new(),
+            &format!("{}/announce", server.uri()),
+            &info_hash,
+            TRACKER_TIMEOUT,
+        )
+        .await
+        .expect("should scrape");
+
+        assert_eq!(stats.seeders, 4);
+        assert_eq!(stats.leechers, 1);
+
+        // Assert on the request that actually arrived. A `query_param` matcher
+        // cannot express this: the value is raw bytes, so its escaped form is
+        // not valid UTF-8 and the matcher would compare a lossy decode.
+        let requests = server
+            .received_requests()
+            .await
+            .expect("wiremock records requests");
+        let url = requests[0].url.as_str();
+
+        assert!(
+            url.contains(&format!("info_hash={}", percent_encode_bytes(&info_hash))),
+            "info hash must be percent-encoded, got {url}"
+        );
+        assert!(
+            !url.contains(&format!("info_hash={HASH}")),
+            "the hex form must not be sent; it is a different request"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_scrape_reports_a_non_success_status() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let result = scrape_http(
+            &reqwest::Client::new(),
+            &format!("{}/announce", server.uri()),
+            &hash_bytes(),
+            TRACKER_TIMEOUT,
+        )
+        .await;
+
+        assert!(matches!(result, Err(ScrapeError::Transport(_))));
+    }
+
+    #[tokio::test]
+    async fn http_scrape_rejects_a_non_http_url() {
+        let result = scrape_http(
+            &reqwest::Client::new(),
+            "udp://tracker.test:80/announce",
+            &hash_bytes(),
+            TRACKER_TIMEOUT,
+        )
+        .await;
+
+        assert!(matches!(result, Err(ScrapeError::Decode(_))));
+    }
+
+    #[tokio::test]
+    async fn http_scrape_times_out_on_a_silent_tracker() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            // Longer than the timeout the client is given below.
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+            .mount(&server)
+            .await;
+
+        let started = std::time::Instant::now();
+        let result = scrape_http(
+            &reqwest::Client::new(),
+            &format!("{}/announce", server.uri()),
+            &hash_bytes(),
+            Duration::from_millis(200),
+        )
+        .await;
+
+        assert!(matches!(result, Err(ScrapeError::Transport(_))));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the client timeout should have fired, not the mock delay"
+        );
+    }
+
+    // --- UDP byte layouts -------------------------------------------------
+
+    #[test]
+    fn udp_connect_request_matches_bep_0015() {
+        let request = build_udp_connect_request(0x1234_5678);
+
+        assert_eq!(&request[..8], &UDP_PROTOCOL_ID.to_be_bytes());
+        assert_eq!(&request[8..12], &0u32.to_be_bytes(), "action is connect");
+        assert_eq!(&request[12..16], &0x1234_5678u32.to_be_bytes());
+    }
+
+    #[test]
+    fn udp_connect_response_yields_the_connection_id() {
+        let mut response = Vec::new();
+        response.extend_from_slice(&0u32.to_be_bytes());
+        response.extend_from_slice(&7u32.to_be_bytes());
+        response.extend_from_slice(&0xDEAD_BEEF_CAFE_F00Du64.to_be_bytes());
+
+        assert_eq!(
+            parse_udp_connect_response(&response, 7).unwrap(),
+            0xDEAD_BEEF_CAFE_F00D
+        );
+    }
+
+    #[test]
+    fn udp_connect_response_rejects_a_stale_transaction() {
+        let mut response = Vec::new();
+        response.extend_from_slice(&0u32.to_be_bytes());
+        response.extend_from_slice(&99u32.to_be_bytes());
+        response.extend_from_slice(&0u64.to_be_bytes());
+
+        assert!(matches!(
+            parse_udp_connect_response(&response, 7),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn udp_connect_response_rejects_a_short_buffer() {
+        assert!(matches!(
+            parse_udp_connect_response(&[0u8; 8], 7),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn udp_connect_response_rejects_the_wrong_action() {
+        let mut response = Vec::new();
+        response.extend_from_slice(&2u32.to_be_bytes());
+        response.extend_from_slice(&7u32.to_be_bytes());
+        response.extend_from_slice(&0u64.to_be_bytes());
+
+        assert!(matches!(
+            parse_udp_connect_response(&response, 7),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn udp_scrape_request_matches_bep_0015() {
+        let info_hash = hash_bytes();
+        let request = build_udp_scrape_request(0x1122_3344_5566_7788, 42, &info_hash);
+
+        assert_eq!(&request[..8], &0x1122_3344_5566_7788u64.to_be_bytes());
+        assert_eq!(&request[8..12], &2u32.to_be_bytes(), "action is scrape");
+        assert_eq!(&request[12..16], &42u32.to_be_bytes());
+        assert_eq!(&request[16..36], &info_hash[..]);
+    }
+
+    #[test]
+    fn udp_scrape_response_maps_complete_to_seeders() {
+        // The tracker protocol's field order is complete, downloaded,
+        // incomplete -- not the order they are usually spoken about.
+        let mut response = Vec::new();
+        response.extend_from_slice(&2u32.to_be_bytes());
+        response.extend_from_slice(&42u32.to_be_bytes());
+        response.extend_from_slice(&11u32.to_be_bytes());
+        response.extend_from_slice(&22u32.to_be_bytes());
+        response.extend_from_slice(&33u32.to_be_bytes());
+
+        let stats = parse_udp_scrape_response(&response, 42).unwrap();
+        assert_eq!(
+            stats,
+            ScrapeStats {
+                seeders: 11,
+                completed: 22,
+                leechers: 33,
+            }
+        );
+    }
+
+    #[test]
+    fn udp_scrape_response_rejects_a_short_buffer() {
+        assert!(matches!(
+            parse_udp_scrape_response(&[0u8; 12], 42),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn udp_scrape_response_rejects_a_stale_transaction() {
+        let mut response = Vec::new();
+        response.extend_from_slice(&2u32.to_be_bytes());
+        response.extend_from_slice(&1u32.to_be_bytes());
+        response.extend_from_slice(&[0u8; 12]);
+
+        assert!(matches!(
+            parse_udp_scrape_response(&response, 42),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    // --- UDP address parsing ---------------------------------------------
+
+    #[test]
+    fn parses_a_udp_tracker_host_and_port() {
+        assert_eq!(
+            udp_authority("udp://tracker.test:1337/announce").unwrap(),
+            ("tracker.test".to_string(), 1337)
+        );
+    }
+
+    #[test]
+    fn parses_a_udp_address_without_a_path() {
+        assert_eq!(
+            udp_authority("udp://127.0.0.1:6969").unwrap(),
+            ("127.0.0.1".to_string(), 6969)
+        );
+    }
+
+    #[test]
+    fn parses_an_ipv6_literal_without_confusing_its_colons_for_a_port() {
+        assert_eq!(
+            udp_authority("udp://[::1]:1337/announce").unwrap(),
+            ("::1".to_string(), 1337)
+        );
+    }
+
+    #[test]
+    fn rejects_a_non_udp_tracker_address() {
+        assert!(matches!(
+            udp_authority("http://tracker.test:80/announce"),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_udp_url_without_a_port() {
+        assert!(matches!(
+            udp_authority("udp://tracker.test/announce"),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_udp_url_with_a_non_numeric_port() {
+        assert!(matches!(
+            udp_authority("udp://tracker.test:http/announce"),
+            Err(ScrapeError::Decode(_))
+        ));
+    }
+
+    // --- UDP scrape end to end -------------------------------------------
+
+    /// Answer one connect and one scrape on a real loopback socket.
+    ///
+    /// This exercises the whole UDP path -- request layout, the handshake,
+    /// transaction id echo, response parsing -- against a peer that speaks the
+    /// protocol, which the pure layout tests above cannot do.
+    #[tokio::test]
+    async fn udp_scrape_completes_a_connect_and_scrape_handshake() {
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock tracker");
+        let addr = server.local_addr().expect("mock address");
+
+        let info_hash = hash_bytes();
+
+        let responder = tokio::spawn(async move {
+            let mut buffer = [0u8; 2048];
+
+            // Connect: echo the transaction id and hand back a connection id.
+            let (read, peer) = server.recv_from(&mut buffer).await.expect("connect");
+            assert_eq!(read, 16, "connect request is 16 bytes");
+            let transaction = u32::from_be_bytes(buffer[12..16].try_into().unwrap());
+
+            let mut reply = Vec::new();
+            reply.extend_from_slice(&0u32.to_be_bytes());
+            reply.extend_from_slice(&transaction.to_be_bytes());
+            reply.extend_from_slice(&0xABCD_1234u64.to_be_bytes());
+            server.send_to(&reply, peer).await.expect("connect reply");
+
+            // Scrape: verify the request carried the connection id from the
+            // handshake and our info hash, then answer with 9/3/1.
+            let (read, peer) = server.recv_from(&mut buffer).await.expect("scrape");
+            assert_eq!(read, 36, "scrape request is 36 bytes");
+            assert_eq!(
+                u64::from_be_bytes(buffer[..8].try_into().unwrap()),
+                0xABCD_1234,
+                "scrape must echo the connection id from the handshake"
+            );
+            assert_eq!(&buffer[16..36], &info_hash[..]);
+
+            let transaction = u32::from_be_bytes(buffer[12..16].try_into().unwrap());
+            let mut reply = Vec::new();
+            reply.extend_from_slice(&2u32.to_be_bytes());
+            reply.extend_from_slice(&transaction.to_be_bytes());
+            reply.extend_from_slice(&9u32.to_be_bytes());
+            reply.extend_from_slice(&3u32.to_be_bytes());
+            reply.extend_from_slice(&1u32.to_be_bytes());
+            server.send_to(&reply, peer).await.expect("scrape reply");
+        });
+
+        let stats = scrape_udp(
+            &format!("udp://{addr}/announce"),
+            &info_hash,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("should scrape");
+
+        assert_eq!(
+            stats,
+            ScrapeStats {
+                seeders: 9,
+                completed: 3,
+                leechers: 1,
+            }
+        );
+
+        responder.await.expect("responder task");
+    }
+
+    #[tokio::test]
+    async fn udp_scrape_times_out_when_nothing_answers() {
+        // Bind a socket but never reply to it, so the request is sent into a
+        // void that is reachable but silent -- the timeout, not a connect
+        // error, is what must fire.
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind silent tracker");
+        let addr = server.local_addr().expect("address");
+
+        let started = std::time::Instant::now();
+        let result = scrape_udp(
+            &format!("udp://{addr}/announce"),
+            &hash_bytes(),
+            Duration::from_millis(150),
+        )
+        .await;
+
+        assert!(matches!(result, Err(ScrapeError::Transport(_))));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
