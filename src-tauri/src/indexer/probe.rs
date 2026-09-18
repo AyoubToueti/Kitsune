@@ -771,6 +771,138 @@ pub async fn scrape_tracker(
     scrape_http(client, trimmed, info_hash, timeout).await
 }
 
+/// How long a torrent gets to publish its metadata.
+///
+/// Longer than a tracker scrape because it is a different kind of wait: the
+/// metadata has to come from a peer over the BitTorrent protocol, not from a
+/// tracker that answers in one packet. Thirty seconds is long enough for a
+/// slow swarm to hand over the info dictionary and short enough that a dead
+/// magnet does not stall the list for minutes.
+pub const METADATA_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What a metadata probe learned about a torrent.
+///
+/// `resolved` is the headline: a magnet whose metadata a peer actually served
+/// is a torrent that exists, which is a much stronger statement than a
+/// seeder count on a web page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MetadataProbe {
+    /// Whether the metadata arrived before the timeout.
+    pub resolved: bool,
+    /// Files in the torrent, once known.
+    pub file_count: Option<u32>,
+    /// Total size in bytes, once known.
+    pub total_bytes: Option<u64>,
+    /// How long the probe took, from adding the magnet to the verdict.
+    pub duration_ms: u64,
+}
+
+/// How often the probe looks for metadata that has arrived.
+///
+/// librqbit hands metadata over asynchronously and has no single "metadata
+/// ready" signal to await that this probe can use, so it polls. A tenth of a
+/// second is far below the resolution of the timeout, so the poll adds no
+/// meaningful latency to the verdict.
+const METADATA_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Read a torrent's file count and total size from resolved metadata.
+fn metadata_summary(
+    handle: &librqbit::ManagedTorrent,
+) -> Option<(u32, u64)> {
+    let mut summary = None;
+
+    // `with_metadata` only invokes the closure once the info dictionary is
+    // present, so a successful call *is* the "metadata resolved" answer.
+    let _ = handle.with_metadata(|meta| {
+        let count = meta.file_infos.len() as u32;
+        let total = meta.file_infos.iter().map(|file| file.len).sum();
+        summary = Some((count, total));
+    });
+
+    summary
+}
+
+/// Ask a torrent's swarm for its metadata, without downloading any of it.
+///
+/// This is the strongest liveness signal available: a tracker can report
+/// seeders that have since gone away, but a peer that serves the info
+/// dictionary is demonstrably present and connected.
+///
+/// The session is passed in rather than created here so the caller can probe
+/// many releases over one session. Starting a session binds sockets and joins
+/// the DHT, which is far too heavy to do per release.
+///
+/// It is an `Arc<Session>` rather than a `&Session` because that is what
+/// librqbit's `add_torrent` requires: the engine keeps the torrent alive
+/// behind the same allocation.
+pub async fn probe_metadata(
+    session: &std::sync::Arc<librqbit::Session>,
+    magnet_uri: &str,
+    timeout: Duration,
+) -> MetadataProbe {
+    let started = std::time::Instant::now();
+
+    // The timeout wraps the *whole* operation, not just the polling loop.
+    // `add_torrent` blocks until metadata arrives when the magnet has no peer
+    // willing to hand it over, so bounding only the loop would let a dead
+    // magnet hang the probe forever. An ignored live test caught exactly that.
+    let resolved = tokio::time::timeout(timeout, resolve_metadata(session, magnet_uri))
+        .await
+        .unwrap_or(None);
+
+    MetadataProbe {
+        resolved: resolved.is_some(),
+        file_count: resolved.map(|(count, _)| count),
+        total_bytes: resolved.map(|(_, bytes)| bytes),
+        duration_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+/// Add a magnet and wait for its metadata, or give up with `None`.
+///
+/// Split from [`probe_metadata`] so the caller can bound the whole thing with
+/// one timeout. A `None` is "no metadata", which the caller turns into a
+/// verdict rather than an error.
+///
+/// Cancelling this future mid-add can leave the torrent registered in the
+/// session, which is harmless here: the session is dropped when the probe
+/// batch finishes, and no pieces were ever requested.
+async fn resolve_metadata(
+    session: &std::sync::Arc<librqbit::Session>,
+    magnet_uri: &str,
+) -> Option<(u32, u64)> {
+    let handle = session
+        .add_torrent(
+            librqbit::AddTorrent::from_url(magnet_uri),
+            Some(librqbit::AddTorrentOptions {
+                overwrite: true,
+                // Metadata only: never start fetching pieces.
+                list_only: false,
+                ..Default::default()
+            }),
+        )
+        .await
+        .ok()?
+        .into_handle()?;
+
+    loop {
+        if let Some(summary) = metadata_summary(&handle) {
+            return Some(summary);
+        }
+        tokio::time::sleep(METADATA_POLL_INTERVAL).await;
+    }
+}
+
+/// A probe that ran out of time, stamped with how long it waited.
+fn unresolved(started: &std::time::Instant) -> MetadataProbe {
+    MetadataProbe {
+        resolved: false,
+        file_count: None,
+        total_bytes: None,
+        duration_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1549,5 +1681,91 @@ mod tests {
 
         assert!(matches!(result, Err(ScrapeError::Transport(_))));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    // --- metadata probe ---------------------------------------------------
+
+    #[test]
+    fn an_unresolved_probe_claims_nothing_about_the_torrent() {
+        // The dangerous failure mode is an unresolved probe that still
+        // reports size or file count, which the ranker would read as proof
+        // the torrent exists. Every field must be empty.
+        let started = std::time::Instant::now();
+        let probe = unresolved(&started);
+
+        assert!(!probe.resolved);
+        assert_eq!(probe.file_count, None);
+        assert_eq!(probe.total_bytes, None);
+    }
+
+    #[test]
+    fn metadata_probe_defaults_to_unresolved() {
+        // Guards the derived `Default`: a defaulted probe must mean "we know
+        // nothing", not "healthy".
+        let probe = MetadataProbe::default();
+        assert!(!probe.resolved);
+        assert!(probe.file_count.is_none());
+    }
+
+    /// Probes a real torrent over the real DHT.
+    ///
+    /// Ignored by default because it starts a session, binds sockets and
+    /// joins the DHT. Run with `cargo test -- --ignored`.
+    ///
+    /// `big-buck-bunny.torrent` sits in the repository root and is a
+    /// long-lived, well-seeded torrent, so a failure here means the probe is
+    /// broken rather than that the swarm died.
+    #[tokio::test]
+    #[ignore = "starts a session, binds sockets and joins the DHT"]
+    async fn probes_metadata_for_a_well_seeded_torrent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = std::sync::Arc::new(
+            librqbit::Session::new(dir.path().to_path_buf())
+                .await
+                .expect("session should start"),
+        );
+
+        let magnet = "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c\
+                     &dn=Big+Buck+Bunny";
+
+        let probe = probe_metadata(&session, magnet, Duration::from_secs(60)).await;
+
+        assert!(
+            probe.resolved,
+            "a well-seeded torrent should publish metadata within 60s"
+        );
+        assert!(probe.file_count.unwrap_or(0) > 0);
+        assert!(probe.total_bytes.unwrap_or(0) > 0);
+
+        session.stop().await;
+    }
+
+    /// A magnet nothing is seeding must time out, not hang.
+    ///
+    /// Ignored for the same reason as the test above. A syntactically valid
+    /// but random info hash has no peers, so the only possible outcome is the
+    /// timeout.
+    #[tokio::test]
+    #[ignore = "starts a session, binds sockets and joins the DHT"]
+    async fn a_dead_magnet_times_out() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let session = std::sync::Arc::new(
+            librqbit::Session::new(dir.path().to_path_buf())
+                .await
+                .expect("session should start"),
+        );
+
+        let magnet = "magnet:?xt=urn:btih:0000000000000000000000000000000000000001";
+
+        let started = std::time::Instant::now();
+        let probe = probe_metadata(&session, magnet, Duration::from_secs(2)).await;
+
+        assert!(!probe.resolved);
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the probe must return on its own timeout"
+        );
+
+        session.stop().await;
     }
 }
