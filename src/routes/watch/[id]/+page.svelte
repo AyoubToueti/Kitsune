@@ -542,39 +542,44 @@
             onToggle={toggleResolution}
           />
 
-          <ul class="flex flex-col gap-1" data-testid="releases">
-            {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
-              <li class="flex items-start gap-2">
-                <!-- A dot rather than a word: the badge is a glanceable signal
-                     beside a row already dense with text, and the explanation
-                     lives in the title attribute. -->
-                <span
-                  class="mt-1 size-2 shrink-0 rounded-full {badgeClass(badgeFor(index))}"
-                  data-testid="release-badge"
-                  data-badge={badgeFor(index) ?? "pending"}
-                  title={badgeTitle(index)}
-                  aria-hidden="true"
-                ></span>
-                <button
-                  type="button"
-                  onclick={() => playRelease(release)}
-                  disabled={loadingRelease}
-                  class="w-full rounded-lg border px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {chosenRelease?.title ===
-                  release.title
-                    ? 'border-accent bg-surface-hover text-ink'
-                    : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
-                >
-                  <span class="block truncate">{release.title}</span>
-                  <span class="mt-0.5 block text-ink-faint">
-                    {#if release.resolution !== "unknown"}{release.resolution}{/if}
-                    {#if release.source !== "unknown"}· {release.source}{/if}
-                    {#if release.seeders !== undefined}· {release.seeders} seeders{/if}
-                    {#if formatSize(release.sizeBytes)}· {formatSize(release.sizeBytes)}{/if}
-                  </span>
-                </button>
-              </li>
-            {/each}
-          </ul>
+          <div
+            data-testid="release-scroller"
+            class="max-h-[24rem] overflow-y-auto pr-1"
+          >
+            <ul class="flex flex-col gap-1" data-testid="releases">
+              {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
+                <li class="flex items-start gap-2">
+                  <!-- A dot rather than a word: the badge is a glanceable signal
+                       beside a row already dense with text, and the explanation
+                       lives in the title attribute. -->
+                  <span
+                    class="mt-1 size-2 shrink-0 rounded-full {badgeClass(badgeFor(index))}"
+                    data-testid="release-badge"
+                    data-badge={badgeFor(index) ?? "pending"}
+                    title={badgeTitle(index)}
+                    aria-hidden="true"
+                  ></span>
+                  <button
+                    type="button"
+                    onclick={() => playRelease(release)}
+                    disabled={loadingRelease}
+                    class="w-full rounded-lg border px-3 py-2 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {chosenRelease?.title ===
+                    release.title
+                      ? 'border-accent bg-surface-hover text-ink'
+                      : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
+                  >
+                    <span class="block truncate">{release.title}</span>
+                    <span class="mt-0.5 block text-ink-faint">
+                      {#if release.resolution !== "unknown"}{release.resolution}{/if}
+                      {#if release.source !== "unknown"}· {release.source}{/if}
+                      {#if release.seeders !== undefined}· {release.seeders} seeders{/if}
+                      {#if formatSize(release.sizeBytes)}· {formatSize(release.sizeBytes)}{/if}
+                    </span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
         {/if}
       </div>
 
@@ -585,7 +590,7 @@
           <h2 class="mb-2 text-sm font-semibold tracking-tight">Files</h2>
           <div
             data-testid="file-scroller"
-            class="max-h-[24rem] overflow-y-auto pr-1"
+            class="max-h-96 overflow-y-auto pr-1"
           >
             <ul class="flex flex-col gap-1" data-testid="torrent-files">
               {#each files as file (file.idx)}

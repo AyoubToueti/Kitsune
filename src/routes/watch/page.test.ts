@@ -597,4 +597,24 @@ describe("watch page", () => {
     // The list it wraps is still the one the reader interacts with.
     expect(within(scroller).getByTestId("torrent-files")).toBeInTheDocument();
   });
+
+  it("wraps the releases list in a scrollable container", async () => {
+    // Twenty search results should not stretch the page. The chips stay
+    // OUTSIDE the scroller, since they control the list and must not scroll
+    // away with it.
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA", resolution: "1080p" }),
+      release({ title: "BBB", resolution: "720p", infoHash: "b" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const scroller = await screen.findByTestId("release-scroller");
+    expect(scroller.className).toContain("overflow-y-auto");
+    expect(within(scroller).getByTestId("releases")).toBeInTheDocument();
+
+    // The filter is a sibling of the scroller, not a child.
+    expect(within(scroller).queryByTestId("resolution-filter")).toBeNull();
+  });
 });
