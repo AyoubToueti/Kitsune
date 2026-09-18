@@ -91,8 +91,11 @@ pub fn parse_display_name(uri: &str) -> Option<String> {
     })
 }
 
-/// Minimal percent-decoding for `dn` values.
-fn percent_decode(input: &str) -> String {
+/// Minimal percent-decoding, shared with the indexer's probe module.
+///
+/// Handles `%XX` escapes byte by byte. `+` is left alone: it only means
+/// "space" in a form-encoded query value, not in a tracker URL.
+pub(crate) fn percent_decode(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

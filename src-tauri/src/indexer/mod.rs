@@ -16,6 +16,7 @@ pub mod match_spec;
 pub mod normalize;
 pub mod nyaa;
 pub mod parse;
+pub mod probe;
 pub mod quality;
 pub mod rank;
 pub mod traits;
@@ -108,6 +109,7 @@ mod tests {
             indexer: ProviderId::Nyaa,
             magnet_uri: "magnet:?xt=urn:btih:cab507494d02ebb1178b38f2e9d7be299c86b862"
                 .into(),
+            torrent_url: None,
             info_hash: None,
             size_bytes: None,
             seeders: Some(10),
