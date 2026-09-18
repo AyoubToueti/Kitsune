@@ -883,7 +883,8 @@ async fn resolve_metadata(
             librqbit::AddTorrent::from_url(magnet_uri),
             Some(librqbit::AddTorrentOptions {
                 overwrite: true,
-                // Metadata only: never start fetching pieces.
+                // Metadata only: select no files, so nothing is ever fetched.
+                only_files: Some(Vec::new()),
                 list_only: false,
                 ..Default::default()
             }),
@@ -1877,7 +1878,7 @@ mod tests {
     /// long-lived, well-seeded torrent, so a failure here means the probe is
     /// broken rather than that the swarm died.
     #[tokio::test]
-    #[ignore = "starts a session, binds sockets and joins the DHT"]
+    #[ignore = "joins the DHT; run with --test-threads=1"]
     async fn probes_metadata_for_a_well_seeded_torrent() {
         let dir = tempfile::tempdir().expect("temp dir");
         let session = std::sync::Arc::new(
@@ -1898,16 +1899,51 @@ mod tests {
         assert!(probe.file_count.unwrap_or(0) > 0);
         assert!(probe.total_bytes.unwrap_or(0) > 0);
 
+        // The probe must not have downloaded the torrent. This is the
+        // assertion that caught the original bug: with no file selection,
+        // librqbit fetched the whole release, and Big Buck Bunny is hundreds
+        // of megabytes. The bound is far above any bookkeeping librqbit
+        // writes and far below anything real, so a metadata-only probe
+        // leaves the directory empty.
+        // Wait long enough for real downloading to show up: metadata resolves
+        // in seconds, so measuring immediately would make this pass even when
+        // the torrent is fetching. With the guard removed, ten seconds is
+        // enough for hundreds of megabytes to land.
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        let downloaded = total_bytes_in(dir.path());
+        assert!(
+            downloaded < 1_000_000,
+            "the metadata probe downloaded {downloaded} bytes; it must fetch none"
+        );
+
         session.stop().await;
     }
 
+
+    /// Sum the size of every file under `root`, recursively.
+    fn total_bytes_in(root: &std::path::Path) -> u64 {
+        let mut total = 0;
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return 0;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => total += total_bytes_in(&path),
+                Ok(_) => total += entry.metadata().map(|m| m.len()).unwrap_or(0),
+                Err(_) => {}
+            }
+        }
+        total
+    }
+ 
     /// A magnet nothing is seeding must time out, not hang.
     ///
     /// Ignored for the same reason as the test above. A syntactically valid
     /// but random info hash has no peers, so the only possible outcome is the
     /// timeout.
     #[tokio::test]
-    #[ignore = "starts a session, binds sockets and joins the DHT"]
+    #[ignore = "joins the DHT; run with --test-threads=1"]
     async fn a_dead_magnet_times_out() {
         let dir = tempfile::tempdir().expect("temp dir");
         let session = std::sync::Arc::new(
@@ -2044,7 +2080,7 @@ mod tests {
     ///
     /// Ignored by default. Run with `cargo test -- --ignored`.
     #[tokio::test]
-    #[ignore = "starts a session and scrapes live trackers"]
+    #[ignore = "joins the DHT; run with --test-threads=1"]
     async fn probes_a_batch_of_releases_without_losing_any() {
         let dir = tempfile::tempdir().expect("temp dir");
         let session = Arc::new(
