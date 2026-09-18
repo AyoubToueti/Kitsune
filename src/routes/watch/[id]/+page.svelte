@@ -5,17 +5,20 @@
   import { errorMessage, getAnime } from "$lib/api/anime";
   import { addMagnet, addTorrent, getStreamUrl } from "$lib/api/player";
   import { onProbeResult, probeReleases, searchReleases } from "$lib/api/releases";
+  import { availableResolutions, matchesResolution } from "$lib/resolution";
   import {
     displayTitle,
     type Anime,
     type HealthBadge,
     type ProbeOutcome,
     type Release,
+    type Resolution,
     type TorrentFile,
   } from "$lib/types";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import ExternalPlayerButton from "$lib/components/ExternalPlayerButton.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
+  import ResolutionFilter from "$lib/components/ResolutionFilter.svelte";
   import VideoPlayer from "$lib/components/VideoPlayer.svelte";
 
   const id = $derived(Number(page.params.id));
@@ -60,6 +63,28 @@
   let probeOutcomes = $state<(ProbeOutcome | undefined)[]>([]);
   let probing = $state(false);
 
+  // --- the resolution filter ------------------------------------------------
+  //
+  // Chips are derived from the unfiltered `releases`, not from what is left
+  // after filtering: computing them from the filtered list would make a
+  // selected chip disappear the moment it was clicked, leaving no way back.
+  let resolutionFilter = $state<Resolution[]>([]);
+
+  /** The resolutions present in the results, highest first. */
+  const resolutionOptions = $derived(availableResolutions(releases));
+
+  /**
+   * Turn one resolution's chip on or off.
+   *
+   * The array is replaced rather than mutated so Svelte's reactivity fires;
+   * an in-place push would not re-run the derived list.
+   */
+  function toggleResolution(resolution: Resolution): void {
+    resolutionFilter = resolutionFilter.includes(resolution)
+      ? resolutionFilter.filter((value) => value !== resolution)
+      : [...resolutionFilter, resolution];
+  }
+
   /** The badge for a release, or undefined while it has not been probed. */
   function badgeFor(index: number): HealthBadge | undefined {
     return probeOutcomes[index]?.badge;
@@ -103,12 +128,13 @@
    * stable, so equal scores keep the static order rather than shuffling.
    */
   const rankedReleases = $derived.by(() => {
-    // The original index is carried through the sort rather than dropped: it
-    // is the key into `probeOutcomes`, and a reordered row still needs its own
-    // badge. Returning bare releases would make every row show the badge of
-    // whatever release used to be in that position.
+    // The original index is carried through both the filter and the sort rather
+    // than dropped: it is the key into `probeOutcomes`, and a row that survives
+    // filtering still needs ITS OWN badge. Renumbering here would make every row
+    // show the badge belonging to whatever release used to sit at that position.
     return releases
       .map((release, index) => ({ release, index }))
+      .filter(({ release }) => matchesResolution(release, resolutionFilter))
       .sort((a, b) => {
         const scoreA = probeOutcomes[a.index]?.combinedScore ?? a.release.score;
         const scoreB = probeOutcomes[b.index]?.combinedScore ?? b.release.score;
@@ -233,6 +259,10 @@
       .then((found) => {
         if (cancelled) return;
         releases = found;
+        // A new result set may not contain the resolutions the old filter
+        // selected, which would leave the list empty with the filter still
+        // "on". Resetting keeps the visible chips and the filter in step.
+        resolutionFilter = [];
       })
       .catch((err) => {
         if (cancelled) return;
@@ -506,6 +536,12 @@
             No releases found. Load a torrent by hand instead.
           </p>
         {:else}
+          <ResolutionFilter
+            available={resolutionOptions}
+            selected={resolutionFilter}
+            onToggle={toggleResolution}
+          />
+
           <ul class="flex flex-col gap-1" data-testid="releases">
             {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
               <li class="flex items-start gap-2">
@@ -547,22 +583,27 @@
              copy and its naming may not match AniList's episode list. -->
         <div class="mt-4">
           <h2 class="mb-2 text-sm font-semibold tracking-tight">Files</h2>
-          <ul class="flex flex-col gap-1" data-testid="torrent-files">
-            {#each files as file (file.idx)}
-              <li>
-                <button
-                  type="button"
-                  onclick={() => play(file)}
-                  class="w-full truncate rounded-lg border px-3 py-2 text-left text-xs transition-colors {chosen?.idx ===
-                  file.idx
-                    ? 'border-accent bg-surface-hover text-ink'
-                    : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
-                >
-                  {file.name}
-                </button>
-              </li>
-            {/each}
-          </ul>
+          <div
+            data-testid="file-scroller"
+            class="max-h-[24rem] overflow-y-auto pr-1"
+          >
+            <ul class="flex flex-col gap-1" data-testid="torrent-files">
+              {#each files as file (file.idx)}
+                <li>
+                  <button
+                    type="button"
+                    onclick={() => play(file)}
+                    class="w-full truncate rounded-lg border px-3 py-2 text-left text-xs transition-colors {chosen?.idx ===
+                    file.idx
+                      ? 'border-accent bg-surface-hover text-ink'
+                      : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
+                  >
+                    {file.name}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </div>
         </div>
       {/if}
 

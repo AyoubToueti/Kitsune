@@ -434,4 +434,167 @@ describe("watch page", () => {
       );
     });
   });
+
+  it("offers a chip only for resolutions the search returned", async () => {
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA 1080p", resolution: "1080p" }),
+      release({ title: "BBB 720p", resolution: "720p", infoHash: "b" }),
+      release({ title: "CCC 720p", resolution: "720p", infoHash: "c" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const filter = await screen.findByTestId("resolution-filter");
+    const chips = within(filter).getAllByRole("button");
+
+    // Two distinct resolutions, so exactly two chips -- never the full range.
+    expect(chips).toHaveLength(2);
+    expect(chips[0]).toHaveAttribute("data-resolution", "1080p");
+    expect(chips[1]).toHaveAttribute("data-resolution", "720p");
+  });
+
+  it("hides releases whose resolution is not selected", async () => {
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA 1080p release", resolution: "1080p" }),
+      release({ title: "BBB 720p release", resolution: "720p", infoHash: "b" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const filter = await screen.findByTestId("resolution-filter");
+    await fireEvent.click(within(filter).getByRole("button", { name: /720p/ }));
+
+    await waitFor(() => {
+      const rows = within(screen.getByTestId("releases")).getAllByRole("listitem");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].textContent).toContain("BBB 720p release");
+    });
+  });
+
+  it("toggles a chip back off to restore every release", async () => {
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA 1080p release", resolution: "1080p" }),
+      release({ title: "BBB 720p release", resolution: "720p", infoHash: "b" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const filter = await screen.findByTestId("resolution-filter");
+    const chip = () => within(filter).getByRole("button", { name: /720p/ });
+
+    await fireEvent.click(chip());
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("releases")).getAllByRole("listitem"),
+      ).toHaveLength(1),
+    );
+
+    await fireEvent.click(chip());
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("releases")).getAllByRole("listitem"),
+      ).toHaveLength(2),
+    );
+  });
+
+  it("keeps each surviving release's own badge when filtering", async () => {
+    // The regression this guards: filtering must not renumber, or a surviving
+    // row would show the badge of whatever release used to sit at that index.
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA 1080p", resolution: "1080p", infoHash: "aaa" }),
+      release({ title: "BBB 720p", resolution: "720p", infoHash: "bbb" }),
+    ]);
+
+    let fire: ((outcome: ProbeOutcome) => void) | undefined;
+    onProbeResultMock.mockImplementation(
+      (handler: (outcome: ProbeOutcome) => void) => {
+        fire = handler;
+        return Promise.resolve(() => {});
+      },
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+    await waitFor(() => expect(fire).toBeDefined());
+
+    // Only the second release (720p) is probed, and it goes green.
+    fire!({
+      index: 1,
+      badge: "green",
+      combinedScore: 500,
+      probe: {
+        infoHash: "bbb",
+        metadata: { resolved: true, durationMs: 5 },
+        totalDurationMs: 5,
+      },
+    });
+
+    // Filtering to 720p leaves only the probed release.
+    const filter = screen.getByTestId("resolution-filter");
+    await fireEvent.click(within(filter).getByRole("button", { name: /720p/ }));
+
+    await waitFor(() => {
+      const rows = within(screen.getByTestId("releases")).getAllByRole("listitem");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].textContent).toContain("BBB 720p");
+      // Its own green badge, not release 0's pending one.
+      expect(within(rows[0]).getByTestId("release-badge")).toHaveAttribute(
+        "data-badge",
+        "green",
+      );
+    });
+  });
+
+  it("clears the filter when the search re-runs", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({
+        streamingEpisodes: [
+          { url: "https://x.test/1", title: "Episode 1" },
+          { url: "https://x.test/2", title: "Episode 2" },
+        ],
+      }),
+    );
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA 1080p", resolution: "1080p" }),
+      release({ title: "BBB 720p", resolution: "720p", infoHash: "b" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const filter = await screen.findByTestId("resolution-filter");
+    await fireEvent.click(within(filter).getByRole("button", { name: /720p/ }));
+
+    // Switching episode re-runs the search. The old selection may not exist in
+    // the new results, so it must not survive and silently empty the list.
+    const list = await screen.findByTestId("episode-list");
+    await fireEvent.click(within(list).getAllByRole("button")[1]);
+
+    await waitFor(() => {
+      const chips = within(screen.getByTestId("resolution-filter")).getAllByRole(
+        "button",
+      );
+      expect(chips.every((chip) => chip.getAttribute("aria-pressed") === "false")).toBe(
+        true,
+      );
+    });
+  });
+
+  it("wraps the torrent file list in a scrollable container", async () => {
+    // The file list has no bound of its own: a torrent can hold hundreds of
+    // files, and without this the page grows to fit all of them.
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const scroller = await screen.findByTestId("file-scroller");
+    expect(scroller.className).toContain("overflow-y-auto");
+
+    // The list it wraps is still the one the reader interacts with.
+    expect(within(scroller).getByTestId("torrent-files")).toBeInTheDocument();
+  });
 });
