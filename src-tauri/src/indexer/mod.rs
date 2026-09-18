@@ -17,6 +17,7 @@ pub mod normalize;
 pub mod nyaa;
 pub mod parse;
 pub mod probe;
+pub mod probe_rank;
 pub mod quality;
 pub mod rank;
 pub mod traits;

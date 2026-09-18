@@ -72,7 +72,7 @@ fn resolution_rank(release: &Release, preference: &ReleasePreference) -> Option<
 /// Ported from Sonarr's `log10(seeders)` peers comparer. `log10` keeps the
 /// difference between 10 and 100 seeders (one step) the same as between 100
 /// and 1000, which matches how little extra help the additional peers give.
-fn seeders_log_bonus(seeders: u32) -> i64 {
+pub(crate) fn seeders_log_bonus(seeders: u32) -> i64 {
     if seeders == 0 {
         return 0;
     }
