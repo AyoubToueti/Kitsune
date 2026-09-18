@@ -12,6 +12,7 @@ import type { TorrentHandle } from "$lib/types";
 /** Command names, centralised so a rename cannot drift. */
 export const PLAYER_COMMANDS = {
   addTorrent: "add_torrent",
+  addMagnet: "add_magnet",
   streamUrl: "get_stream_url",
   openInPlayer: "open_in_player",
   getPlayer: "get_player",
@@ -27,6 +28,18 @@ export const PLAYER_COMMANDS = {
  */
 export async function addTorrent(path: string): Promise<TorrentHandle> {
   return invoke<TorrentHandle>(PLAYER_COMMANDS.addTorrent, { path });
+}
+
+/**
+ * Add a magnet URI and resolve the files inside it.
+ *
+ * The counterpart of [`addTorrent`] for a release the app found itself: a
+ * search result carries a magnet, not a `.torrent` path. Like `addTorrent` it
+ * is not cached -- a handle names a live session, and a stale one would point
+ * at a torrent that is no longer running.
+ */
+export async function addMagnet(magnetUri: string): Promise<TorrentHandle> {
+  return invoke<TorrentHandle>(PLAYER_COMMANDS.addMagnet, { magnetUri });
 }
 
 /** The loopback URL that streams one file of one torrent. */

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 
-import type { Anime, TorrentHandle } from "$lib/types";
+import type { Anime, Release, TorrentHandle } from "$lib/types";
 
 // Aliased to src/test/app-state-stub.ts in vitest.config.js.
 import { page as appState } from "$app/state";
@@ -17,6 +17,7 @@ const openDialogMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openDialogMock }));
 
 const addTorrentMock = vi.hoisted(() => vi.fn());
+const addMagnetMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/player", async () => {
   const actual =
@@ -24,12 +25,16 @@ vi.mock("$lib/api/player", async () => {
   return {
     ...actual,
     addTorrent: addTorrentMock,
+    addMagnet: addMagnetMock,
     getStreamUrl: getStreamUrlMock,
     // The sidebar button fetches these; stub them so the page renders.
     getPlayer: vi.fn().mockResolvedValue("mpv"),
     suggestedPlayers: vi.fn().mockResolvedValue(["mpv"]),
   };
 });
+
+const searchReleasesMock = vi.hoisted(() => vi.fn());
+vi.mock("$lib/api/releases", () => ({ searchReleases: searchReleasesMock }));
 
 import Page from "./[id]/+page.svelte";
 
@@ -56,6 +61,25 @@ function handle(): TorrentHandle {
   };
 }
 
+function release(overrides: Partial<Release> = {}): Release {
+  return {
+    title: "[Group] Show - 01 [1080p]",
+    indexer: "nyaa",
+    magnetUri: "magnet:?xt=urn:btih:abc",
+    infoHash: "abc",
+    sizeBytes: 1_400_000_000,
+    seeders: 12,
+    resolution: "1080p",
+    source: "webdl",
+    remux: false,
+    trusted: false,
+    parsed: { title: "Show", absoluteEpisode: 1 },
+    score: 0,
+    ...overrides,
+  };
+}
+
+
 function setId(id: string | number) {
   const state = appState as { url: URL; params: Record<string, string> };
   state.url = new URL(`http://localhost/watch/${id}`);
@@ -66,9 +90,12 @@ beforeEach(() => {
   getAnimeMock.mockReset().mockResolvedValue(anime());
   openDialogMock.mockReset().mockResolvedValue("/tmp/show.torrent");
   addTorrentMock.mockReset().mockResolvedValue(handle());
+  addMagnetMock.mockReset().mockResolvedValue(handle());
   getStreamUrlMock
     .mockReset()
     .mockResolvedValue("http://127.0.0.1:3030/torrents/5/stream/0");
+  // Default: no releases, so tests that do not care are unaffected.
+  searchReleasesMock.mockReset().mockResolvedValue([]);
   setId(16498);
 });
 
@@ -90,11 +117,15 @@ describe("watch page", () => {
     expect(getAnimeMock).toHaveBeenCalledWith(42);
   });
 
-  it("shows the empty player state before a torrent is loaded", async () => {
+    it("shows the empty player state before a torrent is loaded", async () => {
     render(Page);
     await screen.findByRole("heading", { name: /attack on titan/i });
 
-    expect(screen.getByText(/load a torrent/i)).toBeInTheDocument();
+    // Scoped to the player's own copy: the releases panel also mentions
+    // loading a torrent, so a bare /load a torrent/i would match twice.
+    expect(
+    screen.getByText(/load a torrent to start watching/i),
+    ).toBeInTheDocument();
   });
 
   it("surfaces a metadata failure", async () => {
@@ -111,6 +142,47 @@ describe("watch page", () => {
     render(Page);
 
     expect(await screen.findByText(/not found/i)).toBeInTheDocument();
+  });
+
+  it("searches for releases using the work title", async () => {
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    expect(await screen.findByTestId("releases-empty")).toBeInTheDocument();
+    expect(searchReleasesMock).toHaveBeenCalledWith("Attack on Titan", undefined);
+  });
+
+  it("plays a release the app found on its own", async () => {
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByRole("button"));
+
+    expect(addMagnetMock).toHaveBeenCalledWith("magnet:?xt=urn:btih:abc");
+    // No episode selected, so it falls back to the first playable file.
+    expect(getStreamUrlMock).toHaveBeenCalledWith(5, 0);
+  });
+
+  it("narrows the search to the selected episode", async () => {
+    getAnimeMock.mockResolvedValue(
+      anime({
+        streamingEpisodes: [
+          { url: "https://x.test/1", title: "Episode 1" },
+          { url: "https://x.test/2", title: "Episode 2" },
+        ],
+      }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("episode-list");
+    await fireEvent.click(within(list).getAllByRole("button")[1]);
+
+    expect(searchReleasesMock).toHaveBeenLastCalledWith("Attack on Titan", 2);
   });
 
   it("loads a torrent and lists its files", async () => {

@@ -129,6 +129,25 @@ impl PlayerState {
         Ok(TorrentHandle { id, files })
     }
 
+    /// Add a magnet URI and wait for the files it resolves to.
+    ///
+    /// The magnet counterpart of [`Self::add_torrent`], used when the app
+    /// finds the release itself: a search result carries a magnet, not a
+    /// `.torrent` path. Metadata still has to arrive from peers, so this can
+    /// legitimately take longer than a local file.
+    pub async fn add_magnet(&self, magnet_uri: &str) -> Result<TorrentHandle> {
+        let session = self.session().await?;
+
+        let id = session
+            .engine
+            .add_magnet(magnet_uri)
+            .await
+            .context("failed to add magnet")?;
+
+        let files = wait_for_files(&session.engine, id).await?;
+        Ok(TorrentHandle { id, files })
+    }
+
     /// The loopback URL that streams one file of one torrent.
     pub async fn stream_url(&self, torrent_id: usize, file_idx: usize) -> Result<String> {
         let session = self.session().await?;

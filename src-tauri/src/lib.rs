@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod indexer;
 pub mod player;
 pub mod providers;
 pub mod torrent;
@@ -22,6 +23,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(provider)
         .manage(player::PlayerState::new())
+        // One registry for the process: each indexer holds its own pooled
+        // `reqwest::Client`, so rebuilding one per search would waste
+        // connections and re-resolve DNS.
+        .manage(indexer::IndexerRegistry::new())
         .invoke_handler(tauri::generate_handler![
             greet,
             commands::get_trending,
@@ -31,7 +36,10 @@ pub fn run() {
             commands::get_tags,
             commands::get_schedule,
             commands::get_anime,
+            indexer::commands::search_releases,
+            indexer::commands::download_torrent,
             player::commands::add_torrent,
+            player::commands::add_magnet,
             player::commands::get_stream_url,
             player::commands::open_in_player,
             player::commands::get_player,

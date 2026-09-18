@@ -1,0 +1,285 @@
+//! Extract the title, episode numbers and subgroup from a release name.
+//!
+//! Ported from Sonarr's `Parser`/`AnimeParser`, reduced to the shapes anime
+//! indexers emit. The hard part is that anime releases name an *absolute*
+//! episode (`Show - 37`) while western-style releases name season and episode
+//! (`Show S04E01`), and some groups give both (`Show S04E01 - 60`). All three
+//! are captured, and the matcher decides which to trust.
+//!
+//! The patterns run against a name already passed through
+//! [`super::normalize::normalize`], so separators are a single ASCII hyphen and
+//! every run of spaces is one space. Pure and total.
+
+use fancy_regex::Regex;
+use once_cell::sync::Lazy;
+
+use super::normalize::{leading_subgroup, normalize};
+use crate::types::ParsedRelease;
+
+/// Patterns that tie a season and an episode together, optionally followed by
+/// an absolute episode after a dash (`S04E01 - 60`).
+///
+/// Tried before the bare-episode patterns, because `S04E01` also contains a
+/// number that the loose patterns would otherwise grab as an absolute episode.
+static SEASON_EPISODE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    vec![
+        // S01E02, s01e02, S01.E02, and the trailing " - 60" variant.
+        Regex::new(
+            r"(?i)\bs(?<season>\d{1,2})[\s._-]*e(?<episode>\d{1,3})(?:[\s._-]*-[\s._-]*(?<absolute>\d{1,4}))?",
+        )
+        .unwrap(),
+        // 1x02
+        Regex::new(r"(?i)(?<season>\d{1,2})x(?<episode>\d{1,3})").unwrap(),
+    ]
+});
+
+/// Patterns that name a single episode without a season.
+///
+/// Ordered most explicit first: an explicit "Episode 5" beats a bare trailing
+/// number, which in turn beats the anime ` - 05` convention.
+static ABSOLUTE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    vec![
+        // "Episode 5", "Ep. 5", "E05"
+        Regex::new(r"(?i)\b(?:episode|ep|e)[\s._-]*(?<episode>\d{1,4})(?:v\d)?").unwrap(),
+        // Anime convention: "Show - 05", optionally " - 05v2".
+        Regex::new(r"[\s._-]-[\s._-]*(?<episode>\d{1,4})(?:v\d)?(?![\d])").unwrap(),
+        // Bare trailing number: "Show 05", optionally followed by trailing
+        // bracket tags ("Show 12 [1080p]"). The tags are allowed because a
+        // release almost always ends with a quality tag, and requiring the
+        // number to be the very last thing would miss the common case.
+        Regex::new(r"(?<episode>\d{1,4})(?:v\d)?(?:\s*\[[^\]]*\])*\s*$").unwrap(),
+    ]
+});
+
+/// Multi-episode packs, e.g. "01-12" or "Batch".
+///
+/// These are recognised so the matcher can reject them for a single-episode
+/// request: a season pack is not what "episode 3" asked for.
+static RANGE_PATTERN: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:\d{1,4}[\s._-]*[-~][\s._-]*\d{1,4}|\d{1,4}\s*~\s*\d{1,4})\b").unwrap());
+
+/// Words that mark a whole-season or whole-series pack.
+static PACK_WORDS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:batch|complete|season\s*\d+|\[\d{1,4}[-~]\d{1,4}\])\b").unwrap());
+
+/// Parse a release name into its title, numbers and subgroup.
+///
+/// `name` is normalised internally, so callers pass the raw indexer title and
+/// do not need to pre-normalise.
+pub fn parse_release(name: &str) -> ParsedRelease {
+    let normalized = normalize(name);
+    let subgroup = leading_subgroup(&normalized).map(str::to_string);
+
+    let (season, episode, absolute, title_end) = match_season_episode(&normalized)
+        .or_else(|| match_absolute(&normalized))
+        .unwrap_or((None, None, None, normalized.len()));
+
+    let title = extract_title(&normalized, title_end);
+
+    ParsedRelease {
+        title,
+        season,
+        episode,
+        absolute_episode: absolute,
+        subgroup,
+    }
+}
+
+/// Try the season+episode patterns. Returns numbers and where the title ends.
+fn match_season_episode(name: &str) -> Option<(Option<u32>, Option<u32>, Option<u32>, usize)> {
+    for pattern in SEASON_EPISODE_PATTERNS.iter() {
+        let Ok(Some(caps)) = pattern.captures(name) else {
+            continue;
+        };
+
+        let season = caps.name("season").and_then(|m| m.as_str().parse().ok());
+        let episode = caps.name("episode").and_then(|m| m.as_str().parse().ok());
+        let absolute = caps.name("absolute").and_then(|m| m.as_str().parse().ok());
+        let end = caps.get(0).map(|m| m.start()).unwrap_or(name.len());
+
+        return Some((season, episode, absolute, end));
+    }
+    None
+}
+
+/// Try the single-episode patterns. Returns numbers and where the title ends.
+fn match_absolute(name: &str) -> Option<(Option<u32>, Option<u32>, Option<u32>, usize)> {
+    for pattern in ABSOLUTE_PATTERNS.iter() {
+        let Ok(Some(caps)) = pattern.captures(name) else {
+            continue;
+        };
+
+        let Some(episode_match) = caps.name("episode") else {
+            continue;
+        };
+        let episode: u32 = match episode_match.as_str().parse() {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let end = caps.get(0).map(|m| m.start()).unwrap_or(name.len());
+
+        // A bare trailing number is the weakest signal: only accept it when
+        // what precedes looks like a title rather than a resolution tag, so
+        // "Show 1080p" does not read as episode 1080.
+        if pattern.as_str().contains(r"\s*$") && looks_like_quality_only(&name[..end]) {
+            continue;
+        }
+
+        return Some((None, Some(episode), Some(episode), end));
+    }
+    None
+}
+
+/// Whether the text before a candidate number is only tags, not a title.
+///
+/// Guards the bare-number fallback: "[G] 1080p" is a truncated name, not an
+/// episode.
+fn looks_like_quality_only(prefix: &str) -> bool {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    // Only brackets, punctuation and known tags; no letters forming a word.
+    !trimmed.chars().any(|c| c.is_alphabetic())
+}
+
+/// The title portion of a normalised name, up to `end`.
+///
+/// A leading `[Group]` bracket is dropped, since it names the encoder rather
+/// than the work. Returns `None` when nothing usable is left, which is honest:
+/// a name that is only a group tag has no title.
+fn extract_title(name: &str, end: usize) -> Option<String> {
+    let head = name[..end.min(name.len())].trim();
+
+    // Drop a leading bracket tag: "[Group] Show" -> "Show".
+    let without_group = if let Some(rest) = head.strip_prefix('[') {
+        match rest.find(']') {
+            Some(close) => rest[close + 1..].trim(),
+            None => head,
+        }
+    } else {
+        head
+    };
+
+    // Trailing hyphens are left behind by "Show - " once the number is cut.
+    let cleaned = without_group.trim_end_matches(['-', ' ']).trim();
+
+    (!cleaned.is_empty()).then(|| cleaned.to_string())
+}
+
+/// Whether a release name looks like a multi-episode or whole-season pack.
+///
+/// Used by the matcher to reject packs for a single-episode request. A name
+/// that says "Batch" or spans "01-12" is not the one episode asked for.
+pub fn is_pack(name: &str) -> bool {
+    let normalized = normalize(name);
+    is_match(&RANGE_PATTERN, &normalized) || is_match(&PACK_WORDS, &normalized)
+}
+
+fn is_match(pattern: &Regex, input: &str) -> bool {
+    pattern.is_match(input).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_the_anime_dash_convention() {
+        let parsed = parse_release("[SubsPlease] Show - 05 (1080p)");
+        assert_eq!(parsed.title.as_deref(), Some("Show"));
+        assert_eq!(parsed.absolute_episode, Some(5));
+        assert_eq!(parsed.episode, Some(5));
+        assert_eq!(parsed.season, None);
+        assert_eq!(parsed.subgroup.as_deref(), Some("SubsPlease"));
+    }
+
+    #[test]
+    fn parses_a_season_episode_name() {
+        let parsed = parse_release("[Group] Show S04E01 [1080p]");
+        assert_eq!(parsed.season, Some(4));
+        assert_eq!(parsed.episode, Some(1));
+        assert_eq!(parsed.absolute_episode, None);
+    }
+
+    #[test]
+    fn parses_season_episode_with_an_absolute_tail() {
+        // "S04E01 - 60": both meanings are captured, and the matcher picks.
+        let parsed = parse_release("[Group] Show S04E01 - 60 [1080p]");
+        assert_eq!(parsed.season, Some(4));
+        assert_eq!(parsed.episode, Some(1));
+        assert_eq!(parsed.absolute_episode, Some(60));
+    }
+
+    #[test]
+    fn parses_a_bare_trailing_number() {
+        let parsed = parse_release("[Group] Show 12 [1080p]");
+        assert_eq!(parsed.absolute_episode, Some(12));
+        assert_eq!(parsed.title.as_deref(), Some("Show"));
+    }
+
+    #[test]
+    fn parses_the_word_episode() {
+        let parsed = parse_release("Show Episode 7 [720p]");
+        assert_eq!(parsed.absolute_episode, Some(7));
+    }
+
+    #[test]
+    fn parses_a_v2_revision() {
+        let parsed = parse_release("[Group] Show - 05v2 (1080p)");
+        assert_eq!(parsed.absolute_episode, Some(5));
+    }
+
+    #[test]
+    fn title_drops_the_group_tag() {
+        let parsed = parse_release("[Erai-raws] Great Show - 01 [1080p]");
+        assert_eq!(parsed.title.as_deref(), Some("Great Show"));
+        assert_eq!(parsed.subgroup.as_deref(), Some("Erai-raws"));
+    }
+
+    #[test]
+    fn handles_a_name_without_a_group_tag() {
+        let parsed = parse_release("Great Show - 01 [1080p]");
+        assert_eq!(parsed.title.as_deref(), Some("Great Show"));
+        assert_eq!(parsed.subgroup, None);
+    }
+
+    #[test]
+    fn does_not_treat_a_resolution_as_an_episode() {
+        // The bare-number fallback must not read "1080p" as episode 1080.
+        let parsed = parse_release("[Group] Show [1080p]");
+        assert_ne!(parsed.absolute_episode, Some(1080));
+    }
+
+    #[test]
+    fn detects_a_multi_episode_range() {
+        assert!(is_pack("[Group] Show 01-12 [1080p]"));
+        assert!(is_pack("[Group] Show 01~12 [1080p]"));
+    }
+
+    #[test]
+    fn detects_a_named_batch() {
+        assert!(is_pack("[Group] Show Batch [1080p]"));
+        assert!(is_pack("[Group] Show Complete [1080p]"));
+    }
+
+    #[test]
+    fn a_single_episode_is_not_a_pack() {
+        assert!(!is_pack("[Group] Show - 05 [1080p]"));
+    }
+
+    #[test]
+    fn parses_a_name_that_only_has_a_group() {
+        // Nothing usable is left after the group tag is dropped.
+        let parsed = parse_release("[Group]");
+        assert_eq!(parsed.title, None);
+        assert_eq!(parsed.subgroup.as_deref(), Some("Group"));
+    }
+
+    #[test]
+    fn underscore_separated_numbers_parse() {
+        // normalise turns "Show_08" into "Show 08" before parsing.
+        let parsed = parse_release("[Group] Show_08_[1080p]");
+        assert_eq!(parsed.absolute_episode, Some(8));
+    }
+}

@@ -22,6 +22,21 @@ pub async fn add_torrent(
         .map_err(|err| err.to_string())
 }
 
+/// Add a magnet URI, returning its id and the files inside it.
+///
+/// The counterpart of [`add_torrent`] for releases the app found itself: a
+/// search result carries a magnet, not a `.torrent` path.
+#[tauri::command]
+pub async fn add_magnet(
+    state: State<'_, PlayerState>,
+    magnet_uri: String,
+) -> Result<TorrentHandle, String> {
+    state
+        .add_magnet(&magnet_uri)
+        .await
+        .map_err(|err| err.to_string())
+}
+
 /// The loopback URL that streams one file of one torrent.
 #[tauri::command]
 pub async fn get_stream_url(

@@ -435,6 +435,219 @@ pub struct MagnetLink {
     pub leechers: Option<u32>,
 }
 
+/// Vertical resolution a release is encoded at.
+///
+/// Carries the numbering used by release names (`1080p`) rather than an
+/// index, so the UI can render it directly and comparisons are ordering-free.
+/// `Unknown` is the absence of a claim, not a low quality: a release that
+/// never states a resolution must not be treated as 360p.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Resolution {
+    #[default]
+    #[serde(rename = "unknown")]
+    Unknown,
+    #[serde(rename = "360p")]
+    R360p,
+    #[serde(rename = "480p")]
+    R480p,
+    #[serde(rename = "540p")]
+    R540p,
+    #[serde(rename = "576p")]
+    R576p,
+    #[serde(rename = "720p")]
+    R720p,
+    #[serde(rename = "1080p")]
+    R1080p,
+    #[serde(rename = "2160p")]
+    R2160p,
+}
+
+impl Resolution {
+    /// How many vertical lines, or `None` when the release did not say.
+    pub fn lines(self) -> Option<u32> {
+        match self {
+            Self::Unknown => None,
+            Self::R360p => Some(360),
+            Self::R480p => Some(480),
+            Self::R540p => Some(540),
+            Self::R576p => Some(576),
+            Self::R720p => Some(720),
+            Self::R1080p => Some(1080),
+            Self::R2160p => Some(2160),
+        }
+    }
+}
+
+/// Where a release's video came from.
+///
+/// Mirrors Sonarr's source vocabulary, ordered roughly worst-to-best for
+/// anime: a broadcast capture (`Sdtv`) is a worse source than a disc rip
+/// (`BluRay`). The ordering is used by the ranker, which is why the two DVD
+/// variants sit together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReleaseSource {
+    #[default]
+    #[serde(rename = "unknown")]
+    Unknown,
+    #[serde(rename = "sdtv")]
+    Sdtv,
+    #[serde(rename = "tvrip")]
+    TvRip,
+    #[serde(rename = "dsr")]
+    Dsr,
+    #[serde(rename = "pdtv")]
+    Pdtv,
+    #[serde(rename = "dvd")]
+    Dvd,
+    #[serde(rename = "hdtv")]
+    Hdtv,
+    #[serde(rename = "webrip")]
+    WebRip,
+    #[serde(rename = "webdl")]
+    WebDl,
+    #[serde(rename = "bdrip")]
+    BdRip,
+    #[serde(rename = "brrip")]
+    BrRip,
+    #[serde(rename = "bluray")]
+    BluRay,
+    #[serde(rename = "rawhd")]
+    RawHd,
+}
+
+impl ReleaseSource {
+    /// A rough quality ordering, higher being a better source.
+    ///
+    /// `BluRay` and the two disc rips outrank streaming, which outranks
+    /// broadcast. `Unknown` sits at the bottom but is deliberately not
+    /// negative, so it never inverts a comparison.
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Sdtv => 1,
+            Self::TvRip => 2,
+            Self::Dsr => 2,
+            Self::Pdtv => 3,
+            Self::Dvd => 4,
+            Self::Hdtv => 5,
+            Self::WebRip => 6,
+            Self::WebDl => 7,
+            Self::BdRip => 8,
+            Self::BrRip => 8,
+            Self::BluRay => 9,
+            Self::RawHd => 5,
+        }
+    }
+}
+
+/// What the release-name parser learned about a name.
+///
+/// A release is described two ways at once because the naming is ambiguous:
+/// an anime release names an *absolute* episode (`Show - 37`) while a
+/// western-style release names season and episode (`Show S04E01`). Both are
+/// captured when present, and the matcher accepts either.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ParsedRelease {
+    /// The work's name, as the release spells it. `None` when the parser
+    /// could not isolate one, which is not the same as an empty title.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub season: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode: Option<u32>,
+    /// Episode number counting from the first episode of the work, which is
+    /// how anime indexers number releases.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub absolute_episode: Option<u32>,
+    /// Fansub or release group, e.g. "SubsPlease".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subgroup: Option<String>,
+}
+
+/// A candidate release found by an indexer, ready to hand to the UI.
+///
+/// Flattens what the indexer returned (the magnet) with what the parsers
+/// derived (quality, episode numbers) and the ranker's verdict (`score`), so
+/// the frontend can render the list without re-deriving anything.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Release {
+    /// The release name as the indexer spelled it. This is what the torrent
+    /// engine and file selector will see, so it is never rewritten.
+    pub title: String,
+    pub indexer: ProviderId,
+    /// Full magnet URI, validated by the indexer layer.
+    pub magnet_uri: String,
+    /// Direct `.torrent` download URL, when the indexer exposed one.
+    ///
+    /// Kept beside the magnet rather than derived from it: Nyaa's feed carries
+    /// a download link that is not the info hash, and the UI offers "save the
+    /// torrent file" as an alternative to moving the magnet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub torrent_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub info_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seeders: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub leechers: Option<u32>,
+    pub resolution: Resolution,
+    pub source: ReleaseSource,
+    /// True when the release is a remux of another, which is a better copy.
+    pub remux: bool,
+    /// Whether the indexer marks the uploader as trusted.
+    pub trusted: bool,
+    /// What the name parser extracted. Carried so the UI can show the
+    /// episode a release claims and the matcher can filter on it.
+    pub parsed: ParsedRelease,
+    /// The ranker's verdict: higher is a better pick for the request. Zero
+    /// means the release was not scored (e.g. returned unfiltered).
+    pub score: i64,
+}
+
+/// What the viewer prefers when several releases are equally correct.
+///
+/// Deliberately small: the ranker already knows the correct episode and a
+/// sane source ordering, so the only genuine taste left is resolution and how
+/// much seeding matters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ReleasePreference {
+    /// Resolutions to prefer, in order. The first match wins, so the list is
+    /// a ranking rather than a set.
+    pub preferred_resolutions: Vec<Resolution>,
+    /// Releases below this many seeders are dropped when anything else is
+    /// available. Zero keeps everything.
+    pub min_seeders: u32,
+}
+
+impl Default for ReleasePreference {
+    /// 1080p, then 720p, then whatever else — and no seeder floor, since a
+    /// rare release with one seeder is still watchable.
+    fn default() -> Self {
+        Self {
+            preferred_resolutions: vec![Resolution::R1080p, Resolution::R720p],
+            min_seeders: 0,
+        }
+    }
+}
+
+/// A `Release` with its rank score, used while sorting.
+///
+/// Kept separate from [`Release`] so the scoring pass is a pure function over
+/// borrowed data and the ordering rule can be tested without constructing
+/// whole releases twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScoredRelease {
+    /// Index into the slice that was scored.
+    pub index: usize,
+    pub score: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

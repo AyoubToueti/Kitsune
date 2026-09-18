@@ -256,6 +256,102 @@ export interface TorrentHandle {
 }
 
 /**
+ * Vertical resolution a release is encoded at.
+ *
+ * Mirrors the Rust `Resolution`. `"unknown"` is the absence of a claim, not a
+ * low quality, so it must never be treated as `"360p"`.
+ */
+export type Resolution =
+  | "unknown"
+  | "360p"
+  | "480p"
+  | "540p"
+  | "576p"
+  | "720p"
+  | "1080p"
+  | "2160p";
+
+/**
+ * Where a release's video came from.
+ *
+ * Mirrors the Rust `ReleaseSource`. Ordered roughly worst-to-best for anime,
+ * though the backend already encodes that ordering and the UI only displays it.
+ */
+export type ReleaseSource =
+  | "unknown"
+  | "sdtv"
+  | "tvrip"
+  | "dsr"
+  | "pdtv"
+  | "dvd"
+  | "hdtv"
+  | "webrip"
+  | "webdl"
+  | "bdrip"
+  | "brrip"
+  | "bluray"
+  | "rawhd";
+
+/**
+ * What the backend's release-name parser learned about a name.
+ *
+ * Mirrors the Rust `ParsedRelease`. Carried so the UI can show the episode a
+ * release claims rather than re-deriving it from the title.
+ */
+export interface ParsedRelease {
+  title?: string;
+  season?: number;
+  episode?: number;
+  /** Episode number counting from the work's first episode. */
+  absoluteEpisode?: number;
+  /** Fansub or release group, e.g. "SubsPlease". */
+  subgroup?: string;
+}
+
+/**
+ * A candidate release found by an indexer, ready to play.
+ *
+ * Mirrors the Rust `Release`. The backend has already parsed the name, judged
+ * the quality and ranked the set, so the UI renders `title` and `score`
+ * without re-deriving anything.
+ */
+export interface Release {
+  /** The release name as the indexer spelled it, never rewritten. */
+  title: string;
+  indexer: ProviderId;
+  /** Full magnet URI, validated by the backend. */
+  magnetUri: string;
+  /** Direct `.torrent` download URL, when the indexer exposed one. */
+  torrentUrl?: string;
+  infoHash?: string;
+  sizeBytes?: number;
+  seeders?: number;
+  leechers?: number;
+  resolution: Resolution;
+  source: ReleaseSource;
+  /** True when the release is a remux of another, which is a better copy. */
+  remux: boolean;
+  /** Whether the indexer marks the uploader as trusted. */
+  trusted: boolean;
+  parsed: ParsedRelease;
+  /** The ranker's verdict: higher is a better pick for the request. */
+  score: number;
+}
+
+/**
+ * What the viewer prefers when several releases are equally correct.
+ *
+ * Mirrors the Rust `ReleasePreference`. Every field is optional; the backend
+ * fills in a default (1080p then 720p, no seeder floor) when none is sent.
+ */
+export interface ReleasePreference {
+  /** Resolutions to prefer, in order. The first match wins. */
+  preferredResolutions?: Resolution[];
+  /** Releases below this many seeders are dropped when better ones exist. */
+  minSeeders?: number;
+}
+
+/**
  * Best available title, following the same preference order as the Rust
  * `Title::display`: user's own choice, then English, then romaji, then the
  * native form.
