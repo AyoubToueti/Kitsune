@@ -887,6 +887,7 @@ async fn resolve_metadata(
 }
 
 /// A probe that ran out of time, stamped with how long it waited.
+#[cfg(test)]
 fn unresolved(started: &std::time::Instant) -> MetadataProbe {
     MetadataProbe {
         resolved: false,
