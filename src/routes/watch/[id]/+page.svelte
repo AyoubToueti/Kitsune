@@ -4,10 +4,12 @@
 
   import { errorMessage, getAnime } from "$lib/api/anime";
   import { addMagnet, addTorrent, getStreamUrl } from "$lib/api/player";
-  import { searchReleases } from "$lib/api/releases";
+  import { onProbeResult, probeReleases, searchReleases } from "$lib/api/releases";
   import {
     displayTitle,
     type Anime,
+    type HealthBadge,
+    type ProbeOutcome,
     type Release,
     type TorrentFile,
   } from "$lib/types";
@@ -44,6 +46,75 @@
   let searching = $state(false);
   let loadingRelease = $state(false);
   let releaseError = $state<string | null>(null);
+
+  // --- swarm health probes -------------------------------------------------
+  //
+  // A search ranks by what the indexer claimed. The probe asks the torrents
+  // themselves, so this holds one verdict per release by position. It is
+  // deliberately index-aligned with `releases` rather than keyed by info hash:
+  // a release is not guaranteed to carry a hash, and an index cannot go
+  // missing.
+  //
+  // Nothing here is persisted: swarm health changes minute to minute, and a
+  // verdict from a previous visit would be a lie.
+  let probeOutcomes = $state<(ProbeOutcome | undefined)[]>([]);
+  let probing = $state(false);
+
+  /** The badge for a release, or undefined while it has not been probed. */
+  function badgeFor(index: number): HealthBadge | undefined {
+    return probeOutcomes[index]?.badge;
+  }
+
+  /** The colour a badge dot is drawn in, or a muted one while unprobed. */
+  function badgeClass(badge: HealthBadge | undefined): string {
+    switch (badge) {
+      case "green":
+        return "bg-health-green";
+      case "yellow":
+        return "bg-health-yellow";
+      case "red":
+        return "bg-health-red";
+      default:
+        // Unprobed is not the same as dead, so it gets a neutral pulse rather
+        // than a verdict colour.
+        return "bg-ink-faint animate-pulse";
+    }
+  }
+
+  /** A one-line explanation of a release's probe, for the title attribute. */
+  function badgeTitle(index: number): string {
+    const outcome = probeOutcomes[index];
+    if (!outcome) return "Checking swarm health…";
+
+    const parts: string[] = [];
+    const seeders = outcome.probe.scrape?.seeders;
+    if (seeders !== undefined) parts.push(`${seeders} seeders on tracker`);
+    parts.push(
+      outcome.probe.metadata?.resolved ? "metadata confirmed" : "metadata not found",
+    );
+    return parts.join(" · ");
+  }
+
+  /**
+   * Releases ordered by the best knowledge available.
+   *
+   * Before any probe lands this is the backend's static order. As verdicts
+   * arrive, a release with a better combined score moves up. The sort is
+   * stable, so equal scores keep the static order rather than shuffling.
+   */
+  const rankedReleases = $derived.by(() => {
+    // The original index is carried through the sort rather than dropped: it
+    // is the key into `probeOutcomes`, and a reordered row still needs its own
+    // badge. Returning bare releases would make every row show the badge of
+    // whatever release used to be in that position.
+    return releases
+      .map((release, index) => ({ release, index }))
+      .sort((a, b) => {
+        const scoreA = probeOutcomes[a.index]?.combinedScore ?? a.release.score;
+        const scoreB = probeOutcomes[b.index]?.combinedScore ?? b.release.score;
+        return scoreB - scoreA;
+      });
+  });
 
   let loadingTorrent = $state(false);
   let torrentError = $state<string | null>(null);
@@ -178,6 +249,52 @@
     };
   });
 
+    /**
+     * Probe the found releases for swarm health, once a search settles.
+     *
+     * Keyed on the release list itself, so it runs when a search produces a new
+     * set, not when the stream or file state changes. Results arrive as events
+     * and are written into `probeOutcomes` by position; the promise's return
+     * value is ignored because the events already delivered it.
+     *
+     * A failure is swallowed: probing enhances the ranking, so an unreachable
+     * DHT should leave the static order alone rather than surface an error the
+     * reader cannot act on.
+     */
+    $effect(() => {
+      const found = releases;
+      if (found.length === 0) return;
+
+      let cancelled = false;
+      probing = true;
+      // Reset to the list's length so an index always lands in bounds, even
+      // for an event that arrives before this effect finishes setting up.
+      probeOutcomes = new Array(found.length).fill(undefined);
+
+      const unlisten = onProbeResult((outcome) => {
+        if (cancelled) return;
+        if (outcome.index < 0 || outcome.index >= probeOutcomes.length) return;
+        // Replace the array rather than mutating a slot: Svelte tracks the
+        // binding, and an in-place write would not re-run the derived ranking.
+        const next = probeOutcomes.slice();
+        next[outcome.index] = outcome;
+        probeOutcomes = next;
+      });
+
+      probeReleases(found)
+        .catch(() => {
+          // Already handled by the events; nothing to surface.
+        })
+        .finally(() => {
+          if (cancelled) return;
+          probing = false;
+        });
+
+      return () => {
+        cancelled = true;
+        unlisten.then((fn) => fn());
+      };
+    });
   /**
    * The file that best matches an episode number, or `null` when nothing does.
    *
@@ -390,8 +507,18 @@
           </p>
         {:else}
           <ul class="flex flex-col gap-1" data-testid="releases">
-            {#each releases as release (release.infoHash ?? release.title)}
-              <li>
+            {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
+              <li class="flex items-start gap-2">
+                <!-- A dot rather than a word: the badge is a glanceable signal
+                     beside a row already dense with text, and the explanation
+                     lives in the title attribute. -->
+                <span
+                  class="mt-1 size-2 shrink-0 rounded-full {badgeClass(badgeFor(index))}"
+                  data-testid="release-badge"
+                  data-badge={badgeFor(index) ?? "pending"}
+                  title={badgeTitle(index)}
+                  aria-hidden="true"
+                ></span>
                 <button
                   type="button"
                   onclick={() => playRelease(release)}

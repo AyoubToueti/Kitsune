@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/svelte";
+import { render, screen, fireEvent, within, waitFor } from "@testing-library/svelte";
 
-import type { Anime, Release, TorrentHandle } from "$lib/types";
+import type { Anime, ProbeOutcome, Release, TorrentHandle } from "$lib/types";
 
 // Aliased to src/test/app-state-stub.ts in vitest.config.js.
 import { page as appState } from "$app/state";
@@ -34,7 +34,13 @@ vi.mock("$lib/api/player", async () => {
 });
 
 const searchReleasesMock = vi.hoisted(() => vi.fn());
-vi.mock("$lib/api/releases", () => ({ searchReleases: searchReleasesMock }));
+const probeReleasesMock = vi.hoisted(() => vi.fn());
+const onProbeResultMock = vi.hoisted(() => vi.fn());
+vi.mock("$lib/api/releases", () => ({
+  searchReleases: searchReleasesMock,
+  probeReleases: probeReleasesMock,
+  onProbeResult: onProbeResultMock,
+}));
 
 import Page from "./[id]/+page.svelte";
 
@@ -96,6 +102,11 @@ beforeEach(() => {
     .mockResolvedValue("http://127.0.0.1:3030/torrents/5/stream/0");
   // Default: no releases, so tests that do not care are unaffected.
   searchReleasesMock.mockReset().mockResolvedValue([]);
+  // Probing resolves with nothing and reports no progress by default. It
+  // returns an unlisten function the page awaits, so the mock must resolve
+  // rather than return undefined.
+  probeReleasesMock.mockReset().mockResolvedValue([]);
+  onProbeResultMock.mockReset().mockResolvedValue(() => {});
   setId(16498);
 });
 
@@ -271,5 +282,156 @@ describe("watch page", () => {
     render(Page);
 
     expect(await screen.findByText("Attack on Titan Season 2")).toBeInTheDocument();
+  });
+
+  it("marks releases as unprobed until a verdict arrives", async () => {
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const badge = await screen.findByTestId("release-badge");
+    expect(badge).toHaveAttribute("data-badge", "pending");
+  });
+
+  it("applies a probe verdict to the matching release", async () => {
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    // Capture the handler the page registers, so a probe event can be fired
+    // as the backend would. Resolving with a no-op unlisten keeps the page's
+    // cleanup path valid.
+    let fire: ((outcome: ProbeOutcome) => void) | undefined;
+    onProbeResultMock.mockImplementation(
+      (handler: (outcome: ProbeOutcome) => void) => {
+        fire = handler;
+        return Promise.resolve(() => {});
+      },
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+
+    // The listener is registered from an effect, so wait for it before firing.
+    await waitFor(() => expect(fire).toBeDefined());
+    fire!({
+      index: 0,
+      badge: "green",
+      combinedScore: 500,
+      probe: {
+        infoHash: "abc",
+        metadata: { resolved: true, fileCount: 1, totalBytes: 10, durationMs: 5 },
+        scrape: {
+          seeders: 42,
+          leechers: 1,
+          completed: 3,
+          trackerUrl: "udp://t.test:80",
+          durationMs: 2,
+        },
+        totalDurationMs: 7,
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByTestId("release-badge")).toHaveAttribute(
+        "data-badge",
+        "green",
+      ),
+    );
+  });
+
+  it("re-ranks a probed release above an unprobed one", async () => {
+    // Two releases: the first leads on static score, the second does not.
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA static leader", score: 900 }),
+      release({ title: "BBB static follower", score: 100, infoHash: "def" }),
+    ]);
+
+    let fire: ((outcome: ProbeOutcome) => void) | undefined;
+    onProbeResultMock.mockImplementation(
+      (handler: (outcome: ProbeOutcome) => void) => {
+        fire = handler;
+        return Promise.resolve(() => {});
+      },
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+
+    // Before probing, the static order stands.
+    const titles = () =>
+      within(screen.getByTestId("releases"))
+        .getAllByRole("button")
+        .map((button) => button.textContent ?? "");
+    expect(titles()[0]).toContain("AAA static leader");
+
+    await waitFor(() => expect(fire).toBeDefined());
+    // The second release turns out to be alive, with a combined score that
+    // beats the first's static 900.
+    fire!({
+      index: 1,
+      badge: "green",
+      combinedScore: 5000,
+      probe: {
+        infoHash: "def",
+        metadata: { resolved: true, durationMs: 5 },
+        totalDurationMs: 5,
+      },
+    });
+
+    await waitFor(() =>
+      expect(titles()[0]).toContain("BBB static follower"),
+    );
+  });
+
+  it("gives a reordered release its own badge, not its position's", async () => {
+    // The regression this guards: if the sorted list dropped the original
+    // index, a row that moved would display whatever badge belonged to the
+    // slot it landed in.
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA static leader", score: 900 }),
+      release({ title: "BBB static follower", score: 100, infoHash: "def" }),
+    ]);
+
+    let fire: ((outcome: ProbeOutcome) => void) | undefined;
+    onProbeResultMock.mockImplementation(
+      (handler: (outcome: ProbeOutcome) => void) => {
+        fire = handler;
+        return Promise.resolve(() => {});
+      },
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+    await waitFor(() => expect(fire).toBeDefined());
+
+    // Only the second release is probed, and it goes green.
+    fire!({
+      index: 1,
+      badge: "green",
+      combinedScore: 5000,
+      probe: {
+        infoHash: "def",
+        metadata: { resolved: true, durationMs: 5 },
+        totalDurationMs: 5,
+      },
+    });
+
+    await waitFor(() => {
+      const rows = within(screen.getByTestId("releases")).getAllByRole("listitem");
+      // The green release is first, and the badge beside it is green -- not
+      // the first release's unprobed badge.
+      expect(rows[0].textContent).toContain("BBB static follower");
+      expect(within(rows[0]).getByTestId("release-badge")).toHaveAttribute(
+        "data-badge",
+        "green",
+      );
+      expect(within(rows[1]).getByTestId("release-badge")).toHaveAttribute(
+        "data-badge",
+        "pending",
+      );
+    });
   });
 });

@@ -17,6 +17,13 @@
   /* Marks an exclusion. A rejected filter is not an error, but it is the
      opposite of the accent-coloured inclusion, so it needs its own hue. */
   --color-danger: #e5484d;
+  /* Health badges for a probed release. Green means a tracker confirmed
+     peers and the metadata was fetched; red means nothing answered. These
+     are deliberately not the accent or danger hue: a red release is still a
+     legitimate choice, just an unverified one. */
+  --color-health-green: #3fb950;
+  --color-health-yellow: #d29922;
+  --color-health-red: #6b7488;
 }
 
 /* Base look. Kept minimal: component styling lives in the components. */

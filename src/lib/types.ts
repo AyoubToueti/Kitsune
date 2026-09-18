@@ -352,6 +352,70 @@ export interface ReleasePreference {
 }
 
 /**
+ * A coarse health verdict for a release, from one probe.
+ *
+ * Mirrors the Rust `HealthBadge`. Three levels rather than a number because the
+ * evidence behind them is coarse: confirmed alive, some sign of life, nothing.
+ */
+export type HealthBadge = "green" | "yellow" | "red";
+
+/**
+ * What one tracker reported about a release, live.
+ *
+ * Mirrors the Rust `TrackerScrape`. These are the tracker's own numbers, asked
+ * for directly, rather than the seeder count an indexer's web page displayed
+ * when the feed was generated.
+ */
+export interface TrackerScrape {
+  seeders: number;
+  leechers: number;
+  /** Times the torrent was completed, not a current peer count. */
+  completed: number;
+  /** The tracker that answered, since a count is only as good as its source. */
+  trackerUrl: string;
+  durationMs: number;
+}
+
+/**
+ * What the metadata probe learned about a release.
+ *
+ * Mirrors the Rust `MetadataProbe`. `resolved` is the headline: a magnet whose
+ * info dictionary a peer actually served is a torrent that exists, which is a
+ * stronger statement than any seeder count.
+ */
+export interface MetadataProbe {
+  resolved: boolean;
+  fileCount?: number;
+  totalBytes?: number;
+  durationMs: number;
+}
+
+/** The outcome of probing one release. Mirrors the Rust `ProbeResult`. */
+export interface ProbeResult {
+  infoHash: string;
+  /** The best tracker answer, absent when no tracker replied. */
+  scrape?: TrackerScrape;
+  /** Absent only when the probe was skipped entirely. */
+  metadata?: MetadataProbe;
+  totalDurationMs: number;
+}
+
+/**
+ * One probe's effect on one release, as delivered by a `probe-result` event.
+ *
+ * Mirrors the Rust `ProbeOutcome`. `index` is the release's position in the
+ * list that was sent to `probe_releases`, which is how an event is matched back
+ * to the release it describes.
+ */
+export interface ProbeOutcome {
+  index: number;
+  probe: ProbeResult;
+  badge: HealthBadge;
+  /** The release's static score plus the probe's contribution. */
+  combinedScore: number;
+}
+
+/**
  * Best available title, following the same preference order as the Rust
  * `Title::display`: user's own choice, then English, then romaji, then the
  * native form.
