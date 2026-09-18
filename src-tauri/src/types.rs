@@ -267,6 +267,14 @@ pub struct Anime {
     pub id: i64,
     pub provider: ProviderId,
     pub title: Title,
+    /// The work's id on MyAnimeList, when the provider knows it.
+    ///
+    /// AniList carries this as `idMal`. It is the bridge to episode-level data:
+    /// AniList has no full episode list for long runners, but MAL does (via
+    /// Jikan), and this id is what addresses it. `None` means no MAL entry is
+    /// linked, so episode enrichment is skipped rather than guessed at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id_mal: Option<i64>,
     /// Cover image URL, already sized by the provider layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover_image: Option<String>,
@@ -284,7 +292,7 @@ pub struct Anime {
     /// Release format in the provider's wording, e.g. "TV", "MOVIE".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub genres: Vec<String>,
     /// Mean score on the provider's own scale (AniList: 0-100).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -304,16 +312,16 @@ pub struct Anime {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub season: Option<String>,
     /// Official places to watch this legally, as reported by the provider.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub streaming_episodes: Vec<StreamingEpisode>,
     /// Other works this one is connected to, as the provider reports.
     ///
     /// Populated only by the single-title lookup; list queries leave it empty,
     /// since a card has no room for it and it would bloat every response.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub relations: Vec<RelatedAnime>,
     /// Community recommendations, highest-rated first. Detail-only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub recommendations: Vec<RecommendedAnime>,
     /// The work's trailer, when the provider has one. Detail-only.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -656,6 +664,7 @@ mod tests {
         Anime {
             id: 21,
             provider: ProviderId::AniList,
+                id_mal: Some(21),
             title: Title {
                 romaji: Some("One Piece".into()),
                 english: Some("One Piece".into()),
@@ -722,6 +731,38 @@ mod tests {
         assert!(json.get("trailer").is_some());
         // And never the snake_case form.
         assert!(json.get("cover_image").is_none());
+    }
+
+    #[test]
+    fn anime_always_serialises_its_array_fields() {
+        // Regression: these four were once `skip_serializing_if = "Vec::is_empty"`,
+        // so an empty list omitted the key entirely. The frontend types declare
+        // them as required arrays, so it received `undefined` and threw while
+        // rendering the detail page -- which, with no error boundary, left the
+        // skeleton on screen forever. An empty list must serialise as `[]`.
+        let mut sparse = sample_anime();
+        sparse.genres = vec![];
+        sparse.streaming_episodes = vec![];
+        sparse.relations = vec![];
+        sparse.recommendations = vec![];
+
+        let json = serde_json::to_value(sparse).expect("serialize Anime");
+
+        for key in [
+            "genres",
+            "streamingEpisodes",
+            "relations",
+            "recommendations",
+        ] {
+            let value = json
+                .get(key)
+                .unwrap_or_else(|| panic!("expected `{key}` to be present even when empty"));
+            assert_eq!(
+                value.as_array().map(Vec::len),
+                Some(0),
+                "expected `{key}` to serialise as an empty array",
+            );
+        }
     }
 
     #[test]

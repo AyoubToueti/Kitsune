@@ -112,21 +112,56 @@ describe("detail page", () => {
     render(Page);
 
     expect(await screen.findByText(/429/)).toBeInTheDocument();
-  });
+      });
 
-  it("falls back to the numbered episode grid when there are no streaming episodes", async () => {
-    getAnimeMock.mockResolvedValue(
-      anime({ episodeCount: 12, streamingEpisodes: [] }),
-    );
+  // Regression: AniList returns no streaming links for many titles (e.g. Re:ZERO
+  // season 4), and the backend once omitted the key entirely for an empty list.
+  // The page read `anime.streamingEpisodes.length` unguarded, threw mid-render,
+  // and -- with no error boundary -- left the skeleton on screen forever. A
+  // response with the array keys absent must render, not hang.
+  it("renders when the backend omits empty array fields", async () => {
+    const sparse = anime();
+    // Simulate the keys being absent rather than empty, which is what the
+    // omission produced on the wire.
+    delete (sparse as Partial<Anime>).genres;
+    delete (sparse as Partial<Anime>).streamingEpisodes;
+    delete (sparse as Partial<Anime>).relations;
+    delete (sparse as Partial<Anime>).recommendations;
+    getAnimeMock.mockResolvedValue(sparse);
 
     render(Page);
-    await screen.findByRole("heading", { name: "One Piece" });
 
-    // 12 disabled episode buttons from the fallback grid.
-    expect(screen.getAllByRole("button")).toHaveLength(12);
+    expect(
+      await screen.findByRole("heading", { name: "One Piece" }),
+    ).toBeInTheDocument();
+    // No episode data at all: the page still renders rather than hanging, and
+    // says so instead of showing an empty grid.
+    expect(
+      screen.getByText(/episode information unavailable/i),
+    ).toBeInTheDocument();
   });
+    it("synthesises a clickable episode grid when there are no streaming episodes", async () => {
+      getAnimeMock.mockResolvedValue(
+        anime({
+          episodeCount: 12,
+          streamingEpisodes: [],
+          coverImage: "https://x.test/c.jpg",
+        }),
+      );
 
-  it("shows episode thumbnails when streaming episodes are present", async () => {
+      render(Page);
+      await screen.findByRole("heading", { name: "One Piece" });
+
+      // The synthesised grid: 12 cards inside the list. The list also has its own
+      // jump-to-episode form, so the count is scoped to the cards.
+      const cards = within(screen.getByTestId("episode-list")).getAllByRole("button");
+      expect(cards).toHaveLength(12);
+      for (const card of cards) {
+        expect(card).not.toBeDisabled();
+      }
+    });
+
+    it("shows episode thumbnails when streaming episodes are present", async () => {
     getAnimeMock.mockResolvedValue(
       anime({
         streamingEpisodes: [

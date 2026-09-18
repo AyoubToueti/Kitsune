@@ -1,21 +1,28 @@
 // Episode numbering, shared by everything that has to line a provider's
 // episode list up with a release's file names.
 //
-// AniList sends no numeric field for an episode, so the number has to be read
-// out of the title or the URL. The heuristic lives here rather than in each
-// caller so the detail page, the watch page and the episode list cannot
-// disagree about which entry is "episode 3".
+// AniList sends no numeric field for an episode, so the number usually has to be
+// read out of the title or the URL. A synthesised entry, by contrast, carries an
+// explicit `number` (see `episodes.ts`). Both forms are accepted here so the
+// detail page, the watch page and the episode list cannot disagree about which
+// entry is "episode 3".
 
-import type { StreamingEpisode, TorrentFile } from "./types";
+import type { Episode } from "./episodes";
+import type { TorrentFile } from "./types";
 
 /**
  * The episode number an entry represents, when one can be told.
  *
- * The title is tried before the URL because it is written for humans and so
- * carries the number most reliably; the URL patterns catch entries whose
+ * An explicit `number` wins outright: a synthesised entry knows its own number
+ * and re-deriving it from the title would be both redundant and fragile.
+ *
+ * Otherwise the title is tried before the URL because it is written for humans
+ * and so carries the number most reliably; the URL patterns catch entries whose
  * title is a site name or blank.
  */
-export function episodeNumber(ep: StreamingEpisode): number | undefined {
+export function episodeNumber(ep: Episode): number | undefined {
+  if (ep.number !== undefined) return ep.number;
+
   const patterns: RegExp[] = [
     /(?:episode|ep)\.?\s*[-–:]?\s*(\d+)/i, // "Episode 12", "Ep. 12"
     /(?:episode|ep)[-_](\d+)/i, // "episode-12" inside a URL
@@ -25,7 +32,7 @@ export function episodeNumber(ep: StreamingEpisode): number | undefined {
   for (const source of [ep.title, ep.url]) {
     if (source == null) continue;
     for (const pattern of patterns) {
-      const match = source.match(pattern);
+      const match = pattern.exec(source);
       if (match) return Number(match[1]);
     }
   }
@@ -33,10 +40,7 @@ export function episodeNumber(ep: StreamingEpisode): number | undefined {
 }
 
 /** Index of the entry for `number`, or -1 when nothing matches. */
-export function indexOfEpisode(
-  episodes: StreamingEpisode[],
-  number: number,
-): number {
+export function indexOfEpisode(episodes: Episode[], number: number): number {
   return episodes.findIndex((ep) => episodeNumber(ep) === number);
 }
 

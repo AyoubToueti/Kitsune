@@ -47,9 +47,9 @@
         {/if}
       </div>
 
-      {#if anime.genres.length}
+      {#if (anime.genres ?? []).length}
         <ul class="mt-3 flex flex-wrap gap-2">
-          {#each anime.genres.slice(0, 4) as genre (genre)}
+          {#each (anime.genres ?? []).slice(0, 4) as genre (genre)}
             <li class="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
               {genre}
             </li>

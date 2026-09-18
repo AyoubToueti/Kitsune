@@ -10,6 +10,7 @@
     searchReleases,
   } from "$lib/api/releases";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
+  import { episodesFor } from "$lib/episodes";
   import {
     displayTitle,
     type Anime,
@@ -206,7 +207,7 @@
   const title = $derived(
     anime ? (displayTitle(anime.title) ?? "Untitled") : null,
   );
-  const episodes = $derived(anime?.streamingEpisodes ?? []);
+  const episodes = $derived(anime ? episodesFor(anime) : []);
 
   /**
    * The episode number an entry represents, read out of its title or URL.

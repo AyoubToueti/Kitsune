@@ -58,6 +58,8 @@ export interface MediaTag {
 export interface Anime {
   id: number;
   provider: ProviderId;
+      /** The work's MyAnimeList id, when the provider knows it. Used to fetch full episode lists from Jikan. */
+      idMal?: number;
   title: Title;
   coverImage?: string;
   bannerImage?: string;

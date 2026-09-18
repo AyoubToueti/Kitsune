@@ -7,7 +7,7 @@
   import MetadataStrip from "$lib/components/MetadataStrip.svelte";
   import DetailPageSkeleton from "$lib/components/DetailPageSkeleton.svelte";
   import Synopsis from "$lib/components/Synopsis.svelte";
-  import EpisodeGrid from "$lib/components/EpisodeGrid.svelte";
+  import { episodesFor } from "$lib/episodes";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
@@ -56,6 +56,13 @@
   const backdrop = $derived(
     anime ? (anime.bannerImage ?? anime.coverImage) : null,
   );
+
+  /**
+   * The episodes to show. The provider list when it has one, otherwise a
+   * synthesised 1..episodeCount stand-in using the cover as artwork, so a
+   * work whose streaming links are missing (or capped) is still navigable.
+   */
+  const episodes = $derived(anime ? episodesFor(anime) : []);
 
   /**
    * Open the watch page for an episode.
@@ -107,9 +114,9 @@
       <div class="min-w-0">
         <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
 
-        {#if anime.genres.length}
+        {#if (anime.genres ?? []).length}
           <ul class="mt-2 flex flex-wrap gap-2">
-            {#each anime.genres.slice(0, 6) as genre (genre)}
+            {#each (anime.genres ?? []).slice(0, 6) as genre (genre)}
               <li class="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
                 {genre}
               </li>
@@ -133,20 +140,18 @@
        screens, where a sidebar beside a grid would be too cramped. -->
   <div class="mt-8 grid gap-8 lg:grid-cols-[1fr_20rem]">
     <div>
-      {#if anime.streamingEpisodes.length > 0}
-        <!-- Prefer the thumbnail grid: it is the richer view and the data is
-             already there. -->
-        <EpisodeList episodes={anime.streamingEpisodes} onSelect={watchEpisode} />
+      {#if episodes.length > 0}
+        <EpisodeList {episodes} onSelect={watchEpisode} />
       {:else}
-        <!-- No streaming data, so fall back to the inert numbered grid the page
-             used before, which at least shows the episode count. -->
-        <EpisodeGrid count={anime.episodeCount} />
+        <!-- Neither a provider list nor a count, so say so rather than
+             render an empty grid that reads as broken. -->
+        <p class="text-sm text-ink-faint">Episode information unavailable.</p>
       {/if}
     </div>
 
-    <aside>
+      <aside>
       <TrailerCard trailer={anime.trailer} />
-      <RelatedAnimeList relations={anime.relations} />
+      <RelatedAnimeList relations={anime.relations ?? []} />
     </aside>
   </div>
 
@@ -157,5 +162,5 @@
 
   <!-- Recommendations, full width below the grid: a poster row needs the room,
        and it reads as "more like this" rather than part of the sidebar. -->
-  <Recommendations recommendations={anime.recommendations} />
+  <Recommendations recommendations={anime.recommendations ?? []} />
 {/if}

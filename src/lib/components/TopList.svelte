@@ -28,7 +28,7 @@
 
   /** Only the first few fit on one line; more would wrap and change row height. */
   function shownGenres(item: Anime): string[] {
-    return item.genres.slice(0, 5);
+    return (item.genres ?? []).slice(0, 5);
   }
 </script>
 
@@ -65,7 +65,7 @@
             {displayTitle(item.title) ?? "Untitled"}
           </h3>
 
-          {#if item.genres.length}
+          {#if (item.genres ?? []).length}
             <div class="mt-1 flex flex-wrap gap-1">
               {#each shownGenres(item) as genre (genre)}
                 <span

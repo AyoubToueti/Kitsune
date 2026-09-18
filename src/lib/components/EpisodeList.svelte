@@ -1,14 +1,14 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { episodeNumber, indexOfEpisode } from "$lib/episode";
-  import type { StreamingEpisode } from "$lib/types";
+  import type { Episode } from "$lib/episodes";
 
   let {
     episodes = [],
     selected,
     onSelect,
   }: {
-    episodes?: StreamingEpisode[];
+    episodes?: Episode[];
     /**
      * Index of the episode to mark as playing. Only meaningful alongside
      * `onSelect`; the list stays a set of links without one.
@@ -40,8 +40,8 @@
    * `StreamingLinks`: AniList sometimes leaves the title blank, but a card with
    * no caption at all would look broken.
    */
-  function label(ep: StreamingEpisode): string {
-    return ep.title ?? ep.site ?? ep.url;
+  function label(ep: Episode): string {
+    return ep.title ?? ep.site ?? ep.url ?? (ep.number !== undefined ? `Episode ${ep.number}` : "Episode");
   }
 
   /**
@@ -122,11 +122,11 @@
         data-testid="episode-list"
         class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4"
       >
-        {#each episodes as ep, index (ep.url)}
+        {#each episodes as ep, index (ep.number ?? ep.url ?? index)}
           <li data-episode-index={index}>
             <button
               type="button"
-              onclick={() => (onSelect ? onSelect(index) : openUrl(ep.url))}
+              onclick={() => { if (onSelect) onSelect(index); else if (ep.url) openUrl(ep.url); }}
               aria-label={label(ep)}
               aria-current={selected === index ? "true" : undefined}
               data-highlighted={highlighted === index ? "true" : undefined}

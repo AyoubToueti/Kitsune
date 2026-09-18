@@ -42,6 +42,7 @@ const MEDIA_FIELDS: &str = r#"
     format
     popularity
     streamingEpisodes { title url site thumbnail }
+    idMal
     id
     title { romaji english native }
     coverImage { large extraLarge }
@@ -642,7 +643,8 @@ struct Media {
     duration: Option<u32>,
     #[serde(default)]
     format: Option<String>,
-    #[serde(default)]
+    #[serde(rename = "idMal", default)]
+    id_mal: Option<i64>,
     popularity: Option<u32>,
     #[serde(rename = "streamingEpisodes", default)]
     streaming_episodes: Option<Vec<StreamingEpisodeWire>>,
@@ -779,6 +781,7 @@ fn map_media(media: Media) -> Anime {
     Anime {
         id: media.id,
         provider: ProviderId::AniList,
+            id_mal: media.id_mal,
         title: Title {
             romaji: non_empty(title.romaji),
             english: non_empty(title.english),
@@ -1779,6 +1782,27 @@ mod tests {
         // The season is a separate field from the year: AniList reports them
         // independently, and the home page renders them as one column.
         assert_eq!(first.season.as_deref(), Some("FALL"));
+    }
+
+    #[tokio::test]
+    async fn id_mal_is_mapped_for_episode_enrichment() {
+        let mut media = media_json();
+        media["idMal"] = serde_json::json!(21);
+        let (_server, provider) = provider_with(page_response(vec![media]), 200).await;
+
+        let anime = provider.trending(1).await.unwrap();
+        assert_eq!(anime[0].id_mal, Some(21));
+    }
+
+    #[tokio::test]
+    async fn id_mal_is_absent_when_the_provider_has_none() {
+        // Not every work is linked to MAL, so the field must stay `None` rather
+        // than defaulting to a wrong id that would enrich the wrong episodes.
+        let (_server, provider) =
+            provider_with(page_response(vec![media_json()]), 200).await;
+
+        let anime = provider.trending(1).await.unwrap();
+        assert_eq!(anime[0].id_mal, None);
     }
 
     #[tokio::test]

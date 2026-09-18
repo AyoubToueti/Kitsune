@@ -147,9 +147,9 @@
               {/each}
             </div>
 
-            {#if item.genres.length}
+            {#if (item.genres ?? []).length}
               <ul class="flex flex-wrap gap-2">
-                {#each item.genres.slice(0, 3) as genre (genre)}
+                {#each (item.genres ?? []).slice(0, 3) as genre (genre)}
                   <li
                     class="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted"
                   >
