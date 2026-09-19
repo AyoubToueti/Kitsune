@@ -28,22 +28,32 @@ export const PROBE_RESULT_EVENT = "probe-result";
 /**
  * Search the configured indexers for a work, optionally narrowed to an episode.
  *
- * `title` and `episode` are the exact key names the Rust command expects:
- * Tauri maps a command's snake_case parameters to camelCase keys, and the
- * command's first argument is literally `title`, so sending `work` would fail
- * as a missing argument. The backend ranks and de-duplicates the hits before
- * returning them, so the caller renders the list as-is.
- *
- * Deliberately NOT cached: swarm health moves minute to minute, and a cached
- * seeder count would be a lie.
- */
-export async function searchReleases(
-  title: string,
-  episode?: number,
-): Promise<Release[]> {
-  return invoke<Release[]>(RELEASE_COMMANDS.search, { title, episode });
+   * `titles` and `episode` are the exact key names the Rust command expects:
+   * Tauri maps a command's snake_case parameters to camelCase keys, and the
+   * command's first argument is literally `titles`. Send every title form the
+   * work has (see `titleForms`), best first: an uploader may have used either
+   * the English or the romaji title, and only one of them will match.
+   *
+   * The backend expands the titles into several query spellings, de-duplicates
+   * the merged hits and ranks them, so the caller renders the list as-is.
+   *
+   * Deliberately NOT cached: swarm health moves minute to minute, and a cached
+   * seeder count would be a lie.
+   */
+  export async function searchReleases(
+    titles: string[],
+    episode?: number,
+  ): Promise<Release[]> {
+    return invoke<Release[]>(RELEASE_COMMANDS.search, { titles, episode });
 }
 
+/**
+ * Download a `.torrent` file from an indexer to a path the user chose.
+ *
+ * The fetch happens in the backend rather than the webview: the frontend cannot
+ * reach nyaa.si directly (CORS), and a native request can write the bytes
+ * straight to disk instead of holding them in a JS string.
+ */
 export async function downloadTorrent(url: string, path: string): Promise<string> {
   return invoke<string>(RELEASE_COMMANDS.download, { url, path });
 }

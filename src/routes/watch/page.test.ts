@@ -160,7 +160,28 @@ describe("watch page", () => {
     await screen.findByRole("heading", { name: /attack on titan/i });
 
     expect(await screen.findByTestId("releases-empty")).toBeInTheDocument();
-    expect(searchReleasesMock).toHaveBeenCalledWith("Attack on Titan", undefined);
+    expect(searchReleasesMock).toHaveBeenCalledWith(["Attack on Titan"], undefined);
+  });
+
+  it("searches every title form the work has", async () => {
+    // An uploader may have used the English or the romaji title, so both must be
+    // sent. The backend expands each into its own query spellings.
+    getAnimeMock.mockResolvedValue(
+      anime({
+        title: {
+          english: "Attack on Titan",
+          romaji: "Shingeki no Kyojin",
+        },
+      }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    expect(searchReleasesMock).toHaveBeenCalledWith(
+      ["Attack on Titan", "Shingeki no Kyojin"],
+      undefined,
+    );
   });
 
   it("plays a release the app found on its own", async () => {
@@ -193,7 +214,7 @@ describe("watch page", () => {
     const list = await screen.findByTestId("episode-list");
     await fireEvent.click(within(list).getAllByRole("button")[1]);
 
-    expect(searchReleasesMock).toHaveBeenLastCalledWith("Attack on Titan", 2);
+    expect(searchReleasesMock).toHaveBeenLastCalledWith(["Attack on Titan"], 2);
   });
 
   it("loads a torrent and lists its files", async () => {

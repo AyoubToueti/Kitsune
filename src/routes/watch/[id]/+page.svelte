@@ -13,6 +13,7 @@
   import { episodesFor } from "$lib/episodes";
   import {
     displayTitle,
+    titleForms,
     type Anime,
     type HealthBadge,
     type ProbeOutcome,
@@ -255,16 +256,21 @@
    * slow response for episode 1 cannot overwrite the results for episode 2.
    */
   $effect(() => {
-    const work = title;
+    const work = anime;
     const episode = wantedEpisode;
 
     if (work === null) return;
+
+    // Every title form the work has: an uploader may have used the English or
+    // the romaji title, and the backend searches each.
+    const forms = titleForms(work.title);
+    if (forms.length === 0) return;
 
     let cancelled = false;
     searching = true;
     releaseError = null;
 
-    searchReleases(work, episode)
+    searchReleases(forms, episode)
       .then((found) => {
         if (cancelled) return;
         releases = found;

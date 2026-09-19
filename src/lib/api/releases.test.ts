@@ -53,13 +53,13 @@ beforeEach(() => {
 });
 
 describe("release command wrappers", () => {
-  it("searchReleases passes the title and episode", async () => {
+  it("searchReleases passes every title form and the episode", async () => {
     invokeMock.mockResolvedValue([release()]);
 
-    const found = await searchReleases("Show", 5);
+    const found = await searchReleases(["Show", "Shou"], 5);
 
     expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.search, {
-      title: "Show",
+      titles: ["Show", "Shou"],
       episode: 5,
     });
     expect(found).toHaveLength(1);

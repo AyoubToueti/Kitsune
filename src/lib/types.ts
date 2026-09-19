@@ -443,3 +443,33 @@ export function displayTitle(title: Title): string | undefined {
   const candidates = [title.userPreferred, title.english, title.romaji, title.native];
   return candidates.find((c) => c != null && c.trim() !== "");
 }
+
+/**
+ * Every title form worth searching an indexer for, best first.
+ *
+ * A work has an English title and a romaji one, and an uploader may have used
+ * either, so both are searched. The native form is deliberately excluded: the
+ * Nyaa category queried is "Anime / English-translated", where a Japanese title
+ * essentially never appears, so searching it would only cost a request.
+ *
+ * Duplicates are collapsed case-insensitively and blank forms are dropped.
+ * Returns an empty array only when every form is missing or blank.
+ */
+export function titleForms(title: Title): string[] {
+  const candidates = [title.userPreferred, title.english, title.romaji];
+  const seen = new Set<string>();
+  const forms: string[] = [];
+
+  for (const candidate of candidates) {
+    const trimmed = candidate?.trim();
+    if (!trimmed) continue;
+
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    forms.push(trimmed);
+  }
+
+  return forms;
+}
