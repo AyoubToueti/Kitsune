@@ -174,6 +174,23 @@ mod tests {
     }
 
     #[test]
+    fn a_season_marker_with_the_wanted_episode_is_kept() {
+        // `Season 3 - 09` names episode 9 of season 3, not a season pack. The
+        // matcher must not reject it on the `Season N` marker alone.
+        let release = release_named("[G] Show Season 3 - 09 [1080p]");
+        assert_eq!(matches(&release, &EpisodeRequest::anime(9)), Ok(()));
+    }
+
+    #[test]
+    fn a_bare_season_marker_is_still_a_pack() {
+        let release = release_named("[G] Show Season 3 [1080p]");
+        assert_eq!(
+            matches(&release, &EpisodeRequest::anime(9)),
+            Err(MatchRejection::Pack)
+        );
+    }
+
+    #[test]
     fn a_wrong_episode_is_rejected() {
         let release = release_named("[G] Show - 09 [1080p]");
         assert_eq!(

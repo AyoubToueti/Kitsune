@@ -58,9 +58,21 @@ static ABSOLUTE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
 static RANGE_PATTERN: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\b(?:\d{1,4}[\s._-]*[-~][\s._-]*\d{1,4}|\d{1,4}\s*~\s*\d{1,4})\b").unwrap());
 
-/// Words that mark a whole-season or whole-series pack.
-static PACK_WORDS: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b(?:batch|complete|season\s*\d+|\[\d{1,4}[-~]\d{1,4}\])\b").unwrap());
+/// Words that mark a pack outright, whatever else the name says.
+///
+/// A name carrying one of these is a pack even if it also states an episode
+/// number: `Show Batch 05` is still a batch, not episode 5.
+static UNCONDITIONAL_PACK_WORDS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(?:batch|complete|\[\d{1,4}[-~]\d{1,4}\])\b").unwrap());
+
+/// The `Season N` marker, which is weaker evidence than the words above.
+///
+/// A season pack is usually named `Show Season 3` with no episode, but a group
+/// may equally write `Show Season 3 - 09` for a single episode of that season.
+/// So this only counts as a pack when the name states no episode of its own --
+/// see [`is_pack`].
+static SEASON_PACK_WORDS: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\bseason\s*\d+\b").unwrap());
 
 /// Parse a release name into its title, numbers and subgroup.
 ///
@@ -171,9 +183,38 @@ fn extract_title(name: &str, end: usize) -> Option<String> {
 ///
 /// Used by the matcher to reject packs for a single-episode request. A name
 /// that says "Batch" or spans "01-12" is not the one episode asked for.
+/// A `Season N` marker is weaker evidence than a batch word, because a group
+/// may write `Show Season 3 - 09` for a single episode.
+///
+/// The marker has to be removed before *any* other check, for two reasons. The
+/// bare-trailing-number pattern reads its own `3` as an episode, and the range
+/// pattern reads `3 - 09` as the span "3-09". Either would misclassify
+/// `Show Season 3 - 09` as a pack. Once the marker is gone, whatever remains is
+/// the name's real evidence about whether it is one episode.
 pub fn is_pack(name: &str) -> bool {
     let normalized = normalize(name);
-    is_match(&RANGE_PATTERN, &normalized) || is_match(&PACK_WORDS, &normalized)
+
+    if is_match(&UNCONDITIONAL_PACK_WORDS, &normalized) {
+        return true;
+    }
+
+    if is_match(&SEASON_PACK_WORDS, &normalized) {
+        let without_season = SEASON_PACK_WORDS.replace_all(&normalized, " ");
+        return is_match(&RANGE_PATTERN, &without_season)
+            || !states_an_episode(&without_season);
+    }
+
+    is_match(&RANGE_PATTERN, &normalized)
+}
+
+/// Whether a normalised name states an episode number of its own.
+///
+/// Used only by [`is_pack`], on a name that has already had its `Season N`
+/// marker removed. Both the season/episode patterns and the single-episode
+/// patterns count, since `S03E09` and ` - 09` are equally good evidence that
+/// the release is one episode rather than a pack.
+fn states_an_episode(name: &str) -> bool {
+    match_season_episode(name).is_some() || match_absolute(name).is_some()
 }
 
 fn is_match(pattern: &Regex, input: &str) -> bool {
@@ -266,6 +307,42 @@ mod tests {
     #[test]
     fn a_single_episode_is_not_a_pack() {
         assert!(!is_pack("[Group] Show - 05 [1080p]"));
+    }
+
+    #[test]
+    fn a_bare_season_marker_is_a_pack() {
+        // `Show Season 3` states a season but no episode, so it is the pack.
+        assert!(is_pack("[Group] Show Season 3 [1080p]"));
+    }
+
+    #[test]
+    fn a_season_marker_with_an_episode_is_not_a_pack() {
+        // The case the old rule got wrong: episode 9 of season 3 is not a pack.
+        assert!(!is_pack("[Group] Show Season 3 - 09 [1080p]"));
+        assert!(!is_pack("[Group] Show Season 3 Episode 09 [1080p]"));
+        assert!(!is_pack("[Group] Show Season 3 S03E09 [1080p]"));
+    }
+
+    #[test]
+    fn a_season_marker_with_a_range_is_still_a_pack() {
+        assert!(is_pack("[Group] Show Season 3 [01-12] [1080p]"));
+        assert!(is_pack("[Group] Show Season 3 01-12 [1080p]"));
+    }
+
+    #[test]
+    fn a_season_marker_with_a_batch_word_is_still_a_pack() {
+        assert!(is_pack("[Group] Show Season 3 Batch [1080p]"));
+        assert!(is_pack("[Group] Show Season 3 Complete [1080p]"));
+    }
+
+    #[test]
+    fn the_season_marker_does_not_count_as_its_own_episode() {
+        // `parse_release` alone reads the `3` in `Season 3` as episode 3, because
+        // the bare-trailing-number pattern cannot tell a season from an episode.
+        // That is exactly why `is_pack` strips the marker before deciding: the
+        // pack verdict, not the parse, is what stops this being taken as episode 3.
+        assert_eq!(parse_release("[Group] Show Season 3 [1080p]").episode, Some(3));
+        assert!(is_pack("[Group] Show Season 3 [1080p]"));
     }
 
     #[test]
