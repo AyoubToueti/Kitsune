@@ -45,6 +45,36 @@ export function indexOfEpisode(episodes: Episode[], number: number): number {
 }
 
 /**
+ * How much to add to a list position to get the work's absolute episode number.
+ *
+ * A later cour is often numbered 13..24 while its releases are named
+ * `Show - 13`; a torrent indexer will not find `Show - 01` for it. The offset
+ * bridges the two: it is the lowest number in the list minus one, but only when
+ * that lowest number is greater than the list length.
+ *
+ * That guard is what keeps an ordinary 1..N season at zero. A season numbered
+ * 13..24 is twelve entries whose lowest number (13) exceeds the length (12), so
+ * the offset is 12: position 0 becomes 13, matching the releases. A season
+ * numbered 1..12 has a lowest number (1) below the length, so the offset is 0
+ * and nothing changes.
+ *
+ * The lowest number is read from the entries, not assumed to be the first one,
+ * so a catalogue that starts mid-season is still handled. Entries with no
+ * recoverable number are ignored; a list where none of them has one yields 0,
+ * because there is nothing to offset from.
+ */
+export function absoluteOffset(episodes: Episode[]): number {
+  const numbers = episodes
+    .map((ep) => episodeNumber(ep))
+    .filter((n): n is number => n !== undefined);
+
+  if (numbers.length === 0) return 0;
+
+  const lowest = Math.min(...numbers);
+  return lowest > episodes.length ? lowest - 1 : 0;
+}
+
+/**
  * The file in a torrent that best matches an episode number.
  *
  * The number is matched as a delimited token so "03" does not match "1080p" or

@@ -61,13 +61,21 @@ describe("release command wrappers", () => {
     expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.search, {
       titles: ["Show", "Shou"],
       episode: 5,
+        absoluteEpisode: undefined,
+      });
+      expect(found).toHaveLength(1);
     });
-    expect(found).toHaveLength(1);
-  });
-
-  it("downloadTorrent passes the url and path", async () => {
-    invokeMock.mockResolvedValue(undefined);
-
+  
+    it("searchReleases passes the absolute episode when the numbers differ", async () => {
+      invokeMock.mockResolvedValue([release()]);
+  
+      await searchReleases(["Show Season 2"], 1, 13);
+  
+      expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.search, {
+        titles: ["Show Season 2"],
+        episode: 1,
+        absoluteEpisode: 13,
+      });
     await downloadTorrent("https://nyaa.si/download/1.torrent", "/tmp/1.torrent");
 
     expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.download, {

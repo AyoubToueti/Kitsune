@@ -59,10 +59,15 @@ pub async fn search_releases(
     registry: State<'_, IndexerRegistry>,
     titles: Vec<String>,
     episode: Option<u32>,
+    absolute_episode: Option<u32>,
     preference: Option<ReleasePreference>,
 ) -> Result<Vec<Release>, String> {
     let indexers: Vec<Arc<dyn Indexer>> = registry.indexers().to_vec();
-    let request = ReleaseRequest { titles, episode };
+    let request = ReleaseRequest {
+        titles,
+        episode,
+        absolute_episode,
+    };
     let preference = preference.unwrap_or_default();
     Ok(search_all(&indexers, &request, &preference).await)
 }
@@ -298,6 +303,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into()],
             episode: Some(5),
+            absolute_episode: None,
         };
 
         let found = search_all(&indexers, &request, &ReleasePreference::default()).await;
@@ -314,6 +320,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into()],
             episode: Some(5),
+            absolute_episode: None,
         };
 
         let found = search_all(&indexers, &request, &preference_default()).await;

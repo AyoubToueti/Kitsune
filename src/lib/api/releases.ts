@@ -34,17 +34,28 @@ export const PROBE_RESULT_EVENT = "probe-result";
    * work has (see `titleForms`), best first: an uploader may have used either
    * the English or the romaji title, and only one of them will match.
    *
-   * The backend expands the titles into several query spellings, de-duplicates
-   * the merged hits and ranks them, so the caller renders the list as-is.
-   *
-   * Deliberately NOT cached: swarm health moves minute to minute, and a cached
-   * seeder count would be a lie.
-   */
-  export async function searchReleases(
-    titles: string[],
-    episode?: number,
-  ): Promise<Release[]> {
-    return invoke<Release[]>(RELEASE_COMMANDS.search, { titles, episode });
+       * `episode` counts from the start of the cour; `absoluteEpisode` counts from
+       * the start of the whole work. Both are sent when they differ, because anime
+       * numbering is inconsistent: a later cour's releases may be named either
+       * `Show - 01` or `Show - 13`, and the matcher accepts whichever the release
+       * used. Pass the same value twice, or omit the second, when they agree.
+       *
+       * The backend expands the titles into several query spellings, de-duplicates
+       * the merged hits and ranks them, so the caller renders the list as-is.
+       *
+       * Deliberately NOT cached: swarm health moves minute to minute, and a cached
+       * seeder count would be a lie.
+       */
+      export async function searchReleases(
+        titles: string[],
+        episode?: number,
+        absoluteEpisode?: number,
+      ): Promise<Release[]> {
+        return invoke<Release[]>(RELEASE_COMMANDS.search, {
+          titles,
+          episode,
+          absoluteEpisode,
+        });
 }
 
 /**

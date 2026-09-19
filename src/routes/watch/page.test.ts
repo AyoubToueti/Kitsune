@@ -195,7 +195,11 @@ describe("watch page", () => {
     await screen.findByRole("heading", { name: /attack on titan/i });
 
     expect(await screen.findByTestId("releases-empty")).toBeInTheDocument();
-    expect(searchReleasesMock).toHaveBeenCalledWith(["Attack on Titan"], undefined);
+    expect(searchReleasesMock).toHaveBeenCalledWith(
+      ["Attack on Titan"],
+      undefined,
+      undefined,
+    );
   });
 
   it("searches every title form the work has", async () => {
@@ -215,6 +219,7 @@ describe("watch page", () => {
 
     expect(searchReleasesMock).toHaveBeenCalledWith(
       ["Attack on Titan", "Shingeki no Kyojin"],
+      undefined,
       undefined,
     );
   });
@@ -241,7 +246,11 @@ describe("watch page", () => {
     const list = await screen.findByTestId("episode-list");
     await fireEvent.click(within(list).getAllByRole("button")[1]);
 
-    expect(searchReleasesMock).toHaveBeenLastCalledWith(["Attack on Titan"], 2);
+    expect(searchReleasesMock).toHaveBeenLastCalledWith(
+      ["Attack on Titan"],
+      2,
+      undefined,
+    );
   });
 
   it("loads a torrent and lists its files", async () => {

@@ -56,6 +56,29 @@ impl EpisodeRequest {
             season: Some(season),
         }
     }
+
+    /// A request for one episode of a known season, numbered two ways.
+    ///
+    /// Use this for a later cour whose own list restarts at 1 while the
+    /// releases carry the running total: `episode` is the cour-relative number
+    /// and `absolute_episode` the work-wide one. Both are accepted by
+    /// [`matches_parsed`], because an uploader may have named the file either
+    /// way and a release is the right one if it agrees with either.
+    ///
+    /// A release that states both numbers and agrees with neither is still
+    /// rejected, so this widens what counts as a match without letting a
+    /// genuinely different episode through.
+    pub fn anime_in_season_with_absolute(
+        episode: u32,
+        absolute_episode: u32,
+        season: u32,
+    ) -> Self {
+        Self {
+            episode,
+            absolute_episode: Some(absolute_episode),
+            season: Some(season),
+        }
+    }
 }
 
 /// Why a release was rejected.
@@ -223,6 +246,34 @@ mod tests {
         let release = release_named("[G] Show S02E05 [1080p]");
         let request = EpisodeRequest::anime_in_season(5, 1);
         assert_eq!(matches(&release, &request), Err(MatchRejection::WrongSeason));
+    }
+
+    #[test]
+    fn an_absolute_numbered_release_is_kept_for_a_later_cour() {
+        // The case the two-numbered request exists for: the cour's list says
+        // episode 1, but every release is named `Show - 13` because the work is
+        // numbered as a whole.
+        let release = release_named("[G] Show - 13 [1080p]");
+        let request = EpisodeRequest::anime_in_season_with_absolute(1, 13, 2);
+        assert_eq!(matches(&release, &request), Ok(()));
+    }
+
+    #[test]
+    fn a_cour_relative_release_is_kept_for_a_later_cour() {
+        // The other spelling, which the two-numbered request must not break:
+        // some groups restart the count at the cour.
+        let release = release_named("[G] Show S02E01 [1080p]");
+        let request = EpisodeRequest::anime_in_season_with_absolute(1, 13, 2);
+        assert_eq!(matches(&release, &request), Ok(()));
+    }
+
+    #[test]
+    fn a_release_matching_neither_number_is_rejected() {
+        // Widening the request to two numbers must not let a genuinely
+        // different episode through.
+        let release = release_named("[G] Show - 14 [1080p]");
+        let request = EpisodeRequest::anime_in_season_with_absolute(1, 13, 2);
+        assert_eq!(matches(&release, &request), Err(MatchRejection::WrongEpisode));
     }
 
     #[test]

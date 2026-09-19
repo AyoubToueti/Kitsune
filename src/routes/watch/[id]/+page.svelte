@@ -17,7 +17,7 @@
     type MatchClarity,
   } from "$lib/release-match";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
-  import { episodeNumber as episodeNumberFor } from "$lib/episode";
+  import { absoluteOffset, episodeNumber as episodeNumberFor } from "$lib/episode";
   import { episodesFor } from "$lib/episodes";
   import {
     displayTitle,
@@ -321,6 +321,27 @@
   });
 
   /**
+   * How much to add to a list position to get the work's absolute number.
+   *
+   * Zero for an ordinary 1..N season. Non-zero for a later cour, whose releases
+   * are named with the running total (`Show - 13`) even though the cour's own
+   * list starts at 1. See `absoluteOffset`.
+   */
+  const episodeOffset = $derived(absoluteOffset(episodes));
+
+  /**
+   * The work-wide episode number, when it differs from the cour-relative one.
+   *
+   * `undefined` when the two agree, so the common case sends one number and the
+   * backend does not have to disambiguate a value that was never in doubt.
+   */
+  const wantedAbsoluteEpisode = $derived.by(() => {
+    const relative = wantedEpisode;
+    if (relative === undefined || episodeOffset === 0) return undefined;
+    return relative + episodeOffset;
+  });
+
+  /**
    * Search the indexers whenever the work or the wanted episode changes.
    *
    * The title and the episode number are the whole key: re-running the search
@@ -343,7 +364,7 @@
     searching = true;
     releaseError = null;
 
-    searchReleases(forms, episode)
+    searchReleases(forms, episode, wantedAbsoluteEpisode)
       .then((found) => {
         if (cancelled) return;
         releases = found;
@@ -425,6 +446,29 @@
    * be applied to a freshly-added handle before it is committed to state.
    */
   function fileForEpisode(
+    candidates: TorrentFile[],
+    number: number,
+  ): TorrentFile | null {
+    const direct = matchNumber(candidates, number);
+    if (direct !== null) return direct;
+
+    // A later cour's releases are named with the running total (`Show - 13`)
+    // even though this cour's list starts at 1, so the absolute spelling is
+    // tried before giving up. `episodeOffset` is 0 for an ordinary 1..N
+    // season, in which case the second attempt would repeat the first.
+    const absolute = number + episodeOffset;
+    if (absolute === number) return null;
+
+    return matchNumber(candidates, absolute);
+  }
+
+  /**
+   * The file whose name carries `number` as a delimited token.
+   *
+   * Split from `fileForEpisode` so the relative and absolute spellings are
+   * matched by one rule rather than two that could drift apart.
+   */
+  function matchNumber(
     candidates: TorrentFile[],
     number: number,
   ): TorrentFile | null {

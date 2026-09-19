@@ -45,6 +45,12 @@ pub struct ReleaseRequest {
     pub titles: Vec<String>,
     /// The episode to find, or `None` for a film or a title-level search.
     pub episode: Option<u32>,
+    /// The work-wide episode number, when it differs from `episode`.
+    ///
+    /// A later cour's list restarts at 1 while its releases carry the running
+    /// total, so both spellings are worth matching. `None` means the two agree
+    /// and only `episode` is in play.
+    pub absolute_episode: Option<u32>,
 }
 
 impl ReleaseRequest {
@@ -70,7 +76,12 @@ impl ReleaseRequest {
         let title = self.titles.first().map(String::as_str).unwrap_or("");
         self.episode.map(|episode| {
             let season = query::split_season(title).1.unwrap_or(1);
-            EpisodeRequest::anime_in_season(episode, season)
+            match self.absolute_episode {
+                Some(absolute) => {
+                    EpisodeRequest::anime_in_season_with_absolute(episode, absolute, season)
+                }
+                None => EpisodeRequest::anime_in_season(episode, season),
+            }
         })
     }
 }
@@ -179,6 +190,7 @@ mod tests {
             let request = ReleaseRequest {
                 titles: vec!["Show".into()],
                 episode: Some(5),
+                absolute_episode: None,
             };
             let built = request.queries();
             assert!(
@@ -193,6 +205,7 @@ mod tests {
             let request = ReleaseRequest {
                 titles: vec!["  Show  ".into()],
                 episode: None,
+                absolute_episode: None,
             };
             assert_eq!(request.queries(), vec!["Show".to_string()]);
         }
@@ -252,6 +265,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into()],
             episode: Some(5),
+            absolute_episode: None,
         };
         let preference = ReleasePreference::default();
 
@@ -277,6 +291,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Mushoku Tensei: Jobless Reincarnation".into()],
             episode: Some(5),
+            absolute_episode: None,
         };
         let matcher = request.as_match().expect("an episode was requested");
         assert_eq!(matcher.season, Some(1));
@@ -288,9 +303,38 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Mushoku Tensei: Jobless Reincarnation Season 3".into()],
             episode: Some(9),
+            absolute_episode: None,
         };
         let matcher = request.as_match().expect("an episode was requested");
         assert_eq!(matcher.season, Some(3));
+    }
+
+    #[test]
+    fn as_match_threads_the_absolute_episode() {
+        // Both numbers reach the matcher, so a later cour's releases are
+        // accepted under either spelling.
+        let request = ReleaseRequest {
+            titles: vec!["Show Season 2".into()],
+            episode: Some(1),
+            absolute_episode: Some(13),
+        };
+        let matcher = request.as_match().expect("an episode was requested");
+        assert_eq!(matcher.episode, 1);
+        assert_eq!(matcher.absolute_episode, Some(13));
+        assert_eq!(matcher.season, Some(2));
+    }
+
+    #[test]
+    fn as_match_defaults_the_absolute_number_to_the_episode() {
+        // With no separate absolute number the two agree, which is the ordinary
+        // season case.
+        let request = ReleaseRequest {
+            titles: vec!["Show".into()],
+            episode: Some(5),
+            absolute_episode: None,
+        };
+        let matcher = request.as_match().expect("an episode was requested");
+        assert_eq!(matcher.absolute_episode, Some(5));
     }
 
     #[test]
@@ -299,6 +343,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Some Movie".into()],
             episode: None,
+            absolute_episode: None,
         };
         assert!(request.as_match().is_none());
     }
@@ -308,6 +353,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into()],
             episode: Some(5),
+            absolute_episode: None,
         };
         let preference = ReleasePreference::default();
 
@@ -329,6 +375,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Mushoku Tensei: Jobless Reincarnation Season 3".into()],
             episode: Some(9),
+            absolute_episode: None,
         };
         let preference = ReleasePreference::default();
 
@@ -367,6 +414,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into(), "Shou".into()],
             episode: Some(5),
+            absolute_episode: None,
         };
 
         let found = search(
@@ -390,6 +438,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into()],
             episode: None,
+            absolute_episode: None,
         };
         let preference = ReleasePreference::default();
 
@@ -407,6 +456,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into()],
             episode: Some(1),
+            absolute_episode: None,
         };
         let preference = ReleasePreference::default();
 
@@ -442,6 +492,7 @@ mod tests {
         let request = ReleaseRequest {
             titles: vec!["Show".into()],
             episode: Some(5),
+            absolute_episode: None,
         };
         let releases = search(&indexer, &request, &ReleasePreference::default())
             .await

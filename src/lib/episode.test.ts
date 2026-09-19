@@ -1,10 +1,21 @@
 import { describe, it, expect } from "vitest";
 
-import { episodeNumber, fileForEpisode, indexOfEpisode } from "./episode";
+import {
+  absoluteOffset,
+  episodeNumber,
+  fileForEpisode,
+  indexOfEpisode,
+} from "./episode";
+import type { Episode } from "./episodes";
 import type { StreamingEpisode, TorrentFile } from "./types";
 
 function ep(overrides: Partial<StreamingEpisode> = {}): StreamingEpisode {
   return { url: "https://x.test/1", ...overrides };
+}
+
+/** An entry that carries an explicit number, as a catalogue entry does. */
+function numbered(number: number): Episode {
+  return { number, title: `Episode ${number}` };
 }
 
 function file(name: string, idx = 0): TorrentFile {
@@ -55,6 +66,42 @@ describe("indexOfEpisode", () => {
 
   it("returns -1 when nothing matches", () => {
     expect(indexOfEpisode([ep({ title: "Episode 1" })], 9)).toBe(-1);
+  });
+});
+
+describe("absoluteOffset", () => {
+  it("is zero for an ordinary 1..N season", () => {
+    const episodes = [
+      ep({ title: "Episode 1" }),
+      ep({ title: "Episode 2" }),
+      ep({ title: "Episode 3" }),
+    ];
+
+    expect(absoluteOffset(episodes)).toBe(0);
+  });
+
+  it("is the first number minus one for a later cour", () => {
+    // Twelve entries numbered 13..24: the lowest number exceeds the length, so
+    // the cour restarts at 1 while the work is numbered as a whole.
+    const episodes = Array.from({ length: 12 }, (_, i) => numbered(i + 13));
+
+    expect(absoluteOffset(episodes)).toBe(12);
+  });
+
+  it("uses the lowest number, not the first entry", () => {
+    // Out of order on purpose: the offset must come from the lowest number
+    // (13 -> 12), not from the first entry (15 -> 14).
+    const episodes = [numbered(15), numbered(13), numbered(14)];
+
+    expect(absoluteOffset(episodes)).toBe(12);
+  });
+
+  it("is zero when no entry has a number", () => {
+    expect(absoluteOffset([ep({ title: "Episode 1" })])).toBe(0);
+  });
+
+  it("is zero for an empty list", () => {
+    expect(absoluteOffset([])).toBe(0);
   });
 });
 
