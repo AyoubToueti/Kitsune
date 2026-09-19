@@ -23,6 +23,20 @@ export interface StreamingEpisode {
 }
 
 /**
+ * Metadata for a single episode, as a provider reports it.
+ *
+ * Mirrors the Rust `EpisodeInfo`. Distinct from a synthesised `Episode`: this is
+ * catalogue data (title, air date, filler flag) rather than something playable.
+ */
+export interface EpisodeInfo {
+  number: number;
+  title?: string;
+  /** The provider's own date string, formatted for display by the caller. */
+  aired?: string;
+  filler: boolean;
+  recap: boolean;
+}
+/**
  * Which curated list to fetch.
  *
  * Mirrors the Rust `ListFilter`. The values are the wire format, so they are

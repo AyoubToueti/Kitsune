@@ -41,7 +41,12 @@
    * no caption at all would look broken.
    */
   function label(ep: Episode): string {
-    return ep.title ?? ep.site ?? ep.url ?? (ep.number !== undefined ? `Episode ${ep.number}` : "Episode");
+    return (
+      ep.title ??
+      ep.site ??
+      ep.url ??
+      (ep.number !== undefined ? `Episode ${ep.number}` : "Episode")
+    );
   }
 
   /**
@@ -126,11 +131,15 @@
           <li data-episode-index={index}>
             <button
               type="button"
-              onclick={() => { if (onSelect) onSelect(index); else if (ep.url) openUrl(ep.url); }}
+              onclick={() => {
+                if (onSelect) onSelect(index);
+                else if (ep.url) openUrl(ep.url);
+              }}
               aria-label={label(ep)}
               aria-current={selected === index ? "true" : undefined}
               data-highlighted={highlighted === index ? "true" : undefined}
-              class="group relative block aspect-video w-full overflow-hidden rounded-lg border bg-surface-hover text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {highlighted === index
+              class="group relative block aspect-video w-full overflow-hidden rounded-lg border bg-surface-hover text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {highlighted ===
+              index
                 ? 'border-accent ring-2 ring-accent'
                 : selected === index
                   ? 'border-accent'
@@ -156,6 +165,14 @@
               >
                 {label(ep)}
               </span>
+              {#if ep.filler}
+                <span
+                  class="absolute top-1 right-1 rounded bg-danger/85 px-1.5 py-0.5 text-[10px] font-semibold text-white"
+                  title="Anime-original filler"
+                >
+                  FILLER
+                </span>
+              {/if}
             </button>
           </li>
         {/each}

@@ -13,8 +13,10 @@ use std::sync::Arc;
 
 use tauri::State;
 
-use crate::providers::{AnimeProvider, ProviderError};
-use crate::types::{Anime, AnimePage, BrowseQuery, ListFilter, MediaTag, ScheduledEpisode};
+use crate::providers::{AnimeProvider, JikanProvider, ProviderError};
+use crate::types::{
+    Anime, AnimePage, BrowseQuery, EpisodeInfo, ListFilter, MediaTag, ScheduledEpisode,
+};
 
 /// How many results to ask for when the caller does not say.
 pub const DEFAULT_LIMIT: u32 = 20;
@@ -25,6 +27,11 @@ pub const DEFAULT_LIMIT: u32 = 20;
 /// can be added without touching these commands.
 pub type SharedProvider = Arc<dyn AnimeProvider>;
 
+/// The Jikan handle managed as Tauri state.
+///
+/// Separate from [`SharedProvider`]: Jikan is not an [`AnimeProvider`], it only
+/// fills in episode lists for works AniList already described.
+pub type SharedEpisodeProvider = Arc<JikanProvider>;
 /// Resolve a caller-supplied limit.
 ///
 /// Treats `None` and `0` alike as "unset": asking for zero results is
@@ -172,13 +179,64 @@ pub async fn get_anime(
         .await
         .map_err(to_message)
 }
+/// Full episode metadata for a work, via its MyAnimeList id.
+///
+/// A free function over the provider, mirroring the `*_from` helpers above, so
+/// the logic is testable without standing up a Tauri `State`.
+pub async fn episodes_from(
+    provider: &JikanProvider,
+    mal_id: i64,
+) -> Result<Vec<EpisodeInfo>, ProviderError> {
+    provider.episodes(mal_id).await
+}
 
+/// Every episode of a work, by its MyAnimeList id.
+///
+/// The id comes from AniList's `idMal`. A work AniList has no MAL link for is
+/// reported as an error rather than an empty list, so the frontend can tell
+/// "no data available" from "this work has no episodes".
+#[tauri::command]
+pub async fn get_episodes(
+    provider: State<'_, SharedEpisodeProvider>,
+    mal_id: i64,
+) -> Result<Vec<EpisodeInfo>, String> {
+    episodes_from(provider.inner().as_ref(), mal_id)
+        .await
+        .map_err(to_message)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::providers::AniListProvider;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The command-layer helper forwards to Jikan and maps the payload.
+    #[tokio::test]
+    async fn episodes_from_maps_a_jikan_page() {
+        use crate::providers::JikanProvider;
+        use wiremock::matchers::{method, path};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/anime/21/episodes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "pagination": { "has_next_page": false },
+                "data": [
+                    { "mal_id": 1, "title": "I'm Luffy!", "aired": "1999-10-20T00:00:00+00:00",
+                      "filler": false, "recap": false }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = JikanProvider::with_endpoint(server.uri());
+        let episodes = episodes_from(&provider, 21).await.expect("should succeed");
+
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].number, 1);
+        assert_eq!(episodes[0].title.as_deref(), Some("I'm Luffy!"));
+    }
 
     /// A paged response, for the browse wrapper.
     fn browse_response() -> serde_json::Value {

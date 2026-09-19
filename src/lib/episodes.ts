@@ -11,7 +11,7 @@
 // matcher, the file matcher) keys off "which episode is this", so a synthesised
 // entry carries its number in the title where `episodeNumber` can read it back.
 
-import type { Anime, StreamingEpisode } from "./types";
+import type { Anime, EpisodeInfo, StreamingEpisode } from "./types";
 
 /**
  * An episode as the UI renders it.
@@ -28,6 +28,12 @@ export interface Episode {
   url?: string;
   site?: string;
   thumbnail?: string;
+  /** Air date as the provider spells it, filled in by enrichment. */
+  aired?: string;
+  /** Anime-original filler, which a viewer may want to skip. */
+  filler?: boolean;
+  /** A recap of earlier events. */
+  recap?: boolean;
 }
 
 /**
@@ -92,4 +98,37 @@ export function hasEpisodeData(anime: Anime): boolean {
   return (
     (anime.streamingEpisodes ?? []).length > 0 || (anime.episodeCount ?? 0) > 0
   );
+}
+
+/**
+ * Fold provider episode metadata into the display list.
+ *
+ * Matched by number, so a synthesised card keeps its cover art and gains the
+ * real title and air date. Entries with no counterpart are left alone, and an
+ * empty `info` returns the input untouched -- enrichment is additive, never a
+ * replacement, so a failed lookup degrades to the synthesised list rather than
+ * an empty one.
+ */
+export function enrichEpisodes(
+  episodes: Episode[],
+  info: EpisodeInfo[],
+): Episode[] {
+  if (info.length === 0) return episodes;
+
+  const byNumber = new Map(info.map((entry) => [entry.number, entry]));
+
+  return episodes.map((ep) => {
+    const detail = ep.number === undefined ? undefined : byNumber.get(ep.number);
+    if (detail === undefined) return ep;
+
+    return {
+      ...ep,
+      // The provider's title wins: it is the real one, where the synthesised
+      // entry only had "Episode N" as a placeholder.
+      title: detail.title ?? ep.title,
+      aired: detail.aired,
+      filler: detail.filler,
+      recap: detail.recap,
+    };
+  });
 }

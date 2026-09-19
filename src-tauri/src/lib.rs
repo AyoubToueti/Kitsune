@@ -16,28 +16,41 @@ pub fn run() {
     // One provider for the process: each `reqwest::Client` keeps a
     // connection pool, so building one per call would waste connections
     // and invite AniList's rate limiter.
-    let provider: commands::SharedProvider = std::sync::Arc::new(providers::AniListProvider::new());
+        let provider: commands::SharedProvider = std::sync::Arc::new(providers::AniListProvider::new());
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .manage(provider)
-        .manage(player::PlayerState::new())
-        // One registry for the process: each indexer holds its own pooled
-        // `reqwest::Client`, so rebuilding one per search would waste
-        // connections and re-resolve DNS.
-        .manage(indexer::IndexerRegistry::new())
-        .invoke_handler(tauri::generate_handler![
-            greet,
-            commands::get_trending,
-            commands::get_list,
-            commands::get_browse,
-            commands::get_genres,
-            commands::get_tags,
-            commands::get_schedule,
-            commands::get_anime,
-            indexer::commands::search_releases,
-            indexer::commands::download_torrent,
+        // Jikan is managed separately: it is not an `AnimeProvider`, it only fills
+        // in episode lists for works AniList already described.
+        let episodes: commands::SharedEpisodeProvider =
+            std::sync::Arc::new(providers::JikanProvider::new());
+
+        tauri::Builder::default()
+            .plugin(tauri_plugin_opener::init())
+            .plugin(tauri_plugin_dialog::init())
+            .manage(provider)
+            .manage(episodes)
+            .manage(player::PlayerState::new())
+            // One registry for the process: each indexer holds its own pooled
+            // `reqwest::Client`, so rebuilding one per search would waste
+            // connections and re-resolve DNS.
+            .manage(indexer::IndexerRegistry::new())
+            .invoke_handler(tauri::generate_handler![
+                greet,
+                commands::get_trending,
+                commands::get_list,
+                commands::get_browse,
+                commands::get_genres,
+                commands::get_tags,
+                commands::get_schedule,
+                commands::get_anime,
+                commands::get_episodes,
+                indexer::commands::search_releases,
+                indexer::commands::download_torrent,
+                indexer::commands::probe_releases,
+                player::commands::add_torrent,
+                player::commands::add_magnet,
+                player::commands::get_stream_url,
+                player::commands::open_in_player,
+                player::commands::get_player,                commands::get_episodes,
             indexer::commands::probe_releases,
             player::commands::add_torrent,
             player::commands::add_magnet,

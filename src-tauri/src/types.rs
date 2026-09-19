@@ -407,7 +407,31 @@ pub struct ScheduledEpisode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode: Option<u32>,
 }
-
+/// Metadata for a single episode, as a provider reports it.
+///
+/// Distinct from [`Episode`], which is a playable entry tied to a resolved
+/// release. This is catalogue data: what the episode is called, when it aired,
+/// and whether it is filler or a recap -- the things AniList omits for long
+/// runners and Jikan supplies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EpisodeInfo {
+    /// 1-based episode number, as the provider numbers it.
+    pub number: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// When it first aired, as the provider's own date string.
+    ///
+    /// Kept verbatim rather than parsed into a timestamp: Jikan sometimes omits
+    /// the time and occasionally the day, so parsing would invent precision that
+    /// is not there. The frontend formats it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aired: Option<String>,
+    /// Anime-original filler, which a viewer may want to skip.
+    pub filler: bool,
+    /// A recap of earlier events.
+    pub recap: bool,
+}
 /// One playable entry within an [`Anime`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -11,6 +11,7 @@ import type {
   Anime,
   AnimePage,
   BrowseQuery,
+  EpisodeInfo,
   ListFilter,
   MediaTag,
   ScheduledEpisode,
@@ -25,6 +26,7 @@ export const COMMANDS = {
   genres: "get_genres",
   tags: "get_tags",
   schedule: "get_schedule",
+  episodes: "get_episodes",
 } as const;
 
 /**
@@ -58,6 +60,22 @@ export async function getTrending(limit?: number): Promise<Anime[]> {
 export async function getAnime(id: number): Promise<Anime | null> {
   return cached(`anime:${id}`, API_TTL.detail, () =>
     invoke<Anime | null>(COMMANDS.byId, { id }),
+  );
+}
+
+/**
+ * Full episode metadata for a work, by its MyAnimeList id.
+ *
+ * The id comes from AniList's `idMal`, so a work with no MAL link cannot be
+ * enriched. The backend answers 404 for those; callers should treat any failure
+ * as "no extra data" rather than an error worth showing, since the synthesised
+ * episode list is still usable on its own.
+ */
+export async function getEpisodes(malId: number): Promise<EpisodeInfo[]> {
+  // Cached under the detail TTL: episode titles and air dates drift slowly, and
+  // this is a second request per title on top of getAnime.
+  return cached(`episodes:${malId}`, API_TTL.detail, () =>
+    invoke<EpisodeInfo[]>(COMMANDS.episodes, { malId }),
   );
 }
 

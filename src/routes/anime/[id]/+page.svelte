@@ -2,12 +2,12 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
 
-  import { errorMessage, getAnime } from "$lib/api/anime";
-  import { displayTitle, type Anime } from "$lib/types";
+  import { errorMessage, getAnime, getEpisodes } from "$lib/api/anime";
+  import { displayTitle, type Anime, type EpisodeInfo } from "$lib/types";
   import MetadataStrip from "$lib/components/MetadataStrip.svelte";
   import DetailPageSkeleton from "$lib/components/DetailPageSkeleton.svelte";
   import Synopsis from "$lib/components/Synopsis.svelte";
-  import { episodesFor } from "$lib/episodes";
+  import { enrichEpisodes, episodesFor } from "$lib/episodes";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
@@ -22,6 +22,7 @@
   let anime = $state<Anime | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let episodeInfo = $state<EpisodeInfo[]>([]);
 
   $effect(() => {
     const currentId = id;
@@ -50,6 +51,39 @@
     };
   });
 
+  /**
+   * Fetch episode metadata once the work is known.
+   *
+   * Keyed on `idMal`, so it fires when the title changes rather than on every
+   * render. A failure is swallowed: enrichment is a bonus on top of the
+   * synthesised list, and an unreachable Jikan should not turn a working page
+   * into an error.
+   */
+  $effect(() => {
+    const malId = anime?.idMal;
+
+    if (malId === undefined) {
+      episodeInfo = [];
+      return;
+    }
+
+    let cancelled = false;
+
+    getEpisodes(malId)
+      .then((result) => {
+        if (cancelled) return;
+        episodeInfo = result;
+      })
+      .catch(() => {
+        if (cancelled) return;
+        episodeInfo = [];
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
   const title = $derived(
     anime ? (displayTitle(anime.title) ?? "Untitled") : null,
   );
@@ -62,7 +96,9 @@
    * synthesised 1..episodeCount stand-in using the cover as artwork, so a
    * work whose streaming links are missing (or capped) is still navigable.
    */
-  const episodes = $derived(anime ? episodesFor(anime) : []);
+  const episodes = $derived(
+    anime ? enrichEpisodes(episodesFor(anime), episodeInfo) : [],
+  );
 
   /**
    * Open the watch page for an episode.
