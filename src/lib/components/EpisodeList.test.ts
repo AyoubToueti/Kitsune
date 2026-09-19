@@ -25,6 +25,40 @@ function episodeCards() {
   return within(screen.getByTestId("episode-list")).getAllByRole("button");
 }
 
+describe("aired count label", () => {
+  it("shows the count when episodes are still to air", () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [episode({ title: "Episode 1" })],
+        airedCount: 1,
+        totalCount: 12,
+      },
+    });
+
+    expect(screen.getByText("1 of 12 aired")).toBeInTheDocument();
+  });
+
+  it("hides the count for a finished work", () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [episode({ title: "Episode 1" })],
+        airedCount: 12,
+        totalCount: 12,
+      },
+    });
+
+    expect(screen.queryByText(/aired/)).toBeNull();
+  });
+
+  it("hides the count when either number is absent", () => {
+    render(EpisodeList, {
+      props: { episodes: [episode({ title: "Episode 1" })], airedCount: 1 },
+    });
+
+    expect(screen.queryByText(/aired/)).toBeNull();
+  });
+});
+
 describe("EpisodeList", () => {
   beforeEach(() => {
     // jsdom has no layout engine, so smooth scrolling is a no-op stub.

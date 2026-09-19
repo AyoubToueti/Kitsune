@@ -7,6 +7,8 @@
     episodes = [],
     selected,
     onSelect,
+    airedCount,
+    totalCount,
   }: {
     episodes?: Episode[];
     /**
@@ -22,7 +24,28 @@
      * card opens AniList's licensed link as before.
      */
     onSelect?: (index: number) => void;
+    /**
+     * How many episodes have aired, and how many the work has in total.
+     *
+     * Both are needed before anything is shown: the label only carries
+     * information when the work is still airing, and a count without a total
+     * would read as a raw number with no context.
+     */
+    airedCount?: number;
+    totalCount?: number;
   } = $props();
+
+  /**
+   * Whether to show the "N of M aired" label.
+   *
+   * Only when a total is known and it exceeds what has aired: for a finished
+   * work the label would restate the list length and add nothing.
+   */
+  const showAiredCount = $derived(
+    totalCount !== undefined &&
+      airedCount !== undefined &&
+      totalCount > airedCount,
+  );
 
   /** How long a jumped-to episode stays highlighted, in milliseconds. */
   const HIGHLIGHT_MS = 3000;
@@ -85,7 +108,14 @@
 {#if episodes.length > 0}
   <div>
     <div class="mb-3 flex items-center justify-between gap-3">
-      <h2 class="text-lg font-semibold tracking-tight">Episodes</h2>
+      <div class="flex items-baseline gap-2">
+        <h2 class="text-lg font-semibold tracking-tight">Episodes</h2>
+        {#if showAiredCount}
+          <span class="text-xs text-ink-faint">
+            {airedCount} of {totalCount} aired
+          </span>
+        {/if}
+      </div>
 
       <!-- Jump-to-episode: a form so pressing Enter works as well as the
            button, and a wrong number says so instead of doing nothing. -->

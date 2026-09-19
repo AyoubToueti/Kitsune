@@ -204,6 +204,17 @@ describe("detail page", () => {
     );
   });
 
+  it("shows how many episodes have aired when the work is still airing", async () => {
+    // Four catalogue entries, but the work claims twelve: the list has four
+    // aired rows and the header says so instead of implying twelve are ready.
+    getAnimeMock.mockResolvedValue(withCatalogue(4, { episodeCount: 12 }));
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    expect(screen.getByText("4 of 12 aired")).toBeInTheDocument();
+  });
+
   it("renders the related anime sidebar", async () => {
     getAnimeMock.mockResolvedValue(
       anime({

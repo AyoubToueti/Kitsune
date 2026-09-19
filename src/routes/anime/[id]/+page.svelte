@@ -198,7 +198,12 @@
           {/each}
         </div>
       {:else if episodes.length > 0}
-        <EpisodeList {episodes} onSelect={watchEpisode} />
+        <EpisodeList
+          {episodes}
+          onSelect={watchEpisode}
+          airedCount={episodes.length}
+          totalCount={anime.episodeCount}
+        />
       {:else}
         <!-- Neither a catalogue nor a count, so say so rather than render an
              empty grid that reads as broken. -->

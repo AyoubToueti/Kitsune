@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  airedEpisodes,
   episodesFor,
   episodesFromInfo,
   hasEpisodeData,
+  isAired,
   synthesizeEpisodes,
 } from "./episodes";
 import { episodeNumber } from "./episode";
@@ -151,6 +153,97 @@ describe("episodesFromInfo", () => {
 
     it("returns nothing when the work has neither catalogue nor count", () => {
       expect(episodesFor(anime(), [])).toEqual([]);
+  });
+});
+
+describe("isAired", () => {
+  const now = new Date("2024-06-01T00:00:00Z");
+
+  it("treats a missing date as aired", () => {
+    expect(isAired(undefined, now)).toBe(true);
+  });
+
+  it("treats an empty date as aired", () => {
+    expect(isAired("", now)).toBe(true);
+  });
+
+  it("treats an unparseable date as aired", () => {
+    expect(isAired("not a date", now)).toBe(true);
+  });
+
+  it("accepts a timestamp in the past", () => {
+    expect(isAired("2024-01-02T00:00:00+00:00", now)).toBe(true);
+  });
+
+  it("accepts a date-only string in the past", () => {
+    expect(isAired("2024-01-02", now)).toBe(true);
+  });
+
+  it("rejects a timestamp in the future", () => {
+    expect(isAired("2024-10-02T00:00:00+00:00", now)).toBe(false);
+  });
+
+  it("accepts an episode airing exactly now", () => {
+    expect(isAired("2024-06-01T00:00:00Z", now)).toBe(true);
+  });
+});
+
+describe("airedEpisodes", () => {
+  const now = new Date("2024-06-01T00:00:00Z");
+
+  function entry(number: number, aired?: string): EpisodeInfo {
+    return {
+      number,
+      title: `Episode ${number}`,
+      filler: false,
+      recap: false,
+      aired,
+    };
+  }
+
+  it("drops the entries that have not aired", () => {
+    const kept = airedEpisodes(
+      [entry(1, "2024-01-01"), entry(2, "2024-10-01"), entry(3, "2024-02-01")],
+      now,
+    );
+
+    expect(kept.map((e) => e.number)).toEqual([1, 3]);
+  });
+
+  it("keeps entries with no date at all", () => {
+    const kept = airedEpisodes([entry(1), entry(2)], now);
+
+    expect(kept.map((e) => e.number)).toEqual([1, 2]);
+  });
+});
+
+describe("episodesFor with air dates", () => {
+  const now = new Date("2024-06-01T00:00:00Z");
+
+  function entry(number: number, aired: string): EpisodeInfo {
+    return {
+      number,
+      title: `Episode ${number}`,
+      filler: false,
+      recap: false,
+      aired,
+    };
+  }
+
+  it("hides an episode that has not aired", () => {
+    const info = [entry(1, "2024-01-01"), entry(2, "2024-10-01")];
+
+    const episodes = episodesFor(anime({ episodeCount: 2 }), info, now);
+
+    expect(episodes.map((e) => e.number)).toEqual([1]);
+  });
+
+  // An entirely unaired catalogue must NOT fall back to synthesis: that would
+  // invent viewable episodes for a work whose first episode is still to come.
+  it("yields an empty list when nothing has aired", () => {
+    const info = [entry(1, "2025-01-01")];
+
+    expect(episodesFor(anime({ episodeCount: 12 }), info, now)).toEqual([]);
   });
 });
 

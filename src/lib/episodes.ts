@@ -89,6 +89,45 @@ export function episodesFromInfo(
 }
 
 /**
+ * Whether a catalogue entry has already aired.
+ *
+ * A missing or unparseable date counts as aired. The field is a bonus, and
+ * withholding an episode over a malformed date would silently drop data the
+ * provider did give us; only a date that parses *and* lies in the future is
+ * held back. Airing schedules are also approximate, so a same-day episode is
+ * shown rather than hidden for a few hours.
+ *
+ * `now` is injectable so a test can pin the clock without touching global
+ * timer state.
+ */
+export function isAired(
+  aired: string | undefined,
+  now: Date = new Date(),
+): boolean {
+  if (aired == null || aired.trim() === "") return true;
+
+  const at = Date.parse(aired);
+  if (Number.isNaN(at)) return true;
+
+  return at <= now.getTime();
+}
+
+/**
+ * The catalogue entries that have aired, in catalogue order.
+ *
+ * An unaired episode is filtered out of the list rather than shown disabled:
+ * the reader cannot watch it, and a row that does nothing when clicked reads
+ * as broken. The count of what was withheld is surfaced separately so the list
+ * can say "N of M aired".
+ */
+export function airedEpisodes(
+  info: EpisodeInfo[],
+  now: Date = new Date(),
+): EpisodeInfo[] {
+  return info.filter((entry) => isAired(entry.aired, now));
+}
+
+/**
  * The episodes to show for a work.
  *
  * The catalogue wins when it has entries, because it is the real per-episode
@@ -96,15 +135,21 @@ export function episodesFromInfo(
  * does this fall back to a synthesised `1..episodeCount` stand-in, so a work
  * with no MAL link (or a MAL entry with no episode list) is still navigable.
  *
+ * Entries that have not aired yet are dropped. A catalogue that is entirely
+ * unaired therefore yields an empty list, which is the honest answer -- it must
+ * not fall back to synthesis, because that would invent viewable episodes.
+ *
  * `info` defaults to empty so a caller that has not fetched it yet still gets
- * the fallback rather than a crash.
+ * the fallback rather than a crash. `now` defaults to the current time and is
+ * injectable for tests.
  */
 export function episodesFor(
   anime: Anime,
   info: EpisodeInfo[] = [],
+  now: Date = new Date(),
 ): Episode[] {
   if (info.length > 0) {
-    return episodesFromInfo(info, anime.coverImage);
+    return episodesFromInfo(airedEpisodes(info, now), anime.coverImage);
   }
   return synthesizeEpisodes(anime.episodeCount, anime.coverImage);
 }
