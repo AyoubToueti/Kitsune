@@ -24,6 +24,42 @@
   --color-health-green: #3fb950;
   --color-health-yellow: #d29922;
   --color-health-red: #6b7488;
+
+  /* The hover preview eases in from the card's side, so it reads as unfolding
+     from the artwork rather than blinking into place. Two tokens because the
+     drift direction depends on which side the panel landed on.
+
+     These live here rather than in a component <style> block because
+     @tailwindcss/vite currently crashes on Svelte <style> blocks: it is handed
+     the whole SFC and parses the <script> imports as CSS
+     (sveltejs/vite-plugin-svelte#1333). */
+  --animate-preview-in-bottom: preview-in-bottom 140ms ease-out;
+  --animate-preview-in-top: preview-in-top 140ms ease-out;
+}
+
+/* Keyframes for the hover preview, referenced by the animation tokens above.
+   The distance is small on purpose: a large slide would fight the fact that the
+   panel already overlaps the card. */
+@keyframes preview-in-bottom {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes preview-in-top {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* Base look. Kept minimal: component styling lives in the components. */

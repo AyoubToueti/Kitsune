@@ -121,8 +121,10 @@ describe("AnimeCard", () => {
     await fireEvent.mouseEnter(poster());
 
     // The element is created on open, so the animation class is what makes it
-    // ease in. Without it the panel would blink into place.
-    expect(preview()!.className).toMatch(/preview-in/);
+      // ease in. Without it the panel would blink into place. Asserted on the
+      // utility rather than a bare "preview-in" substring, which both the
+      // per-side animation classes would satisfy even if neither were applied.
+      expect(preview()!.className).toMatch(/animate-preview-in-(bottom|top)/);
   });
 
   it("opens on keyboard focus, not only on hover", async () => {
