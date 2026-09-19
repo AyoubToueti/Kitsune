@@ -38,6 +38,24 @@ impl EpisodeRequest {
             season: None,
         }
     }
+
+    /// A request for one episode of a known season.
+    ///
+    /// Use this when the caller knows which season the episode belongs to. A
+    /// release stating a *different* season is then rejected, which is what
+    /// stops a season-2 release from satisfying a season-1 search -- the
+    /// failure mode a bare `S01E05` query would otherwise let through.
+    ///
+    /// A release stating no season at all is still accepted, because absence
+    /// is not disagreement: an absolute-numbered long runner is named
+    /// `Show - 1085` with no season anywhere.
+    pub fn anime_in_season(episode: u32, season: u32) -> Self {
+        Self {
+            episode,
+            absolute_episode: Some(episode),
+            season: Some(season),
+        }
+    }
 }
 
 /// Why a release was rejected.
@@ -188,6 +206,32 @@ mod tests {
             matches(&release, &EpisodeRequest::anime(9)),
             Err(MatchRejection::Pack)
         );
+    }
+
+    #[test]
+    fn a_release_of_the_wanted_season_is_kept() {
+        let release = release_named("[G] Show S01E05 [1080p]");
+        let request = EpisodeRequest::anime_in_season(5, 1);
+        assert_eq!(matches(&release, &request), Ok(()));
+    }
+
+    #[test]
+    fn a_release_of_another_season_is_rejected() {
+        // The failure mode the default season exists to stop: `S02E05` would
+        // otherwise satisfy a season-1 episode-5 search, because both state the
+        // same episode number.
+        let release = release_named("[G] Show S02E05 [1080p]");
+        let request = EpisodeRequest::anime_in_season(5, 1);
+        assert_eq!(matches(&release, &request), Err(MatchRejection::WrongSeason));
+    }
+
+    #[test]
+    fn an_untagged_release_still_satisfies_a_seasoned_request() {
+        // Absolute-numbered long runners name no season at all. Absence is not
+        // disagreement, so the release must survive the season check.
+        let release = release_named("[G] Show - 05 [1080p]");
+        let request = EpisodeRequest::anime_in_season(5, 1);
+        assert_eq!(matches(&release, &request), Ok(()));
     }
 
     #[test]

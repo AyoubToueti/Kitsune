@@ -57,8 +57,16 @@ impl ReleaseRequest {
     }
 
     /// The matcher's view of this request.
+    ///
+    /// The season comes from the title, defaulting to 1 once an episode is in
+    /// play: a season-1 entry is titled without a marker, but its releases are
+    /// still named `S01E01`. Without the default, a season-2 release carrying
+    /// the same episode number would satisfy a season-1 search.
     pub fn as_match(&self) -> Option<EpisodeRequest> {
-        self.episode.map(EpisodeRequest::anime)
+        self.episode.map(|episode| {
+            let season = query::split_season(&self.title).1.unwrap_or(1);
+            EpisodeRequest::anime_in_season(episode, season)
+        })
     }
 }
 
@@ -164,6 +172,58 @@ mod tests {
             refined[0].title.contains("1080p"),
             "the preferred resolution should be first"
         );
+    }
+
+    #[test]
+    fn as_match_defaults_a_season_less_title_to_season_one() {
+        // A season-1 entry is titled without a marker, but its releases are named
+        // `S01E01`, so the matcher must be told season 1 to reject `S02E01`.
+        let request = ReleaseRequest {
+            title: "Mushoku Tensei: Jobless Reincarnation".into(),
+            episode: Some(5),
+        };
+        let matcher = request.as_match().expect("an episode was requested");
+        assert_eq!(matcher.season, Some(1));
+        assert_eq!(matcher.episode, 5);
+    }
+
+    #[test]
+    fn as_match_takes_the_season_the_title_states() {
+        let request = ReleaseRequest {
+            title: "Mushoku Tensei: Jobless Reincarnation Season 3".into(),
+            episode: Some(9),
+        };
+        let matcher = request.as_match().expect("an episode was requested");
+        assert_eq!(matcher.season, Some(3));
+    }
+
+    #[test]
+    fn as_match_is_none_without_an_episode() {
+        // A film search must not acquire a season.
+        let request = ReleaseRequest {
+            title: "Some Movie".into(),
+            episode: None,
+        };
+        assert!(request.as_match().is_none());
+    }
+
+    #[test]
+    fn refine_keeps_a_season_one_release_and_drops_a_season_two_one() {
+        let request = ReleaseRequest {
+            title: "Show".into(),
+            episode: Some(5),
+        };
+        let preference = ReleasePreference::default();
+
+        let releases = vec![
+            release_named("[G] Show S02E05 [1080p]"),
+            release_named("[G] Show S01E05 [1080p]"),
+        ];
+
+        let refined = refine(releases, &request, &preference);
+
+        assert_eq!(refined.len(), 1, "only the season-1 release survives");
+        assert!(refined[0].title.contains("S01E05"));
     }
 
     #[test]
