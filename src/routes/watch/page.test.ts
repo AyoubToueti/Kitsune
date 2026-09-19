@@ -638,4 +638,101 @@ describe("watch page", () => {
     // The filter is a sibling of the scroller, not a child.
     expect(within(scroller).queryByTestId("resolution-filter")).toBeNull();
   });
+
+  it("narrows the releases to a typed query", async () => {
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "[SubsPlease] Show - 01 [1080p]", infoHash: "aaa" }),
+      release({ title: "[Erai-raws] Show - 01 [720p]", infoHash: "bbb" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+
+    await fireEvent.input(screen.getByTestId("release-filter"), {
+      target: { value: "erai" },
+    });
+
+    await waitFor(() => {
+      const rows = within(screen.getByTestId("releases")).getAllByRole("listitem");
+      expect(rows).toHaveLength(1);
+      expect(rows[0].textContent).toContain("[Erai-raws]");
+    });
+  });
+
+  it("restores every release when the query is cleared", async () => {
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA 1080p", infoHash: "aaa" }),
+      release({ title: "BBB 720p", infoHash: "bbb" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+
+    const box = screen.getByTestId("release-filter");
+    await fireEvent.input(box, { target: { value: "AAA" } });
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("releases")).getAllByRole("listitem"),
+      ).toHaveLength(1),
+    );
+
+    await fireEvent.input(box, { target: { value: "" } });
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("releases")).getAllByRole("listitem"),
+      ).toHaveLength(2),
+    );
+  });
+
+  it("says so when the query matches nothing", async () => {
+    // An empty scroller would read as a failure rather than a filter.
+    searchReleasesMock.mockResolvedValue([release({ title: "AAA 1080p" })]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+
+    await fireEvent.input(screen.getByTestId("release-filter"), {
+      target: { value: "nothing-like-this" },
+    });
+
+    expect(await screen.findByTestId("releases-no-match")).toBeInTheDocument();
+  });
+
+  it("keeps the filter controls reachable when a query empties the list", async () => {
+    // The box and the chips must not vanish with the rows: they are the way
+    // back, and the query is still in the box waiting to be cleared.
+    searchReleasesMock.mockResolvedValue([
+      release({ title: "AAA 1080p", resolution: "1080p" }),
+      release({ title: "BBB 720p", resolution: "720p", infoHash: "b" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+
+    await fireEvent.input(screen.getByTestId("release-filter"), {
+      target: { value: "nothing-like-this" },
+    });
+
+    expect(await screen.findByTestId("releases-no-match")).toBeInTheDocument();
+    expect(screen.getByTestId("release-filter")).toBeInTheDocument();
+    expect(screen.getByTestId("resolution-filter")).toBeInTheDocument();
+  });
+
+  it("offers the text filter even when there is only one resolution", async () => {
+    // ResolutionFilter hides itself when there is nothing to choose between,
+    // but a text filter is still useful then -- so it must not be nested inside
+    // that guard.
+    searchReleasesMock.mockResolvedValue([release({ title: "AAA 1080p" })]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await screen.findByTestId("releases");
+
+    expect(screen.queryByTestId("resolution-filter")).toBeNull();
+    expect(screen.getByTestId("release-filter")).toBeInTheDocument();
+  });
 });

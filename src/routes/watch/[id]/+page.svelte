@@ -9,6 +9,7 @@
     probeReleases,
     searchReleases,
   } from "$lib/api/releases";
+  import { matchesQuery } from "$lib/release-filter";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
   import { episodesFor } from "$lib/episodes";
   import {
@@ -76,6 +77,15 @@
   // selected chip disappear the moment it was clicked, leaving no way back.
   let resolutionFilter = $state<Resolution[]>([]);
 
+  /**
+   * The text typed into the release filter box.
+   *
+   * Not reset when a new search lands, unlike the resolution chips: it is
+   * something the reader typed and it stays visible in the box, so an emptied
+   * list is explainable rather than mysterious.
+   */
+  let releaseQuery = $state("");
+
   /** The resolutions present in the results, highest first. */
   const resolutionOptions = $derived(availableResolutions(releases));
 
@@ -142,6 +152,7 @@
     // show the badge belonging to whatever release used to sit at that position.
     return releases
       .map((release, index) => ({ release, index }))
+      .filter(({ release }) => matchesQuery(release, releaseQuery))
       .filter(({ release }) => matchesResolution(release, resolutionFilter))
       .sort((a, b) => {
         const scoreA = probeOutcomes[a.index]?.combinedScore ?? a.release.score;
@@ -150,7 +161,17 @@
       });
   });
 
-  let loadingTorrent = $state(false);
+/**
+       * How many releases match the typed query, ignoring the resolution chips.
+       *
+       * Lets the list say "nothing matched your filter" rather than rendering an
+       * empty scroller, which reads as a failure rather than a filter.
+       */
+      const queryMatches = $derived(
+        releases.filter((release) => matchesQuery(release, releaseQuery)).length,
+      );
+
+      let loadingTorrent = $state(false);
   let torrentError = $state<string | null>(null);
 
   /**
@@ -587,12 +608,30 @@
             No releases found. Load a torrent by hand instead.
           </p>
         {:else}
-          <ResolutionFilter
-            available={resolutionOptions}
-            selected={resolutionFilter}
-            onToggle={toggleResolution}
-          />
+            <!-- The box sits outside ResolutionFilter's own guard, which hides
+                 the chips when there is only one resolution to choose from. A
+                 text filter is still useful in that case. -->
+            <div class="mb-2 flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                bind:value={releaseQuery}
+                placeholder="Filter releases…"
+                aria-label="Filter releases"
+                data-testid="release-filter"
+                class="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              />
+              <ResolutionFilter
+                available={resolutionOptions}
+                selected={resolutionFilter}
+                onToggle={toggleResolution}
+              />
+            </div>
 
+            {#if queryMatches === 0}
+              <p class="text-sm text-ink-muted" data-testid="releases-no-match">
+                No releases match "{releaseQuery.trim()}".
+              </p>
+            {:else}
           <div
             data-testid="release-scroller"
             class="max-h-60 overflow-y-auto pr-1 m-2"
@@ -635,6 +674,7 @@
               {/each}
             </ul>
           </div>
+            {/if}
         {/if}
       </div>
 
