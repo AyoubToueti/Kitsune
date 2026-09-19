@@ -32,28 +32,30 @@ use crate::types::{Release, ReleasePreference};
 
 /// What to search for, assembled from an [`crate::types::Anime`] by the UI.
 ///
-/// The title and episode travel together because an anime search is always
-/// "this work, this episode"; splitting them would let a caller search for a
-/// title with no episode and silently get a season pack back.
+/// Titles and episode travel together because an anime search is always "this
+/// work, this episode"; splitting them would let a caller search for a title
+/// with no episode and silently get a season pack back.
+///
+/// There are several titles, not one, because a work has an English title and a
+/// romaji one and either may be what an uploader used. They are searched in the
+/// order given, best first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseRequest {
-    /// The work's display title, as the indexers should search it.
-    pub title: String,
+    /// The work's title forms, best first, as the indexers should search them.
+    pub titles: Vec<String>,
     /// The episode to find, or `None` for a film or a title-level search.
     pub episode: Option<u32>,
 }
 
 impl ReleaseRequest {
-    /// The query string sent to an indexer.
+    /// The query strings to send to an indexer, most promising first.
     ///
-    /// Kept to the title and, when present, the episode: Nyaa's search is a
-    /// substring match over the release name, and adding an episode narrows it
-    /// without excluding the ` - 05` spelling.
-    pub fn query(&self) -> String {
-        match self.episode {
-            Some(episode) => format!("{} {:02}", self.title.trim(), episode),
-            None => self.title.trim().to_string(),
-        }
+    /// A single query cannot find a release reliably: a colon in a title breaks
+    /// Nyaa's term matching, releases spell an episode `S03E09` rather than
+    /// `09`, and a release may name the work by either its English or its romaji
+    /// title. The construction lives in [`query`] so it can be tested on its own.
+    pub fn queries(&self) -> Vec<String> {
+        query::build_queries(&self.titles, self.episode, query::MAX_QUERIES)
     }
 
     /// The matcher's view of this request.
@@ -63,8 +65,11 @@ impl ReleaseRequest {
     /// still named `S01E01`. Without the default, a season-2 release carrying
     /// the same episode number would satisfy a season-1 search.
     pub fn as_match(&self) -> Option<EpisodeRequest> {
+        // The first title is the one the UI prefers, so it is the one whose
+        // season marker the matcher should honour.
+        let title = self.titles.first().map(String::as_str).unwrap_or("");
         self.episode.map(|episode| {
-            let season = query::split_season(&self.title).1.unwrap_or(1);
+            let season = query::split_season(title).1.unwrap_or(1);
             EpisodeRequest::anime_in_season(episode, season)
         })
     }
@@ -80,9 +85,45 @@ pub async fn search(
     request: &ReleaseRequest,
     preference: &ReleasePreference,
 ) -> Result<Vec<Release>, IndexerError> {
-    let found = indexer.search(&request.query()).await?;
-    Ok(refine(found, request, preference))
-}
+        // The queries are run one at a time rather than concurrently. Nyaa is a
+        // scraped mirror, and a burst of simultaneous requests is the quickest
+        // way to be throttled -- the wrong trade for a search a viewer is
+        // waiting on. Results are merged and de-duplicated before ranking, since
+        // the variants deliberately overlap.
+        let mut found: Vec<Release> = Vec::new();
+        for query in request.queries() {
+            let mut batch = indexer.search(&query).await?;
+            found.append(&mut batch);
+        }
+
+        dedupe(&mut found);
+        Ok(refine(found, request, preference))
+    }
+
+    /// Drop releases that name the same torrent more than once.
+    ///
+    /// The query fan-out means the same release is routinely returned for
+    /// several spellings, so the merge would otherwise show it repeatedly. The
+    /// info hash is the real identity when the indexer gave one; otherwise the
+    /// release name is compared with its spelling differences collapsed, so
+    /// `Show_01` and `Show.01` are recognised as the same upload.
+    ///
+    /// Run before ranking: de-duplication is a set operation and the ranker's
+    /// output is an order, so doing it afterwards would mean sorting entries
+    /// that are about to be thrown away.
+    pub fn dedupe(releases: &mut Vec<Release>) {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        releases.retain(|release| {
+            let key = match release.info_hash.as_deref() {
+                Some(hash) if !hash.trim().is_empty() => format!("hash:{}", hash.trim().to_lowercase()),
+                _ => format!(
+                    "title:{}",
+                    normalize::normalize(&release.title).to_lowercase()
+                ),
+            };
+            seen.insert(key)
+        });
+    }
 
 /// Filter and rank an already-fetched set of releases.
 ///
@@ -134,27 +175,82 @@ mod tests {
     }
 
     #[test]
-    fn query_includes_a_padded_episode() {
-        let request = ReleaseRequest {
-            title: "Show".into(),
-            episode: Some(5),
-        };
-        assert_eq!(request.query(), "Show 05");
-    }
+        fn queries_include_a_padded_episode_spelling() {
+            let request = ReleaseRequest {
+                titles: vec!["Show".into()],
+                episode: Some(5),
+            };
+            let built = request.queries();
+            assert!(
+                built.contains(&"Show S01E05".to_string()),
+                "got {built:?}"
+            );
+            assert!(built.contains(&"Show 05".to_string()), "got {built:?}");
+        }
 
-    #[test]
-    fn query_without_an_episode_is_just_the_title() {
-        let request = ReleaseRequest {
-            title: "  Show  ".into(),
-            episode: None,
-        };
-        assert_eq!(request.query(), "Show");
-    }
+        #[test]
+        fn queries_without_an_episode_are_just_the_titles() {
+            let request = ReleaseRequest {
+                titles: vec!["  Show  ".into()],
+                episode: None,
+            };
+            assert_eq!(request.queries(), vec!["Show".to_string()]);
+        }
+
+        #[test]
+        fn dedupe_drops_the_same_info_hash_twice() {
+            let mut releases = vec![
+                release_named("[G] Show - 05 [1080p]"),
+                release_named("[G] Show - 05 [1080p]"),
+            ];
+            // Give both the same hash, as two indexers reporting one torrent would.
+            for release in releases.iter_mut() {
+                release.info_hash = Some("AABBCC".into());
+            }
+
+            dedupe(&mut releases);
+            assert_eq!(releases.len(), 1);
+        }
+
+        #[test]
+        fn dedupe_compares_hashes_case_insensitively() {
+            let mut releases = vec![
+                release_named("[G] Show - 05 [1080p]"),
+                release_named("[G] Another Name - 05 [1080p]"),
+            ];
+            releases[0].info_hash = Some("AABBCC".into());
+            releases[1].info_hash = Some("aabbcc".into());
+
+            dedupe(&mut releases);
+            assert_eq!(releases.len(), 1);
+        }
+
+        #[test]
+        fn dedupe_falls_back_to_the_release_name() {
+            let mut releases = vec![
+                release_named("[G] Show_05 [1080p]"),
+                release_named("[G] Show.05 [1080p]"),
+            ];
+            // No hash on either, and normalise folds `_` and `.` to a space, so
+            // the two names are the same upload.
+            dedupe(&mut releases);
+            assert_eq!(releases.len(), 1);
+        }
+
+        #[test]
+        fn dedupe_keeps_genuinely_different_releases() {
+            let mut releases = vec![
+                release_named("[G] Show - 05 [1080p]"),
+                release_named("[G] Show - 05 [720p]"),
+            ];
+            dedupe(&mut releases);
+            assert_eq!(releases.len(), 2);
+        }
 
     #[test]
     fn refine_drops_other_episodes_and_ranks_the_rest() {
         let request = ReleaseRequest {
-            title: "Show".into(),
+            titles: vec!["Show".into()],
             episode: Some(5),
         };
         let preference = ReleasePreference::default();
@@ -179,7 +275,7 @@ mod tests {
         // A season-1 entry is titled without a marker, but its releases are named
         // `S01E01`, so the matcher must be told season 1 to reject `S02E01`.
         let request = ReleaseRequest {
-            title: "Mushoku Tensei: Jobless Reincarnation".into(),
+            titles: vec!["Mushoku Tensei: Jobless Reincarnation".into()],
             episode: Some(5),
         };
         let matcher = request.as_match().expect("an episode was requested");
@@ -190,7 +286,7 @@ mod tests {
     #[test]
     fn as_match_takes_the_season_the_title_states() {
         let request = ReleaseRequest {
-            title: "Mushoku Tensei: Jobless Reincarnation Season 3".into(),
+            titles: vec!["Mushoku Tensei: Jobless Reincarnation Season 3".into()],
             episode: Some(9),
         };
         let matcher = request.as_match().expect("an episode was requested");
@@ -201,7 +297,7 @@ mod tests {
     fn as_match_is_none_without_an_episode() {
         // A film search must not acquire a season.
         let request = ReleaseRequest {
-            title: "Some Movie".into(),
+            titles: vec!["Some Movie".into()],
             episode: None,
         };
         assert!(request.as_match().is_none());
@@ -210,7 +306,7 @@ mod tests {
     #[test]
     fn refine_keeps_a_season_one_release_and_drops_a_season_two_one() {
         let request = ReleaseRequest {
-            title: "Show".into(),
+            titles: vec!["Show".into()],
             episode: Some(5),
         };
         let preference = ReleasePreference::default();
@@ -227,9 +323,72 @@ mod tests {
     }
 
     #[test]
+    fn refine_keeps_an_sxxexx_release_for_the_wanted_episode() {
+        // The end-to-end case the query fan-out exists for: a release named
+        // `S03E09` must survive filtering for episode 9 of a season-3 title.
+        let request = ReleaseRequest {
+            titles: vec!["Mushoku Tensei: Jobless Reincarnation Season 3".into()],
+            episode: Some(9),
+        };
+        let preference = ReleasePreference::default();
+
+        let releases = vec![
+            release_named("[SubsPlease] Mushoku Tensei - 09 [1080p]"),
+            release_named("[SubsPlease] Mushoku Tensei S03E09 [1080p]"),
+            release_named("[SubsPlease] Mushoku Tensei S03E10 [1080p]"),
+        ];
+
+        let refined = refine(releases, &request, &preference);
+
+        assert_eq!(refined.len(), 2, "episode 9 survives, episode 10 does not");
+        assert!(
+            refined.iter().any(|r| r.title.contains("S03E09")),
+            "the SxxExx spelling must be kept: {refined:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_fans_out_over_the_query_variants_and_dedupes() {
+        // The stub returns the same release for every query, as a real indexer
+        // would for overlapping spellings. The pipeline must collapse them.
+        struct CountingIndexer;
+
+        #[async_trait::async_trait]
+        impl Indexer for CountingIndexer {
+            fn name(&self) -> &str {
+                "counting"
+            }
+
+            async fn search(&self, _query: &str) -> Result<Vec<Release>, IndexerError> {
+                Ok(vec![release_named("[G] Show S01E05 [1080p]")])
+            }
+        }
+
+        let request = ReleaseRequest {
+            titles: vec!["Show".into(), "Shou".into()],
+            episode: Some(5),
+        };
+
+        let found = search(
+            &CountingIndexer,
+            &request,
+            &ReleasePreference::default(),
+        )
+        .await
+        .expect("stub should succeed");
+
+        assert!(
+            request.queries().len() > 1,
+            "the request should fan out: {:?}",
+            request.queries()
+        );
+        assert_eq!(found.len(), 1, "the repeat must be de-duplicated");
+    }
+
+    #[test]
     fn refine_without_an_episode_keeps_everything() {
         let request = ReleaseRequest {
-            title: "Show".into(),
+            titles: vec!["Show".into()],
             episode: None,
         };
         let preference = ReleasePreference::default();
@@ -246,7 +405,7 @@ mod tests {
     #[test]
     fn refine_of_an_empty_search_is_empty() {
         let request = ReleaseRequest {
-            title: "Show".into(),
+            titles: vec!["Show".into()],
             episode: Some(1),
         };
         let preference = ReleasePreference::default();
@@ -281,7 +440,7 @@ mod tests {
         };
 
         let request = ReleaseRequest {
-            title: "Show".into(),
+            titles: vec!["Show".into()],
             episode: Some(5),
         };
         let releases = search(&indexer, &request, &ReleasePreference::default())

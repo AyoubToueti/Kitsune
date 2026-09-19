@@ -62,9 +62,14 @@ pub async fn search_releases(
     preference: Option<ReleasePreference>,
 ) -> Result<Vec<Release>, String> {
     let indexers: Vec<Arc<dyn Indexer>> = registry.indexers().to_vec();
-    let request = ReleaseRequest { title, episode };
+    // The command still takes one title, so the wire format is unchanged; the
+    // multi-title fan-out is driven from the frontend, which sends every form
+    // it has. Wrapping here keeps existing callers working.
+    let request = ReleaseRequest {
+        titles: vec![title],
+        episode,
+    };
     let preference = preference.unwrap_or_default();
-
     Ok(search_all(&indexers, &request, &preference).await)
 }
 
@@ -297,7 +302,7 @@ mod tests {
         ];
 
         let request = ReleaseRequest {
-            title: "Show".into(),
+            titles: vec!["Show".into()],
             episode: Some(5),
         };
 
@@ -313,7 +318,7 @@ mod tests {
         ];
 
         let request = ReleaseRequest {
-            title: "Show".into(),
+            titles: vec!["Show".into()],
             episode: Some(5),
         };
 
