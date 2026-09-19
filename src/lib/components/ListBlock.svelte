@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { listHref } from "$lib/filter";
   import type { Anime, ListFilter } from "$lib/types";
   import AnimeListItem from "./AnimeListItem.svelte";
 
@@ -26,7 +27,7 @@
     <!-- `mt-auto` keeps the footer pinned to the bottom, so blocks with
          different item counts still line their "View more" up. -->
     <a
-      href={`/browse/${filter}`}
+      href={listHref(filter)}
       class="mt-auto pt-3 text-sm text-ink-muted transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
       View more ›

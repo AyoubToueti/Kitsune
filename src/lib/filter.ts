@@ -7,6 +7,7 @@
 import type {
   BrowseQuery,
   FormatFilter,
+  ListFilter,
   MediaTag,
   SeasonFilter,
   SortOption,
@@ -99,6 +100,47 @@ export const SEASON_LABELS: Record<SeasonFilter, string> = {
   summer: "Summer",
   fall: "Fall",
 };
+
+/**
+ * The browse query each curated list stands for.
+ *
+ * A home section is a sort plus, sometimes, a status: "Top airing" is the
+ * popularity order restricted to what is still releasing. The filter page takes
+ * both as URL parameters, so the mapping is what lets a section's "View more"
+ * land on the same ordering rather than a differently-ordered list.
+ *
+ * Every `ListFilter` must appear, so adding a variant is a compile error here
+ * rather than a section that silently links to the wrong order. `status` is
+ * absent for the lists that do not restrict one.
+ */
+export const LIST_QUERIES: Record<
+  ListFilter,
+  { sort: SortOption; status?: StatusFilter }
+> = {
+  trending: { sort: "trending" },
+  topAiring: { sort: "popularity", status: "releasing" },
+  mostPopular: { sort: "popularity" },
+  topRated: { sort: "score" },
+  latestCompleted: { sort: "newest", status: "finished" },
+  upcoming: { sort: "popularity", status: "notYetReleased" },
+};
+
+/**
+ * A link to the filter page showing one curated list.
+ *
+ * The home sections carry no other filters, so the URL is built fresh rather
+ * than preserving parameters: there is nothing to preserve. `status` is only
+ * written when the list restricts one, so "Most popular" does not gain an
+ * empty-looking `status=` it never meant.
+ */
+export function listHref(filter: ListFilter): string {
+  const { sort, status } = LIST_QUERIES[filter];
+
+  const params = new URLSearchParams({ sort });
+  if (status !== undefined) params.set("status", status);
+
+  return `/filter?${params}`;
+}
 
 /**
  * Labels follow the provider's own wording, so the menu reads the same as the

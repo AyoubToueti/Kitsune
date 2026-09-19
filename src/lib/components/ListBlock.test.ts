@@ -63,7 +63,7 @@ describe("ListBlock", () => {
 
     expect(screen.getByRole("link", { name: /view more/i })).toHaveAttribute(
       "href",
-      "/browse/topAiring",
+      "/filter?sort=popularity&status=releasing",
     );
   });
 
@@ -80,7 +80,7 @@ describe("ListBlock", () => {
 
     expect(screen.getByRole("link", { name: /view more/i })).toHaveAttribute(
       "href",
-      "/browse/latestCompleted",
+      "/filter?sort=newest&status=finished",
     );
   });
 });

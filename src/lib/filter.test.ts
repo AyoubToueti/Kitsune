@@ -4,8 +4,10 @@ import {
   categoryLabel,
   filterHref,
   groupTagsByCategory,
+  listHref,
   parseBrowseQuery,
   yearOptions,
+  LIST_QUERIES,
   FORMAT_VALUES,
   SEASON_VALUES,
   SORT_VALUES,
@@ -236,6 +238,55 @@ describe("filterHref", () => {
 
     expect(params.get("page")).toBeNull();
     expect(params.toString()).toBe("format=tv");
+  });
+});
+
+describe("listHref", () => {
+  it("links Top airing to the popularity order, restricted to releasing", () => {
+    expect(listHref("topAiring")).toBe(
+      "/filter?sort=popularity&status=releasing",
+    );
+  });
+
+  it("links Latest completed to the newest order, restricted to finished", () => {
+    expect(listHref("latestCompleted")).toBe("/filter?sort=newest&status=finished");
+  });
+
+  it("links Top rated to the score order", () => {
+    expect(listHref("topRated")).toBe("/filter?sort=score");
+  });
+
+  it("omits the status for a list that does not restrict one", () => {
+    // Most popular is the whole catalogue by popularity, so an empty-looking
+    // `status=` would claim a restriction that is not there.
+    expect(listHref("mostPopular")).toBe("/filter?sort=popularity");
+  });
+
+  it("links trending and upcoming to their own orders", () => {
+    expect(listHref("trending")).toBe("/filter?sort=trending");
+    expect(listHref("upcoming")).toBe(
+      "/filter?sort=popularity&status=notYetReleased",
+    );
+  });
+
+  // The generated URL must survive a round trip through the parser, or the page
+  // it lands on would silently drop the ordering that was asked for.
+  it("produces a URL the parser reads back unchanged", () => {
+    for (const filter of [
+      "trending",
+      "topAiring",
+      "mostPopular",
+      "topRated",
+      "latestCompleted",
+      "upcoming",
+    ] as const) {
+      const href = listHref(filter);
+      const query = parse(href.slice(href.indexOf("?") + 1));
+      const expected = LIST_QUERIES[filter];
+
+      expect(query.sort).toBe(expected.sort);
+      expect(query.status).toBe(expected.status);
+    }
   });
 });
 
