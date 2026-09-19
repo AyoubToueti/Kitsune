@@ -6,8 +6,9 @@
   import { displayTitle, type Anime, type EpisodeInfo } from "$lib/types";
   import MetadataStrip from "$lib/components/MetadataStrip.svelte";
   import DetailPageSkeleton from "$lib/components/DetailPageSkeleton.svelte";
+  import Skeleton from "$lib/components/Skeleton.svelte";
   import Synopsis from "$lib/components/Synopsis.svelte";
-  import { enrichEpisodes, episodesFor } from "$lib/episodes";
+  import { episodesFor } from "$lib/episodes";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
@@ -22,7 +23,14 @@
   let anime = $state<Anime | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  let episodeInfo = $state<EpisodeInfo[]>([]);
+  /**
+   * The episode catalogue, or `null` while it is being fetched.
+   *
+   * The two empty-ish states need different UI: `null` means "not known yet" and
+   * renders a skeleton, while `[]` means "known, and there is nothing" and falls
+   * back to the synthesised list. A plain empty array would conflate them.
+   */
+  let episodeInfo = $state<EpisodeInfo[] | null>(null);
 
   $effect(() => {
     const currentId = id;
@@ -52,22 +60,25 @@
   });
 
   /**
-   * Fetch episode metadata once the work is known.
+   * Fetch the episode catalogue once the work is known.
    *
    * Keyed on `idMal`, so it fires when the title changes rather than on every
-   * render. A failure is swallowed: enrichment is a bonus on top of the
-   * synthesised list, and an unreachable Jikan should not turn a working page
-   * into an error.
+   * render. This is the episode list's source, not a bonus: a failure still falls
+   * back to the synthesised list rather than showing an error, because a work with
+   * no reachable catalogue is exactly the case synthesis exists for.
    */
   $effect(() => {
     const malId = anime?.idMal;
 
+    // No MAL link means there is nothing to ask for, so fall straight through to
+    // synthesis instead of waiting on a request that will never be made.
     if (malId === undefined) {
       episodeInfo = [];
       return;
     }
 
     let cancelled = false;
+    episodeInfo = null;
 
     getEpisodes(malId)
       .then((result) => {
@@ -92,12 +103,12 @@
   );
 
   /**
-   * The episodes to show. The provider list when it has one, otherwise a
-   * synthesised 1..episodeCount stand-in using the cover as artwork, so a
-   * work whose streaming links are missing (or capped) is still navigable.
+   * The episodes to show: the Jikan catalogue when it has entries, otherwise a
+   * synthesised 1..episodeCount stand-in using the cover as artwork, so a work
+   * with no MAL link is still navigable.
    */
   const episodes = $derived(
-    anime ? enrichEpisodes(episodesFor(anime), episodeInfo) : [],
+    anime ? episodesFor(anime, episodeInfo ?? []) : [],
   );
 
   /**
@@ -176,11 +187,21 @@
        screens, where a sidebar beside a grid would be too cramped. -->
   <div class="mt-8 grid gap-8 lg:grid-cols-[1fr_20rem]">
     <div>
-      {#if episodes.length > 0}
+      {#if episodeInfo === null}
+        <!-- Waiting on the catalogue. A skeleton rather than the synthesised
+             list, so the grid does not visibly reshuffle when the real titles
+             land underneath it. -->
+        <Skeleton class="mb-3 h-6 w-24" />
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {#each Array(8) as _, i (i)}
+            <Skeleton class="aspect-video w-full rounded-lg" />
+          {/each}
+        </div>
+      {:else if episodes.length > 0}
         <EpisodeList {episodes} onSelect={watchEpisode} />
       {:else}
-        <!-- Neither a provider list nor a count, so say so rather than
-             render an empty grid that reads as broken. -->
+        <!-- Neither a catalogue nor a count, so say so rather than render an
+             empty grid that reads as broken. -->
         <p class="text-sm text-ink-faint">Episode information unavailable.</p>
       {/if}
     </div>

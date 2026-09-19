@@ -1,17 +1,21 @@
 // Episode lists that survive a sparse provider.
 //
-// AniList exposes `streamingEpisodes` (links to licensed services), but that is
-// not an episode list: it is empty for many works and capped by the provider for
-// long runners like One Piece. `episodeCount`, by contrast, is reliable. When the
-// rich list is missing or short, this synthesises `1..count` so the reader can
+// The list comes from Jikan's per-episode catalogue, bridged by AniList's
+// `idMal`. AniList's own `streamingEpisodes` is NOT used here: it is a list of
+// licensed streaming links, not an episode list, and AniList attaches the whole
+// franchise's links to the first season's entry -- so using it produced a
+// season-1 list numbered 51..66 for Re:Zero. `StreamingLinks` still reads that
+// field for its "where to watch" buttons, which is what it is for.
+//
+// When Jikan has nothing, this synthesises `1..episodeCount` so the reader can
 // still reach every episode -- and, critically, so the watch page can resolve an
 // episode number to search a torrent for.
 //
 // The number is the load-bearing part. Everything downstream (the torrent
-// matcher, the file matcher) keys off "which episode is this", so a synthesised
-// entry carries its number in the title where `episodeNumber` can read it back.
+// matcher, the file matcher) keys off "which episode is this", so every entry
+// carries an explicit number rather than relying on the title being parsed.
 
-import type { Anime, EpisodeInfo, StreamingEpisode } from "./types";
+import type { Anime, EpisodeInfo } from "./types";
 
 /**
  * An episode as the UI renders it.
@@ -63,29 +67,46 @@ export function synthesizeEpisodes(
 }
 
 /**
- * The episodes to show for a work: the provider's list when it has one, else a
- * synthesised stand-in.
+ * Turn Jikan's per-episode catalogue into display entries.
  *
- * The provider list wins when non-empty because it carries real titles and
- * thumbnails. It is not topped up to `episodeCount` -- mixing real and invented
- * entries would make the list look complete while half of it was guesswork.
+ * Every entry keeps its explicit `number`, so the torrent matcher never has to
+ * recover it from the title. `coverImage` is used as the card background
+ * because Jikan has no per-episode stills; the episode's own title is the real
+ * one, and the fallback only fires for a genuinely untitled entry.
  */
-export function episodesFor(anime: Anime): Episode[] {
-  const providerEpisodes = anime.streamingEpisodes ?? [];
-  if (providerEpisodes.length > 0) {
-    return providerEpisodes.map(toEpisode);
-  }
-  return synthesizeEpisodes(anime.episodeCount, anime.coverImage);
+export function episodesFromInfo(
+  info: EpisodeInfo[],
+  coverImage?: string,
+): Episode[] {
+  return info.map((entry) => ({
+    number: entry.number,
+    title: entry.title ?? `Episode ${entry.number}`,
+    thumbnail: coverImage,
+    aired: entry.aired,
+    filler: entry.filler,
+    recap: entry.recap,
+  }));
 }
 
-/** Widen a provider entry into the display type. */
-function toEpisode(ep: StreamingEpisode): Episode {
-  return {
-    title: ep.title,
-    url: ep.url,
-    site: ep.site,
-    thumbnail: ep.thumbnail,
-  };
+/**
+ * The episodes to show for a work.
+ *
+ * The catalogue wins when it has entries, because it is the real per-episode
+ * data: correct numbering, real titles and air dates. Only when it is empty
+ * does this fall back to a synthesised `1..episodeCount` stand-in, so a work
+ * with no MAL link (or a MAL entry with no episode list) is still navigable.
+ *
+ * `info` defaults to empty so a caller that has not fetched it yet still gets
+ * the fallback rather than a crash.
+ */
+export function episodesFor(
+  anime: Anime,
+  info: EpisodeInfo[] = [],
+): Episode[] {
+  if (info.length > 0) {
+    return episodesFromInfo(info, anime.coverImage);
+  }
+  return synthesizeEpisodes(anime.episodeCount, anime.coverImage);
 }
 
 /**
@@ -100,35 +121,3 @@ export function hasEpisodeData(anime: Anime): boolean {
   );
 }
 
-/**
- * Fold provider episode metadata into the display list.
- *
- * Matched by number, so a synthesised card keeps its cover art and gains the
- * real title and air date. Entries with no counterpart are left alone, and an
- * empty `info` returns the input untouched -- enrichment is additive, never a
- * replacement, so a failed lookup degrades to the synthesised list rather than
- * an empty one.
- */
-export function enrichEpisodes(
-  episodes: Episode[],
-  info: EpisodeInfo[],
-): Episode[] {
-  if (info.length === 0) return episodes;
-
-  const byNumber = new Map(info.map((entry) => [entry.number, entry]));
-
-  return episodes.map((ep) => {
-    const detail = ep.number === undefined ? undefined : byNumber.get(ep.number);
-    if (detail === undefined) return ep;
-
-    return {
-      ...ep,
-      // The provider's title wins: it is the real one, where the synthesised
-      // entry only had "Episode N" as a placeholder.
-      title: detail.title ?? ep.title,
-      aired: detail.aired,
-      filler: detail.filler,
-      recap: detail.recap,
-    };
-  });
-}

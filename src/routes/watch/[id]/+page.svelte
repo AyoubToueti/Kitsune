@@ -2,7 +2,7 @@
   import { page } from "$app/state";
   import { open } from "@tauri-apps/plugin-dialog";
 
-  import { errorMessage, getAnime } from "$lib/api/anime";
+  import { errorMessage, getAnime, getEpisodes } from "$lib/api/anime";
   import { addMagnet, addTorrent, getStreamUrl } from "$lib/api/player";
   import {
     onProbeResult,
@@ -17,11 +17,13 @@
     type MatchClarity,
   } from "$lib/release-match";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
+  import { episodeNumber as episodeNumberFor } from "$lib/episode";
   import { episodesFor } from "$lib/episodes";
   import {
     displayTitle,
     titleForms,
     type Anime,
+    type EpisodeInfo,
     type HealthBadge,
     type ProbeOutcome,
     type Release,
@@ -254,32 +256,57 @@
   const title = $derived(
     anime ? (displayTitle(anime.title) ?? "Untitled") : null,
   );
-  const episodes = $derived(anime ? episodesFor(anime) : []);
 
   /**
-   * The episode number an entry represents, read out of its title or URL.
+   * The episode catalogue, or `null` while it is being fetched.
    *
-   * Mirrors the same heuristic EpisodeList uses to jump to an episode, so the
-   * preselect and the jump box agree about which entry is "episode 3".
+   * The list used to come from AniList's `streamingEpisodes`, which is a list of
+   * licensed links rather than episodes -- and carries the whole franchise's links
+   * on the first season's entry. The catalogue is the real per-episode data.
+   */
+  let episodeInfo = $state<EpisodeInfo[] | null>(null);
+
+  $effect(() => {
+    const malId = anime?.idMal;
+
+    if (malId === undefined) {
+      episodeInfo = [];
+      return;
+    }
+
+    let cancelled = false;
+    episodeInfo = null;
+
+    getEpisodes(malId)
+      .then((result) => {
+        if (cancelled) return;
+        episodeInfo = result;
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // A missing catalogue is not an error: the synthesised list stands in.
+        episodeInfo = [];
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const episodes = $derived(anime ? episodesFor(anime, episodeInfo ?? []) : []);
+
+  /**
+   * The episode number of the entry at `index`.
+   *
+   * Delegates to the shared heuristic rather than repeating it. That one prefers
+   * an explicit `number` and only falls back to parsing the title or URL, which
+   * matters now that entries come from the catalogue: a real title is an episode
+   * *name* ("Theatrical Malice") carrying no number at all, so parsing alone would
+   * find nothing and the search would run without an episode.
    */
   function episodeNumber(index: number): number | undefined {
     const ep = episodes[index];
-    if (!ep) return undefined;
-
-    const patterns: RegExp[] = [
-      /(?:episode|ep)\.?\s*[-–:]?\s*(\d+)/i,
-      /(?:episode|ep)[-_](\d+)/i,
-      /(\d+)\s*$/,
-    ];
-
-    for (const source of [ep.title, ep.url]) {
-      if (source == null) continue;
-      for (const pattern of patterns) {
-        const match = source.match(pattern);
-        if (match) return Number(match[1]);
-      }
-    }
-    return undefined;
+    return ep ? episodeNumberFor(ep) : undefined;
   }
 
   /**

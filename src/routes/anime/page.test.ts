@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 
-import type { Anime } from "$lib/types";
+import type { Anime, EpisodeInfo } from "$lib/types";
 import { clearNavigations, navigations } from "../../test/app-navigation-stub";
 
 // Aliased to src/test/app-state-stub.ts in vitest.config.js. Each test sets
@@ -9,10 +9,11 @@ import { clearNavigations, navigations } from "../../test/app-navigation-stub";
 import { page as appState } from "$app/state";
 
 const getAnimeMock = vi.hoisted(() => vi.fn());
+const getEpisodesMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/anime", async () => {
   const actual =
     await vi.importActual<typeof import("$lib/api/anime")>("$lib/api/anime");
-  return { ...actual, getAnime: getAnimeMock };
+  return { ...actual, getAnime: getAnimeMock, getEpisodes: getEpisodesMock };
 });
 
 import Page from "./[id]/+page.svelte";
@@ -35,6 +36,24 @@ function pending(): Promise<Anime | null> {
   return new Promise(() => {});
 }
 
+/** A Jikan catalogue entry, which is where the episode list comes from now. */
+function info(number: number, title?: string): EpisodeInfo {
+  return { number, title, filler: false, recap: false };
+}
+
+/**
+ * A work whose catalogue lists `count` episodes.
+ *
+ * The episode grid is built from the catalogue, not from AniList's streaming
+ * links, so a test that expects rows has to say what Jikan returns.
+ */
+function withCatalogue(count: number, overrides: Partial<Anime> = {}): Anime {
+  getEpisodesMock.mockResolvedValue(
+    Array.from({ length: count }, (_, i) => info(i + 1, `Episode ${i + 1}`)),
+  );
+  return anime({ idMal: 21, episodeCount: count, ...overrides });
+}
+
 /**
  * Point the stub at a route param. Same cast workaround as the search page
  * test: svelte-check resolves `$app/state` to SvelteKit's real types which
@@ -51,6 +70,9 @@ function setId(id: string | number) {
 
 beforeEach(() => {
   getAnimeMock.mockReset();
+  // Default: no catalogue, so the page falls back to a synthesised list and
+  // tests that do not care about episodes are unaffected.
+  getEpisodesMock.mockReset().mockResolvedValue([]);
   clearNavigations();
   setId(21);
 });
@@ -112,7 +134,7 @@ describe("detail page", () => {
     render(Page);
 
     expect(await screen.findByText(/429/)).toBeInTheDocument();
-      });
+  });
 
   // Regression: AniList returns no streaming links for many titles (e.g. Re:ZERO
   // season 4), and the backend once omitted the key entirely for an empty list.
@@ -140,55 +162,46 @@ describe("detail page", () => {
       screen.getByText(/episode information unavailable/i),
     ).toBeInTheDocument();
   });
-    it("synthesises a clickable episode grid when there are no streaming episodes", async () => {
-      getAnimeMock.mockResolvedValue(
-        anime({
-          episodeCount: 12,
-          streamingEpisodes: [],
-          coverImage: "https://x.test/c.jpg",
-        }),
-      );
 
-      render(Page);
-      await screen.findByRole("heading", { name: "One Piece" });
-
-      // The synthesised grid: 12 cards inside the list. The list also has its own
-      // jump-to-episode form, so the count is scoped to the cards.
-      const cards = within(screen.getByTestId("episode-list")).getAllByRole("button");
-      expect(cards).toHaveLength(12);
-      for (const card of cards) {
-        expect(card).not.toBeDisabled();
-      }
-    });
-
-    it("shows episode thumbnails when streaming episodes are present", async () => {
+  it("synthesises a clickable episode grid when there are no streaming episodes", async () => {
     getAnimeMock.mockResolvedValue(
       anime({
-        streamingEpisodes: [
-          {
-            url: "https://crunchyroll.example/1",
-            title: "Episode 1",
-            thumbnail: "https://example.test/1.jpg",
-          },
-          {
-            url: "https://crunchyroll.example/2",
-            title: "Episode 2",
-            thumbnail: "https://example.test/2.jpg",
-          },
-        ],
+        episodeCount: 12,
+        streamingEpisodes: [],
+        coverImage: "https://x.test/c.jpg",
       }),
     );
 
     render(Page);
     await screen.findByRole("heading", { name: "One Piece" });
 
-    // Scoped to the episode list: the "Where to watch" section below renders its
-    // own button carrying the same title, so an unscoped query is ambiguous.
+    // The synthesised grid: 12 cards inside the list. The list also has its own
+    // jump-to-episode form, so the count is scoped to the cards.
+    const cards = within(screen.getByTestId("episode-list")).getAllByRole("button");
+    expect(cards).toHaveLength(12);
+    for (const card of cards) {
+      expect(card).not.toBeDisabled();
+    }
+  });
+
+  it("shows episode thumbnails from the catalogue cover", async () => {
+    getAnimeMock.mockResolvedValue(
+      withCatalogue(2, { coverImage: "https://example.test/cover.jpg" }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
     const list = screen.getByTestId("episode-list");
     expect(list.querySelectorAll("button")).toHaveLength(2);
     expect(
       within(list).getByRole("button", { name: "Episode 1" }),
     ).toBeInTheDocument();
+    // Jikan has no per-episode stills, so the card artwork is the work's cover.
+    expect(list.querySelector("img")).toHaveAttribute(
+      "src",
+      "https://example.test/cover.jpg",
+    );
   });
 
   it("renders the related anime sidebar", async () => {
@@ -285,14 +298,7 @@ describe("detail page", () => {
   // --- watch page wiring ---------------------------------------------------
 
   it("navigates to the watch page when an episode is clicked", async () => {
-    getAnimeMock.mockResolvedValue(
-      anime({
-        streamingEpisodes: [
-          { url: "https://x.test/1", title: "Episode 1" },
-          { url: "https://x.test/2", title: "Episode 2" },
-        ],
-      }),
-    );
+    getAnimeMock.mockResolvedValue(withCatalogue(2));
 
     render(Page);
     await screen.findByRole("heading", { name: "One Piece" });
@@ -306,9 +312,7 @@ describe("detail page", () => {
   });
 
   it("does not open AniList's licensed link from the grid", async () => {
-    getAnimeMock.mockResolvedValue(
-      anime({ streamingEpisodes: [{ url: "https://x.test/1", title: "Episode 1" }] }),
-    );
+    getAnimeMock.mockResolvedValue(withCatalogue(1));
 
     render(Page);
     await screen.findByRole("heading", { name: "One Piece" });

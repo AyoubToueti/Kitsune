@@ -1,16 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, within, waitFor } from "@testing-library/svelte";
 
-import type { Anime, ProbeOutcome, Release, TorrentHandle } from "$lib/types";
+import type {
+  Anime,
+  EpisodeInfo,
+  ProbeOutcome,
+  Release,
+  TorrentHandle,
+} from "$lib/types";
 
 // Aliased to src/test/app-state-stub.ts in vitest.config.js.
 import { page as appState } from "$app/state";
 
 const getAnimeMock = vi.hoisted(() => vi.fn());
+const getEpisodesMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/anime", async () => {
   const actual =
     await vi.importActual<typeof import("$lib/api/anime")>("$lib/api/anime");
-  return { ...actual, getAnime: getAnimeMock };
+  return { ...actual, getAnime: getAnimeMock, getEpisodes: getEpisodesMock };
 });
 
 const openDialogMock = vi.hoisted(() => vi.fn());
@@ -57,6 +64,31 @@ function anime(overrides: Partial<Anime> = {}): Anime {
   };
 }
 
+/** A Jikan catalogue entry, the shape the watch page now lists episodes from. */
+function episodeInfo(number: number): EpisodeInfo {
+  return {
+    number,
+    title: `Episode ${number}`,
+    aired: "2024-10-02T00:00:00+00:00",
+    filler: false,
+    recap: false,
+  };
+}
+
+/**
+ * An anime with a MAL link and `count` catalogued episodes.
+ *
+ * The watch page lists episodes from the Jikan catalogue now, not from AniList's
+ * streaming links, so a test that wants an episode list has to say what the
+ * catalogue returns.
+ */
+function animeWithEpisodes(count: number, overrides: Partial<Anime> = {}): Anime {
+  getEpisodesMock.mockResolvedValue(
+    Array.from({ length: count }, (_, i) => episodeInfo(i + 1)),
+  );
+  return anime({ idMal: 21, episodeCount: count, ...overrides });
+}
+
 function handle(): TorrentHandle {
   return {
     id: 5,
@@ -94,6 +126,9 @@ function setId(id: string | number) {
 
 beforeEach(() => {
   getAnimeMock.mockReset().mockResolvedValue(anime());
+  // Default: an empty catalogue, so the page falls back to a synthesised list and
+  // tests that do not care about episodes are unaffected.
+  getEpisodesMock.mockReset().mockResolvedValue([]);
   openDialogMock.mockReset().mockResolvedValue("/tmp/show.torrent");
   addTorrentMock.mockReset().mockResolvedValue(handle());
   addMagnetMock.mockReset().mockResolvedValue(handle());
@@ -199,15 +234,7 @@ describe("watch page", () => {
   });
 
   it("narrows the search to the selected episode", async () => {
-    getAnimeMock.mockResolvedValue(
-      anime({
-        streamingEpisodes: [
-          { url: "https://x.test/1", title: "Episode 1" },
-          { url: "https://x.test/2", title: "Episode 2" },
-        ],
-      }),
-    );
-
+        getAnimeMock.mockResolvedValue(animeWithEpisodes(2));
     render(Page);
     await screen.findByRole("heading", { name: /attack on titan/i });
 
@@ -265,15 +292,7 @@ describe("watch page", () => {
   });
 
   it("preselects the file matching the current episode", async () => {
-    getAnimeMock.mockResolvedValue(
-      anime({
-        streamingEpisodes: [
-          { url: "https://x.test/1", title: "Episode 1" },
-          { url: "https://x.test/2", title: "Episode 2" },
-        ],
-      }),
-    );
-
+        getAnimeMock.mockResolvedValue(animeWithEpisodes(2));
     render(Page);
     await screen.findByRole("heading", { name: /attack on titan/i });
 
@@ -571,14 +590,7 @@ describe("watch page", () => {
   });
 
   it("clears the filter when the search re-runs", async () => {
-    getAnimeMock.mockResolvedValue(
-      anime({
-        streamingEpisodes: [
-          { url: "https://x.test/1", title: "Episode 1" },
-          { url: "https://x.test/2", title: "Episode 2" },
-        ],
-      }),
-    );
+    getAnimeMock.mockResolvedValue(animeWithEpisodes(2));
     searchReleasesMock.mockResolvedValue([
       release({ title: "AAA 1080p", resolution: "1080p" }),
       release({ title: "BBB 720p", resolution: "720p", infoHash: "b" }),

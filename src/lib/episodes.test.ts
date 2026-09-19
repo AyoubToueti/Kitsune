@@ -1,8 +1,13 @@
 import { describe, it, expect } from "vitest";
 
-import { episodesFor, hasEpisodeData, synthesizeEpisodes } from "./episodes";
+import {
+  episodesFor,
+  episodesFromInfo,
+  hasEpisodeData,
+  synthesizeEpisodes,
+} from "./episodes";
 import { episodeNumber } from "./episode";
-import type { Anime, StreamingEpisode } from "./types";
+import type { Anime, EpisodeInfo } from "./types";
 
 function anime(overrides: Partial<Anime> = {}): Anime {
   return {
@@ -52,42 +57,100 @@ describe("synthesizeEpisodes", () => {
   });
 });
 
-describe("episodesFor", () => {
-  it("prefers the provider's list when it has one", () => {
-    const real: StreamingEpisode[] = [
-      { url: "https://crunchyroll.test/1", title: "Episode 1" },
-    ];
-    const anime_ = anime({ streamingEpisodes: real, episodeCount: 500 });
+describe("episodesFromInfo", () => {
+    it("carries the number, title, air date and flags through", () => {
+      const info: EpisodeInfo[] = [
+        {
+          number: 7,
+          title: "The Newest of Heroes",
+          aired: "2024-11-13T00:00:00+00:00",
+          filler: true,
+          recap: true,
+        },
+      ];
 
-    const episodes = episodesFor(anime_);
+      const [episode] = episodesFromInfo(info, "https://x.test/c.jpg");
 
-    expect(episodes).toHaveLength(1);
-    expect(episodes[0].url).toBe("https://crunchyroll.test/1");
-  });
-
-  it("falls back to a synthesised list when the provider has none", () => {
-    const anime_ = anime({ episodeCount: 1100, coverImage: "https://x.test/c.jpg" });
-
-    const episodes = episodesFor(anime_);
-
-    expect(episodes).toHaveLength(1100);
-    expect(episodes[1099].title).toBe("Episode 1100");
-    expect(episodes[1099].thumbnail).toBe("https://x.test/c.jpg");
-  });
-
-  it("does not top up a short provider list with invented entries", () => {
-    // One Piece returns ~60 streaming links for 1000+ episodes. Showing 60 real
-    // ones is honest; padding to 1000 would look complete while lying.
-    const anime_ = anime({
-      streamingEpisodes: [{ url: "https://crunchyroll.test/1", title: "Episode 1" }],
-      episodeCount: 1100,
+      expect(episode.number).toBe(7);
+      expect(episode.title).toBe("The Newest of Heroes");
+      expect(episode.aired).toBe("2024-11-13T00:00:00+00:00");
+      expect(episode.filler).toBe(true);
+      expect(episode.recap).toBe(true);
+      expect(episode.thumbnail).toBe("https://x.test/c.jpg");
     });
 
-    expect(episodesFor(anime_)).toHaveLength(1);
+    it("substitutes a title for an entry the catalogue left unnamed", () => {
+      const info: EpisodeInfo[] = [{ number: 3, filler: false, recap: false }];
+
+      expect(episodesFromInfo(info)[0].title).toBe("Episode 3");
+    });
+
+    it("produces numbers the shared heuristic reads back", () => {
+      // The number is what the torrent search keys off, so it has to survive the
+      // round trip through the shared parser.
+      const info: EpisodeInfo[] = Array.from({ length: 12 }, (_, i) => ({
+        number: i + 1,
+        filler: false,
+        recap: false,
+      }));
+
+      for (const episode of episodesFromInfo(info)) {
+        expect(episodeNumber(episode)).toBe(episode.number);
+      }
+    });
   });
 
-  it("returns nothing when the work has no episode data at all", () => {
-    expect(episodesFor(anime())).toEqual([]);
+  describe("episodesFor", () => {
+    it("prefers the catalogue when it has entries", () => {
+      const info: EpisodeInfo[] = [
+        {
+          number: 1,
+          title: "Theatrical Malice",
+          filler: false,
+          recap: false,
+        },
+      ];
+
+      const episodes = episodesFor(anime({ episodeCount: 500 }), info);
+
+      expect(episodes).toHaveLength(1);
+      expect(episodes[0].number).toBe(1);
+      expect(episodes[0].title).toBe("Theatrical Malice");
+    });
+
+    it("ignores streaming links, which are not an episode list", () => {
+      // AniList attaches the WHOLE FRANCHISE's links to the first season's entry,
+      // so a season-1 page could otherwise list episode 66. The catalogue is the
+      // only list source; streaming links are for the "where to watch" buttons.
+      const anime_ = anime({
+        streamingEpisodes: [
+          { url: "https://crunchyroll.test/66", title: "Episode 66" },
+        ],
+        episodeCount: 25,
+      });
+
+      const episodes = episodesFor(anime_, []);
+
+      expect(episodes).toHaveLength(25);
+      expect(episodes[0].number).toBe(1);
+      expect(episodes[24].title).toBe("Episode 25");
+    });
+
+    it("falls back to a synthesised list when the catalogue is empty", () => {
+      const anime_ = anime({
+        episodeCount: 1100,
+        coverImage: "https://x.test/c.jpg",
+      });
+
+      const episodes = episodesFor(anime_, []);
+
+      expect(episodes).toHaveLength(1100);
+      expect(episodes[1099].title).toBe("Episode 1100");
+      expect(episodes[1099].thumbnail).toBe("https://x.test/c.jpg");
+    });
+
+    it("returns nothing when the work has neither catalogue nor count", () => {
+      expect(episodesFor(anime(), [])).toEqual([]);
   });
 });
 
