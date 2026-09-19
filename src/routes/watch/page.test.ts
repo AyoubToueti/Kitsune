@@ -735,4 +735,84 @@ describe("watch page", () => {
     expect(screen.queryByTestId("resolution-filter")).toBeNull();
     expect(screen.getByTestId("release-filter")).toBeInTheDocument();
   });
+
+  it("marks a release that names its season and episode", async () => {
+    // `S03E09` cannot be mistaken for another season's episode 9, so it is the
+    // row worth drawing the eye to.
+    searchReleasesMock.mockResolvedValue([
+      release({
+        title: "[SubsPlease] Show S03E09 [1080p]",
+        parsed: { title: "Show", season: 3, episode: 9, absoluteEpisode: 9 },
+      }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const row = (await screen.findAllByRole("listitem"))[0];
+    expect(row).toHaveAttribute("data-clarity", "stated");
+    expect(row.textContent).toContain("SxxExx");
+  });
+
+  it("does not mark a release that omits the season", async () => {
+    // `Show - 09` is a genuine match but ambiguous about which season it is, so
+    // it stays unmarked rather than getting equal billing.
+    searchReleasesMock.mockResolvedValue([
+      release({
+        title: "[SubsPlease] Show - 09 [1080p]",
+        parsed: { title: "Show", episode: 9, absoluteEpisode: 9 },
+      }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const row = (await screen.findAllByRole("listitem"))[0];
+    expect(row).toHaveAttribute("data-clarity", "episode");
+    expect(row.textContent).not.toContain("SxxExx");
+  });
+
+  it("labels a release whose name carries no episode number", async () => {
+    searchReleasesMock.mockResolvedValue([
+      release({
+        title: "[Group] Show Batch [1080p]",
+        parsed: { title: "Show" },
+      }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const row = (await screen.findAllByRole("listitem"))[0];
+    expect(row).toHaveAttribute("data-clarity", "unclear");
+    expect(row.textContent).toContain("No episode");
+  });
+
+  it("carries the clarity on every row and explains it on hover", async () => {
+    // The emphasis must not rely on colour alone, so each row exposes the level
+    // as data and says what it means in words.
+    searchReleasesMock.mockResolvedValue([
+      release({
+        title: "[G] Show S03E09 [1080p]",
+        parsed: { title: "Show", season: 3, episode: 9 },
+      }),
+      release({
+        title: "[G] Show - 10 [1080p]",
+        infoHash: "b",
+        parsed: { title: "Show", episode: 10, absoluteEpisode: 10 },
+      }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).toHaveAttribute("data-clarity");
+      expect(row.getAttribute("title")).toMatch(/episode/i);
+    }
+    expect(rows[0]).toHaveAttribute("data-clarity", "stated");
+    expect(rows[1]).toHaveAttribute("data-clarity", "episode");
+  });
 });

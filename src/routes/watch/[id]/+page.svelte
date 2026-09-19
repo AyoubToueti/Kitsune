@@ -10,6 +10,12 @@
     searchReleases,
   } from "$lib/api/releases";
   import { matchesQuery } from "$lib/release-filter";
+  import {
+    clarityLabel,
+    clarityTitle,
+    matchClarity,
+    type MatchClarity,
+  } from "$lib/release-match";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
   import { episodesFor } from "$lib/episodes";
   import {
@@ -119,6 +125,25 @@
         // Unprobed is not the same as dead, so it gets a neutral pulse rather
         // than a verdict colour.
         return "bg-ink-faint animate-pulse";
+    }
+  }
+
+  /**
+   * The row's emphasis for how explicitly its name states the episode.
+   *
+   * `stated` rows get the accent border, which already means "this one"
+   * elsewhere in the app. `unclear` rows dim, so the eye skips them. The
+   * ordinary `episode` case is left exactly as it was -- marking every row would
+   * defeat the point of marking any.
+   */
+  function clarityClass(clarity: MatchClarity): string {
+    switch (clarity) {
+      case "stated":
+        return "border-accent/70 ring-1 ring-accent/40";
+      case "unclear":
+        return "opacity-60";
+      case "episode":
+        return "";
     }
   }
 
@@ -638,7 +663,12 @@
           >
             <ul class="flex flex-col gap-1" data-testid="releases">
               {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
-                <li class="flex items-start gap-2">
+                {@const clarity = matchClarity(release)}
+                <li
+                  class="flex items-start gap-2"
+                  data-clarity={clarity}
+                  title={clarityTitle(clarity)}
+                >
                   <!-- A dot rather than a word: the badge is a glanceable signal
                        beside a row already dense with text, and the explanation
                        lives in the title attribute. -->
@@ -655,12 +685,24 @@
                     type="button"
                     onclick={() => playRelease(release)}
                     disabled={loadingRelease}
-                    class="w-full rounded-lg border px-3 py-2 mb-0.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {chosenRelease?.title ===
+                    class="w-full rounded-lg border px-3 py-2 mb-0.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {clarityClass(clarity)} {chosenRelease?.title ===
                     release.title
                       ? 'border-accent bg-surface-hover text-ink'
                       : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
                   >
                     <span class="block truncate">{release.title}</span>
+                    {#if clarityLabel(clarity)}
+                      <!-- A word as well as the border, so the emphasis does
+                           not rely on colour alone. -->
+                      <span
+                        class="mt-0.5 inline-block rounded px-1 text-[0.6rem] font-medium {clarity ===
+                        'stated'
+                          ? 'bg-accent/20 text-accent'
+                          : 'bg-surface-hover text-ink-faint'}"
+                      >
+                        {clarityLabel(clarity)}
+                      </span>
+                    {/if}
                     <span class="mt-0.5 block text-ink-faint">
                       {#if release.resolution !== "unknown"}{release.resolution}{/if}
                       {#if release.source !== "unknown"}· {release.source}{/if}
