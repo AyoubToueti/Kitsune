@@ -765,7 +765,10 @@
               {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
                 {@const clarity = matchClarity(release)}
                 <li
-                  class="flex items-start gap-2"
+                  class="flex items-start gap-2 rounded-lg border px-3 py-2 mb-0.5 text-xs transition-colors {clarityClass(clarity)} {chosenRelease?.title ===
+                  release.title
+                    ? 'border-accent bg-surface-hover text-ink'
+                    : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
                   data-clarity={clarity}
                   title={clarityTitle(clarity)}
                 >
@@ -786,10 +789,7 @@
                     onclick={() => playRelease(release)}
                     disabled={loadingRelease}
                     data-testid="release-play"
-                    class="min-w-0 flex-1 rounded-lg border px-3 py-2 mb-0.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {clarityClass(clarity)} {chosenRelease?.title ===
-                    release.title
-                      ? 'border-accent bg-surface-hover text-ink'
-                      : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
+                    class="min-w-0 flex-1 text-left disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <span class="block truncate">{release.title}</span>
                     {#if clarityLabel(clarity)}
@@ -823,9 +823,9 @@
                     data-testid="release-magnet"
                     aria-label="Open magnet for {release.title}"
                     title="Open in your torrent client"
-                    class="mb-0.5 shrink-0 rounded-lg border border-border-subtle px-2 py-2 text-xs text-ink-muted transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6rem] font-medium text-ink-muted transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                   >
-                    <span aria-hidden="true">🧲</span>
+                    Magnet
                   </button>
                 </li>
               {/each}
