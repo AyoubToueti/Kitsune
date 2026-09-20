@@ -1,11 +1,12 @@
 <script lang="ts">
   import { page } from "$app/state";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
 
   import { errorMessage, getAnime, getEpisodes } from "$lib/api/anime";
   import { addMagnet, addTorrent, getStreamUrl } from "$lib/api/player";
   import {
+    downloadTorrent,
     onProbeResult,
     probeReleases,
     searchReleases,
@@ -18,7 +19,10 @@
     type MatchClarity,
   } from "$lib/release-match";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
-  import { absoluteOffset, episodeNumber as episodeNumberFor } from "$lib/episode";
+  import {
+    absoluteOffset,
+    episodeNumber as episodeNumberFor,
+  } from "$lib/episode";
   import { episodesFor } from "$lib/episodes";
   import {
     displayTitle,
@@ -73,6 +77,15 @@
    * covering both would point at the wrong thing.
    */
   let magnetError = $state<string | null>(null);
+  /**
+   * Failure from saving a release's `.torrent` file.
+   *
+   * Apart from the other two errors for the same reason they are apart from
+   * each other: it names a different action and a different cause.
+   */
+  let downloadError = $state<string | null>(null);
+  /** True while a torrent file is being fetched, so the button can say so. */
+  let downloadingTorrent = $state(false);
 
   // --- swarm health probes -------------------------------------------------
   //
@@ -197,17 +210,17 @@
       });
   });
 
-/**
-       * How many releases match the typed query, ignoring the resolution chips.
-       *
-       * Lets the list say "nothing matched your filter" rather than rendering an
-       * empty scroller, which reads as a failure rather than a filter.
-       */
-      const queryMatches = $derived(
-        releases.filter((release) => matchesQuery(release, releaseQuery)).length,
-      );
+  /**
+   * How many releases match the typed query, ignoring the resolution chips.
+   *
+   * Lets the list say "nothing matched your filter" rather than rendering an
+   * empty scroller, which reads as a failure rather than a filter.
+   */
+  const queryMatches = $derived(
+    releases.filter((release) => matchesQuery(release, releaseQuery)).length,
+  );
 
-      let loadingTorrent = $state(false);
+  let loadingTorrent = $state(false);
   let torrentError = $state<string | null>(null);
 
   /**
@@ -577,6 +590,50 @@
     }
   }
 
+  /**
+   * A safe default file name for a release's torrent.
+   *
+   * The release title carries slashes, colons and brackets that a file name
+   * cannot hold, so everything outside a conservative set collapses to an
+   * underscore. The result is only a default: the reader can rename it in the
+   * save dialog.
+   */
+  function torrentFileName(release: Release): string {
+    const safe = release.title.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
+    return `${safe || "release"}.torrent`;
+  }
+
+  /**
+   * Save a release's `.torrent` file to a path the reader picks.
+   *
+   * The fetch happens in the backend, because the webview cannot reach the
+   * indexer directly (CORS). Not every feed carries the direct link, so a
+   * release without a `torrentUrl` has nothing to download; the button is
+   * disabled in that case rather than failing on click.
+   */
+  async function downloadReleaseTorrent(release: Release): Promise<void> {
+    const url = release.torrentUrl;
+    if (url === undefined || downloadingTorrent) return;
+
+    const path = await save({
+      defaultPath: torrentFileName(release),
+      filters: [{ name: "Torrent", extensions: ["torrent"] }],
+    });
+
+    // A cancelled save dialog resolves to null, which is not an error.
+    if (path === null) return;
+
+    downloadError = null;
+    downloadingTorrent = true;
+    try {
+      await downloadTorrent(url, path);
+    } catch (err) {
+      downloadError = errorMessage(err);
+    } finally {
+      downloadingTorrent = false;
+    }
+  }
+
   /** Choose a `.torrent` and preselect the matching file, if any. */
   async function loadTorrent(): Promise<void> {
     if (loadingTorrent) return;
@@ -733,110 +790,160 @@
             No releases found. Load a torrent by hand instead.
           </p>
         {:else}
-            <!-- The box sits outside ResolutionFilter's own guard, which hides
+          <!-- The box sits outside ResolutionFilter's own guard, which hides
                  the chips when there is only one resolution to choose from. A
                  text filter is still useful in that case. -->
-            <div class="mb-2 flex flex-wrap items-center gap-2">
-              <input
-                type="search"
-                bind:value={releaseQuery}
-                placeholder="Filter releases…"
-                aria-label="Filter releases"
-                data-testid="release-filter"
-                class="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              />
-              <ResolutionFilter
-                available={resolutionOptions}
-                selected={resolutionFilter}
-                onToggle={toggleResolution}
-              />
-            </div>
+          <div class="mb-2 flex flex-wrap items-center gap-2">
+            <input
+              type="search"
+              bind:value={releaseQuery}
+              placeholder="Filter releases…"
+              aria-label="Filter releases"
+              data-testid="release-filter"
+              class="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface-raised px-3 py-1 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            />
+            <ResolutionFilter
+              available={resolutionOptions}
+              selected={resolutionFilter}
+              onToggle={toggleResolution}
+            />
+          </div>
 
-            {#if queryMatches === 0}
-              <p class="text-sm text-ink-muted" data-testid="releases-no-match">
-                No releases match "{releaseQuery.trim()}".
-              </p>
-            {:else}
-          <div
-            data-testid="release-scroller"
-            class="max-h-60 overflow-y-auto pr-1 m-2"
-          >
-            <ul class="flex flex-col gap-1" data-testid="releases">
-              {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
-                {@const clarity = matchClarity(release)}
-                <li
-                  class="flex items-start gap-2 rounded-lg border px-3 py-2 mb-0.5 text-xs transition-colors {clarityClass(clarity)} {chosenRelease?.title ===
-                  release.title
-                    ? 'border-accent bg-surface-hover text-ink'
-                    : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
-                  data-clarity={clarity}
-                  title={clarityTitle(clarity)}
-                >
-                  <!-- A dot rather than a word: the badge is a glanceable signal
+          {#if queryMatches === 0}
+            <p class="text-sm text-ink-muted" data-testid="releases-no-match">
+              No releases match "{releaseQuery.trim()}".
+            </p>
+          {:else}
+            <div
+              data-testid="release-scroller"
+              class="max-h-60 overflow-y-auto pr-1 m-2"
+            >
+              <ul class="flex flex-col gap-1" data-testid="releases">
+                {#each rankedReleases as { release, index } (release.infoHash ?? release.title)}
+                  {@const clarity = matchClarity(release)}
+                  <li
+                    class="flex items-start gap-2 rounded-lg border px-3 py-2 mb-0.5 text-xs transition-colors {clarityClass(
+                      clarity,
+                    )} {chosenRelease?.title === release.title
+                      ? 'border-accent bg-surface-hover text-ink'
+                      : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
+                    data-clarity={clarity}
+                    title={clarityTitle(clarity)}
+                  >
+                    <!-- A dot rather than a word: the badge is a glanceable signal
                        beside a row already dense with text, and the explanation
                        lives in the title attribute. -->
-                  <span
-                    class="mt-1.5 size-2 shrink-0 rounded-full {badgeClass(
-                      badgeFor(index),
-                    )}"
-                    data-testid="release-badge"
-                    data-badge={badgeFor(index) ?? "pending"}
-                    title={badgeTitle(index)}
-                    aria-hidden="true"
-                  ></span>
-                  <button
-                    type="button"
-                    onclick={() => playRelease(release)}
-                    disabled={loadingRelease}
-                    data-testid="release-play"
-                    class="min-w-0 flex-1 text-left disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <span class="block truncate">{release.title}</span>
-                    {#if clarityLabel(clarity)}
-                      <!-- A word as well as the border, so the emphasis does
+                    <span
+                      class="mt-1.5 size-2 shrink-0 rounded-full {badgeClass(
+                        badgeFor(index),
+                      )}"
+                      data-testid="release-badge"
+                      data-badge={badgeFor(index) ?? "pending"}
+                      title={badgeTitle(index)}
+                      aria-hidden="true"
+                    ></span>
+                    <button
+                      type="button"
+                      onclick={() => playRelease(release)}
+                      disabled={loadingRelease}
+                      data-testid="release-play"
+                      class="min-w-0 flex-1 text-left disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <span class="block truncate">{release.title}</span>
+                      {#if clarityLabel(clarity)}
+                        <!-- A word as well as the border, so the emphasis does
                            not rely on colour alone. -->
-                      <span
-                        class="mt-0.5 inline-block rounded px-1 text-[0.6rem] font-medium {clarity ===
-                        'stated'
-                          ? 'bg-accent/20 text-accent'
-                          : 'bg-surface-hover text-ink-faint'}"
-                      >
-                        {clarityLabel(clarity)}
+                        <span
+                          class="mt-0.5 inline-block rounded px-1 text-[0.6rem] font-medium {clarity ===
+                          'stated'
+                            ? 'bg-accent/20 text-accent'
+                            : 'bg-surface-hover text-ink-faint'}"
+                        >
+                          {clarityLabel(clarity)}
+                        </span>
+                      {/if}
+                      <span class="mt-0.5 block text-ink-faint">
+                        {#if release.resolution !== "unknown"}{release.resolution}{/if}
+                        {#if release.source !== "unknown"}· {release.source}{/if}
+                        {#if release.seeders !== undefined}· {release.seeders} seeders{/if}
+                        {#if formatSize(release.sizeBytes)}· {formatSize(
+                            release.sizeBytes,
+                          )}{/if}
                       </span>
-                    {/if}
-                    <span class="mt-0.5 block text-ink-faint">
-                      {#if release.resolution !== "unknown"}{release.resolution}{/if}
-                      {#if release.source !== "unknown"}· {release.source}{/if}
-                      {#if release.seeders !== undefined}· {release.seeders} seeders{/if}
-                      {#if formatSize(release.sizeBytes)}· {formatSize(
-                          release.sizeBytes,
-                        )}{/if}
-                    </span>
-                  </button>
-                  <!-- Hands the magnet to the OS rather than the app's own
+                    </button>
+                    <!-- Hands the magnet to the OS rather than the app's own
                        engine, so the reader's torrent client does the
                        downloading. A sibling, not a child: buttons cannot
                        nest, and the two actions are independent. -->
-                  <button
-                    type="button"
-                    onclick={() => openMagnet(release)}
-                    data-testid="release-magnet"
-                    aria-label="Open magnet for {release.title}"
-                    title="Open in your torrent client"
-                    class="shrink-0 rounded border border-border-subtle px-2 py-1 text-[0.6rem] font-medium text-ink-muted transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  >
-                    Magnet
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </div>
-          {#if magnetError}
-            <p class="mt-2 text-xs text-danger" role="status">
-              Could not open a torrent client. <span class="text-ink-muted">{magnetError}</span>
-            </p>
-          {/if}
+                    <button
+                      type="button"
+                      onclick={() => openMagnet(release)}
+                      data-testid="release-magnet"
+                      aria-label="Open magnet for {release.title}"
+                      title="Open in your torrent client"
+                      class="shrink-0 rounded border border-border-subtle px-2 py-1 transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent flex items-center justify-center"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 32 32"
+                        fill="currentColor"
+                        class="w-4 h-4 text-ink-muted hover:text-accent transition-colors"
+                      >
+                        <path
+                          d="M30 1.25h-8c-0.414 0-0.75 0.336-0.75 0.75v0 14c0.003 0.067 0.005 0.145 0.005 0.224 0 2.779-2.253 5.031-5.031 5.031-0.079 0-0.157-0.002-0.235-0.005l0.011 0c-0.067 0.003-0.145 0.005-0.223 0.005-2.779 0-5.032-2.253-5.032-5.032 0-0.079 0.002-0.157 0.005-0.234l-0 0.011v-14c-0-0.414-0.336-0.75-0.75-0.75h-8c-0.414 0-0.75 0.336-0.75 0.75v0 14c-0.009 0.187-0.014 0.407-0.014 0.628 0 7.807 6.329 14.136 14.136 14.136 0.221 0 0.44-0.005 0.659-0.015l-0.031 0.001c0.187 0.009 0.407 0.014 0.627 0.014 7.808 0 14.137-6.329 14.137-14.137 0-0.221-0.005-0.44-0.015-0.658l0.001 0.031v-14c-0-0.414-0.336-0.75-0.75-0.75v0zM29.25 2.75v4.5l-6.5 0.002v-4.502zM9.25 2.75v4.499h-6.5v-4.499zM16 29.25c-0.168 0.008-0.365 0.012-0.563 0.012-7.014 0-12.699-5.686-12.699-12.699 0-0.198 0.005-0.395 0.014-0.591l-0.001 0.028v-7.251h6.5v7.251c-0.003 0.068-0.004 0.148-0.004 0.229 0 1.911 0.819 3.631 2.126 4.828l0.005 0.004c1.207 1.050 2.795 1.69 4.532 1.69 0.032 0 0.064-0 0.096-0.001l-0.005 0c0.065 0.002 0.141 0.004 0.217 0.004 3.61 0 6.536-2.926 6.536-6.536 0-0.076-0.001-0.152-0.004-0.228l0 0.011v-7.248l6.5-0.002v7.25c0.008 0.168 0.012 0.365 0.012 0.563 0 7.014-5.686 12.7-12.7 12.7-0.198 0-0.395-0.005-0.591-0.014l0.028 0.001z"
+                        />
+                      </svg>
+                    </button>
+                    <!-- Saves the `.torrent` file itself, for a reader who
+                         wants the file rather than to hand it straight to a
+                         client. Not every feed carries the direct link, so it
+                         is disabled when there is nothing to fetch. -->
+                    <button
+                      type="button"
+                      onclick={() => downloadReleaseTorrent(release)}
+                      disabled={release.torrentUrl === undefined ||
+                        downloadingTorrent}
+                      data-testid="release-download"
+                      aria-label="Download torrent for {release.title}"
+                      title={release.torrentUrl === undefined
+                        ? "No torrent file for this release"
+                        : "Download the .torrent file"}
+                      class="shrink-0 rounded border border-border-subtle px-2 py-1 transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent flex items-center justify-center disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border-subtle disabled:hover:text-ink-muted"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        class="w-4 h-4 text-ink-muted transition-colors"
+                      >
+                        <path
+                          stroke="currentColor"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M12 5v8.5m0 0l3-3m-3 3l-3-3M5 15v2a2 2 0 002 2h10a2 2 0 002-2v-2"
+                        />
+                      </svg>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            </div>
+            {#if downloadError}
+              <p class="mt-2 text-xs text-danger" role="status">
+                Could not download the torrent. <span class="text-ink-muted"
+                  >{downloadError}</span
+                >
+              </p>
             {/if}
+            {#if magnetError}
+              <p class="mt-2 text-xs text-danger" role="status">
+                Could not open a torrent client. <span class="text-ink-muted"
+                  >{magnetError}</span
+                >
+              </p>
+            {/if}
+          {/if}
         {/if}
       </div>
 

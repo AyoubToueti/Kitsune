@@ -21,7 +21,11 @@ vi.mock("$lib/api/anime", async () => {
 });
 
 const openDialogMock = vi.hoisted(() => vi.fn());
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openDialogMock }));
+const saveDialogMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/plugin-dialog", () => ({
+  open: openDialogMock,
+  save: saveDialogMock,
+}));
 
 const openUrlMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
@@ -46,10 +50,12 @@ vi.mock("$lib/api/player", async () => {
 const searchReleasesMock = vi.hoisted(() => vi.fn());
 const probeReleasesMock = vi.hoisted(() => vi.fn());
 const onProbeResultMock = vi.hoisted(() => vi.fn());
+const downloadTorrentMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/releases", () => ({
   searchReleases: searchReleasesMock,
   probeReleases: probeReleasesMock,
   onProbeResult: onProbeResultMock,
+  downloadTorrent: downloadTorrentMock,
 }));
 
 import Page from "./[id]/+page.svelte";
@@ -133,7 +139,9 @@ beforeEach(() => {
   // tests that do not care about episodes are unaffected.
   getEpisodesMock.mockReset().mockResolvedValue([]);
   openDialogMock.mockReset().mockResolvedValue("/tmp/show.torrent");
+  saveDialogMock.mockReset().mockResolvedValue("/tmp/show.torrent");
   openUrlMock.mockReset().mockResolvedValue(undefined);
+  downloadTorrentMock.mockReset().mockResolvedValue(undefined);
   addTorrentMock.mockReset().mockResolvedValue(handle());
   addMagnetMock.mockReset().mockResolvedValue(handle());
   getStreamUrlMock
@@ -271,6 +279,70 @@ describe("watch page", () => {
     await fireEvent.click(within(list).getByTestId("release-magnet"));
 
     expect(await screen.findByText(/could not open a torrent client/i)).toBeInTheDocument();
+  });
+
+  it("saves a release's torrent file to the chosen path", async () => {
+    saveDialogMock.mockResolvedValue("/home/u/Show - 01.torrent");
+    downloadTorrentMock.mockResolvedValue(undefined);
+    searchReleasesMock.mockResolvedValue([
+      release({ torrentUrl: "https://nyaa.si/download/1.torrent" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByTestId("release-download"));
+
+    expect(downloadTorrentMock).toHaveBeenCalledWith(
+      "https://nyaa.si/download/1.torrent",
+      "/home/u/Show - 01.torrent",
+    );
+  });
+
+  it("does not fetch anything when the save dialog is cancelled", async () => {
+    saveDialogMock.mockResolvedValue(null);
+    searchReleasesMock.mockResolvedValue([
+      release({ torrentUrl: "https://nyaa.si/download/1.torrent" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByTestId("release-download"));
+
+    // A cancelled picker is not an error and must not start a download.
+    expect(downloadTorrentMock).not.toHaveBeenCalled();
+  });
+
+  it("disables the download button when the release has no torrent url", async () => {
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    // Not every feed carries the direct link, so there is nothing to fetch.
+    expect(within(list).getByTestId("release-download")).toBeDisabled();
+  });
+
+  it("says so when the torrent download fails", async () => {
+    saveDialogMock.mockResolvedValue("/tmp/x.torrent");
+    downloadTorrentMock.mockRejectedValue("the indexer answered with status 404");
+    searchReleasesMock.mockResolvedValue([
+      release({ torrentUrl: "https://nyaa.si/download/1.torrent" }),
+    ]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByTestId("release-download"));
+
+    expect(
+      await screen.findByText(/could not download the torrent/i),
+    ).toBeInTheDocument();
   });
 
   it("narrows the search to the selected episode", async () => {
