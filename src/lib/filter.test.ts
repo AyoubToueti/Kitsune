@@ -3,6 +3,7 @@ import { describe, it, expect } from "vitest";
 import {
   categoryLabel,
   filterHref,
+  genreHref,
   groupTagsByCategory,
   listHref,
   parseBrowseQuery,
@@ -238,6 +239,27 @@ describe("filterHref", () => {
 
     expect(params.get("page")).toBeNull();
     expect(params.toString()).toBe("format=tv");
+  });
+});
+
+describe("genreHref", () => {
+  it("links a genre to the popularity order, filtered to it", () => {
+    expect(genreHref("Action")).toBe("/filter?sort=popularity&genre=Action");
+  });
+
+  it("encodes a multi-word genre", () => {
+    // URLSearchParams writes a space as `+`, which parseBrowseQuery reads back.
+    expect(genreHref("Slice of Life")).toBe(
+      "/filter?sort=popularity&genre=Slice+of+Life",
+    );
+  });
+
+  it("round-trips through the parser", () => {
+    const href = genreHref("Slice of Life");
+    const query = parse(href.slice(href.indexOf("?") + 1));
+
+    expect(query.genres).toEqual(["Slice of Life"]);
+    expect(query.sort).toBe("popularity");
   });
 });
 

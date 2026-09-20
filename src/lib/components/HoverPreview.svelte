@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { genreHref } from "$lib/filter";
   import { CARET_SIZE, type Placement } from "$lib/hover";
   import { displayTitle, type Anime } from "$lib/types";
   import { stripHtml } from "$lib/text";
@@ -38,10 +39,6 @@
 
   /** Only the first few genres fit; more would wrap awkwardly. */
   const shownGenres = $derived(anime.genres.slice(0, 5));
-
-  function genreHref(genre: string): string {
-    return `/genre/${encodeURIComponent(genre)}`;
-  }
 </script>
 
 <!-- Fixed rather than absolute: the rails scroll horizontally, so an in-flow

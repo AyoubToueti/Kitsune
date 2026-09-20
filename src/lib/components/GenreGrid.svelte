@@ -1,13 +1,7 @@
 <script lang="ts">
-  let { genres }: { genres: string[] } = $props();
+  import { genreHref } from "$lib/filter";
 
-  /**
-   * Genre names can contain spaces ("Slice of Life"), so the path segment is
-   * encoded. The route decodes it on the way back in.
-   */
-  function href(genre: string): string {
-    return `/genre/${encodeURIComponent(genre)}`;
-  }
+  let { genres }: { genres: string[] } = $props();
 </script>
 
 {#if genres.length}
@@ -18,7 +12,7 @@
       {#each genres as genre (genre)}
         <li>
           <a
-            href={href(genre)}
+            href={genreHref(genre)}
             class="inline-block rounded-full border border-border-subtle bg-surface-hover px-3 py-1 text-sm text-ink-muted transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
             {genre}

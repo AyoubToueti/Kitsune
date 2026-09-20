@@ -23,20 +23,21 @@ describe("GenreGrid", () => {
 
     expect(screen.getByRole("link", { name: "Action" })).toHaveAttribute(
       "href",
-      "/genre/Action",
+      "/filter?sort=popularity&genre=Action",
     );
     expect(screen.getByRole("link", { name: "Mecha" })).toHaveAttribute(
       "href",
-      "/genre/Mecha",
+      "/filter?sort=popularity&genre=Mecha",
     );
   });
 
-  it("encodes a multi-word genre so the path stays valid", () => {
+  it("encodes a multi-word genre so the parameter stays valid", () => {
     render(GenreGrid, { props: { genres: ["Slice of Life"] } });
 
+    // URLSearchParams spells a space as `+`; parseBrowseQuery reads it back.
     expect(screen.getByRole("link", { name: "Slice of Life" })).toHaveAttribute(
       "href",
-      "/genre/Slice%20of%20Life",
+      "/filter?sort=popularity&genre=Slice+of+Life",
     );
   });
 });

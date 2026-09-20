@@ -163,7 +163,7 @@ describe("HoverPreview", () => {
 
     expect(screen.getByRole("link", { name: "Slice of Life" })).toHaveAttribute(
       "href",
-      "/genre/Slice%20of%20Life",
+      "/filter?sort=popularity&genre=Slice+of+Life",
     );
   });
 

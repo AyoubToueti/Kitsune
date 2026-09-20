@@ -143,6 +143,25 @@ export function listHref(filter: ListFilter): string {
 }
 
 /**
+ * A link to the filter page showing one genre.
+ *
+ * The genre is a filter, not a route of its own: /filter carries the same list
+ * plus the filter bar and sort menu, so browsing a genre no longer needs a page
+ * that duplicates it without those controls.
+ *
+ * The sort is written explicitly rather than left to the parser's default, so
+ * the ordering cannot change under the link if that default ever moves. Genre
+ * names can contain spaces ("Slice of Life"), which `URLSearchParams` encodes
+ * as `+`; `parseBrowseQuery` reads that back as a space.
+ */
+export function genreHref(genre: string): string {
+  const params = new URLSearchParams({ sort: "popularity" });
+  params.set("genre", genre);
+
+  return `/filter?${params}`;
+}
+
+/**
  * Labels follow the provider's own wording, so the menu reads the same as the
  * site the ordering comes from.
  */
