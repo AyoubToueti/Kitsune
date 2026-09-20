@@ -23,6 +23,9 @@ vi.mock("$lib/api/anime", async () => {
 const openDialogMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: openDialogMock }));
 
+const openUrlMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
+
 const addTorrentMock = vi.hoisted(() => vi.fn());
 const addMagnetMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
@@ -130,6 +133,7 @@ beforeEach(() => {
   // tests that do not care about episodes are unaffected.
   getEpisodesMock.mockReset().mockResolvedValue([]);
   openDialogMock.mockReset().mockResolvedValue("/tmp/show.torrent");
+  openUrlMock.mockReset().mockResolvedValue(undefined);
   addTorrentMock.mockReset().mockResolvedValue(handle());
   addMagnetMock.mockReset().mockResolvedValue(handle());
   getStreamUrlMock
@@ -231,11 +235,42 @@ describe("watch page", () => {
     await screen.findByRole("heading", { name: /attack on titan/i });
 
     const list = await screen.findByTestId("releases");
-    await fireEvent.click(within(list).getByRole("button"));
+    // Scoped to the row's play button: each row also has a magnet button, so an
+    // unscoped getByRole would match two and throw.
+    await fireEvent.click(within(list).getByTestId("release-play"));
 
     expect(addMagnetMock).toHaveBeenCalledWith("magnet:?xt=urn:btih:abc");
     // No episode selected, so it falls back to the first playable file.
     expect(getStreamUrlMock).toHaveBeenCalledWith(5, 0);
+  });
+
+  it("hands a release's magnet to the OS", async () => {
+    openUrlMock.mockResolvedValue(undefined);
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByTestId("release-magnet"));
+
+    expect(openUrlMock).toHaveBeenCalledWith("magnet:?xt=urn:btih:abc");
+    // Delegating to the OS must not also add the torrent to the app's own
+    // engine: that is what the row's play button is for.
+    expect(addMagnetMock).not.toHaveBeenCalled();
+  });
+
+  it("says so when no torrent client handles the magnet", async () => {
+    openUrlMock.mockRejectedValue("no application registered for magnet");
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByTestId("release-magnet"));
+
+    expect(await screen.findByText(/could not open a torrent client/i)).toBeInTheDocument();
   });
 
   it("narrows the search to the selected episode", async () => {

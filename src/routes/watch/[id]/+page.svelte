@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { open } from "@tauri-apps/plugin-dialog";
+  import { openUrl } from "@tauri-apps/plugin-opener";
 
   import { errorMessage, getAnime, getEpisodes } from "$lib/api/anime";
   import { addMagnet, addTorrent, getStreamUrl } from "$lib/api/player";
@@ -64,6 +65,14 @@
   let searching = $state(false);
   let loadingRelease = $state(false);
   let releaseError = $state<string | null>(null);
+  /**
+   * Failure from handing a magnet to the OS.
+   *
+   * Kept apart from `releaseError`, which reports the search or the in-app
+   * playback failing. The two come from different actions, and one message
+   * covering both would point at the wrong thing.
+   */
+  let magnetError = $state<string | null>(null);
 
   // --- swarm health probes -------------------------------------------------
   //
@@ -540,11 +549,31 @@
       const match =
         wanted !== undefined ? fileForEpisode(handle.files, wanted) : null;
       const target = match ?? bestEffortFile(handle.files);
+
       if (target) await play(target);
     } catch (err) {
       releaseError = errorMessage(err);
     } finally {
       loadingRelease = false;
+    }
+  }
+
+  /**
+   * Hand a release's magnet to the OS, for the reader's own torrent client.
+   *
+   * Deliberately does NOT touch the app's engine: `playRelease` already streams
+   * a release in-app, and this is the opposite action -- it delegates the
+   * download to whatever client the reader has registered for `magnet:`.
+   *
+   * A machine with no client registered rejects here, which must surface rather
+   * than look like a button that does nothing.
+   */
+  async function openMagnet(release: Release): Promise<void> {
+    magnetError = null;
+    try {
+      await openUrl(release.magnetUri);
+    } catch (err) {
+      magnetError = errorMessage(err);
     }
   }
 
@@ -756,7 +785,8 @@
                     type="button"
                     onclick={() => playRelease(release)}
                     disabled={loadingRelease}
-                    class="w-full rounded-lg border px-3 py-2 mb-0.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {clarityClass(clarity)} {chosenRelease?.title ===
+                    data-testid="release-play"
+                    class="min-w-0 flex-1 rounded-lg border px-3 py-2 mb-0.5 text-left text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-60 {clarityClass(clarity)} {chosenRelease?.title ===
                     release.title
                       ? 'border-accent bg-surface-hover text-ink'
                       : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
@@ -783,10 +813,29 @@
                         )}{/if}
                     </span>
                   </button>
+                  <!-- Hands the magnet to the OS rather than the app's own
+                       engine, so the reader's torrent client does the
+                       downloading. A sibling, not a child: buttons cannot
+                       nest, and the two actions are independent. -->
+                  <button
+                    type="button"
+                    onclick={() => openMagnet(release)}
+                    data-testid="release-magnet"
+                    aria-label="Open magnet for {release.title}"
+                    title="Open in your torrent client"
+                    class="mb-0.5 shrink-0 rounded-lg border border-border-subtle px-2 py-2 text-xs text-ink-muted transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <span aria-hidden="true">🧲</span>
+                  </button>
                 </li>
               {/each}
             </ul>
           </div>
+          {#if magnetError}
+            <p class="mt-2 text-xs text-danger" role="status">
+              Could not open a torrent client. <span class="text-ink-muted">{magnetError}</span>
+            </p>
+          {/if}
             {/if}
         {/if}
       </div>
