@@ -62,6 +62,15 @@ const MEDIA_FIELDS: &str = r#"
 /// `relations` is a graph traversal, `recommendations` runs its own paged
 /// sub-query, and a card has nowhere to render either. Sending them on every
 /// list query would multiply AniList's work for data the UI throws away.
+///
+/// The fields inside `mediaRecommendation` are chosen to match what
+/// `HoverPreview.svelte` renders, because the detail page's Recommended row
+/// shows that panel on hover. They are NOT the whole of [`MEDIA_FIELDS`]:
+/// that includes `streamingEpisodes`, the licensed-link list, which would
+/// bloat the payload ten times over (one per recommendation) for data the
+/// panel never shows. A field the panel reads but this list omits renders as a
+/// blank line rather than as an error, which is how the panel came to be
+/// nearly empty before.
 const MEDIA_DETAIL_FIELDS: &str = r#"
     relations {
       edges {
@@ -84,9 +93,16 @@ const MEDIA_DETAIL_FIELDS: &str = r#"
           mediaRecommendation {
             id
             type
-            title { romaji english }
+            title { romaji english native }
             coverImage { large }
+            description
+            episodes
+            duration
             format
+            genres
+            averageScore
+            status
+            seasonYear
           }
         }
       }
@@ -2144,6 +2160,51 @@ mod tests {
             "query should ask for recommendations"
         );
         assert!(body.contains("trailer"), "query should ask for the trailer");
+    }
+
+    /// A recommended work is shown through `HoverPreview` on the detail page,
+    /// and that panel renders the synopsis, score, year, episode count and
+    /// genres. The mapping tests feed a payload straight in, so they pass even
+    /// when the sub-query never asks for those -- which is exactly how the
+    /// panel came to show a title and nothing else.
+    #[tokio::test]
+    async fn by_id_query_requests_the_preview_fields_per_recommendation() {
+        let response = serde_json::json!({ "data": { "Media": detail_media_json() } });
+        let (server, provider) = provider_with(response, 200).await;
+
+        provider.by_id(21).await.unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body = String::from_utf8_lossy(&requests[0].body);
+
+        // Slice from `mediaRecommendation` onwards. A whole-body check would be
+        // vacuous: this same request also carries `MEDIA_FIELDS`, which already
+        // asks for genres, description, score and the rest for the work itself,
+        // so every field below would be found whether or not the nested block
+        // asked for it.
+        let start = body
+            .find("mediaRecommendation")
+            .expect("the detail query should carry a recommendation sub-query");
+        let recommendation = &body[start..];
+
+        for field in [
+            "genres",
+            "description",
+            "averageScore",
+            "duration",
+            "episodes",
+            "status",
+            "seasonYear",
+            "native",
+        ] {
+            assert!(
+                recommendation.contains(field),
+                "the recommendation sub-query should ask for {field}"
+            );
+        }
     }
 
     /// And a list query must NOT request them, since the payload would bloat.
