@@ -5,6 +5,7 @@ import {
   episodeNumber,
   fileForEpisode,
   indexOfEpisode,
+  titleHasEpisodeNumber,
 } from "./episode";
 import type { Episode } from "./episodes";
 import type { StreamingEpisode, TorrentFile } from "./types";
@@ -102,6 +103,33 @@ describe("absoluteOffset", () => {
 
   it("is zero for an empty list", () => {
     expect(absoluteOffset([])).toBe(0);
+  });
+});
+
+describe("titleHasEpisodeNumber", () => {
+  it("recognises the forms a title may announce its number in", () => {
+    expect(titleHasEpisodeNumber("Episode 7")).toBe(true);
+    expect(titleHasEpisodeNumber("Episode 7 - A Name")).toBe(true);
+    expect(titleHasEpisodeNumber("Ep. 7")).toBe(true);
+    expect(titleHasEpisodeNumber("Ep 7")).toBe(true);
+    expect(titleHasEpisodeNumber("E07")).toBe(true);
+    // Leading space, as a provider might pad it.
+    expect(titleHasEpisodeNumber("  Episode 12")).toBe(true);
+  });
+
+  it("leaves an ordinary title alone", () => {
+    expect(titleHasEpisodeNumber("The Journey's End")).toBe(false);
+    expect(titleHasEpisodeNumber("Theatrical Malice")).toBe(false);
+  });
+
+  it("ignores a number that is part of the name", () => {
+    // Anchored at the start, so a trailing number is a name rather than an
+    // announcement and the caller still prefixes.
+    expect(titleHasEpisodeNumber("The Journey's End 2")).toBe(false);
+  });
+
+  it("does not treat a URL as an announcement", () => {
+    expect(titleHasEpisodeNumber("https://x.test/episode-12")).toBe(false);
   });
 });
 

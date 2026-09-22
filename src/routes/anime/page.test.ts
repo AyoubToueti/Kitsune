@@ -194,6 +194,8 @@ describe("detail page", () => {
 
     const list = screen.getByTestId("episode-list");
     expect(list.querySelectorAll("button")).toHaveLength(2);
+    // The catalogue fixture titles entries "Episode N", which already announce
+    // their number, so no prefix is added.
     expect(
       within(list).getByRole("button", { name: "Episode 1" }),
     ).toBeInTheDocument();

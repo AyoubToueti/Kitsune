@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 
-import type { StreamingEpisode } from "$lib/types";
+import type { Episode } from "$lib/episodes";
 
 const openUrlMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 
 import EpisodeList from "./EpisodeList.svelte";
 
-function episode(overrides: Partial<StreamingEpisode> = {}): StreamingEpisode {
+function episode(overrides: Partial<Episode> = {}): Episode {
   return {
     url: "https://crunchyroll.example/ep1",
     title: "Episode 1",
@@ -110,6 +110,70 @@ describe("EpisodeList", () => {
     });
 
     expect(episodeCards()[0]).toHaveAccessibleName("https://x.test/1");
+  });
+
+  it("prefixes a numbered episode with its number", () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [episode({ number: 1, title: "The Journey's End" })],
+      },
+    });
+
+    // The number is the load-bearing part: the title alone does not say where
+    // in the run the reader is.
+    expect(episodeCards()[0]).toHaveAccessibleName(
+      "Episode 1 - The Journey's End",
+    );
+  });
+
+  it("prefixes the fallback caption too", () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [episode({ number: 2, title: undefined, site: "Crunchyroll" })],
+      },
+    });
+
+    expect(episodeCards()[0]).toHaveAccessibleName("Episode 2 - Crunchyroll");
+  });
+
+  it("does not repeat the number on a padded entry", () => {
+    // A padded catalogue entry is titled `Episode 7`, so prefixing it again
+    // would read "Episode 7 - Episode 7".
+    render(EpisodeList, {
+      props: { episodes: [episode({ number: 7, title: "Episode 7" })] },
+    });
+
+    expect(episodeCards()[0]).toHaveAccessibleName("Episode 7");
+  });
+
+  it("leaves a title that spells its own number alone", () => {
+    render(EpisodeList, {
+      props: {
+        episodes: [episode({ number: 3, title: "Episode 3 - A Name" })],
+      },
+    });
+
+    expect(episodeCards()[0]).toHaveAccessibleName("Episode 3 - A Name");
+  });
+
+  it("still prefixes a title whose number is part of the name", () => {
+    // The trailing number is the episode's name, not an announcement, so the
+    // prefix is still needed.
+    render(EpisodeList, {
+      props: { episodes: [episode({ number: 4, title: "The Journey's End 2" })] },
+    });
+
+    expect(episodeCards()[0]).toHaveAccessibleName(
+      "Episode 4 - The Journey's End 2",
+    );
+  });
+
+  it("leaves an unnumbered episode's caption alone", () => {
+    render(EpisodeList, {
+      props: { episodes: [episode({ title: "The Journey's End" })] },
+    });
+
+    expect(episodeCards()[0]).toHaveAccessibleName("The Journey's End");
   });
 
   it("clicking opens the episode url", async () => {

@@ -1,6 +1,10 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { episodeNumber, indexOfEpisode } from "$lib/episode";
+  import {
+    episodeNumber,
+    indexOfEpisode,
+    titleHasEpisodeNumber,
+  } from "$lib/episode";
   import type { Episode } from "$lib/episodes";
 
   let {
@@ -59,17 +63,26 @@
   /**
    * Best label for an episode.
    *
-   * Falls back through the title, the site, then the URL, mirroring
-   * `StreamingLinks`: AniList sometimes leaves the title blank, but a card with
-   * no caption at all would look broken.
+   * Numbered entries are prefixed `Episode N - `, so the card says which
+   * episode it is as well as what it is called. The number is the load-bearing
+   * part of an episode: the caption alone ("Theatrical Malice") does not tell a
+   * reader where in the run they are.
+   *
+   * A title that already announces its own number is left alone, so a padded
+   * catalogue entry stays `Episode 7` rather than becoming
+   * "Episode 7 - Episode 7". See `titleHasEpisodeNumber`.
+   *
+   * Falls back through the site and then the URL when there is no title,
+   * mirroring `StreamingLinks`: AniList sometimes leaves the title blank, but a
+   * card with no caption at all would look broken.
    */
   function label(ep: Episode): string {
-    return (
-      ep.title ??
-      ep.site ??
-      ep.url ??
-      (ep.number !== undefined ? `Episode ${ep.number}` : "Episode")
-    );
+    const title = ep.title ?? ep.site ?? ep.url;
+    if (title === undefined) {
+      return ep.number !== undefined ? `Episode ${ep.number}` : "Episode";
+    }
+    if (ep.number === undefined || titleHasEpisodeNumber(title)) return title;
+    return `Episode ${ep.number} - ${title}`;
   }
 
   /**

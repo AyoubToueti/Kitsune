@@ -39,6 +39,27 @@ export function episodeNumber(ep: Episode): number | undefined {
   return undefined;
 }
 
+/**
+ * Whether a title already announces its own episode number.
+ *
+ * Some titles carry the number themselves: a padded catalogue entry is titled
+ * `Episode 7`, and a provider may spell one `Ep. 7 - The Name`. Prefixing those
+ * again would read "Episode 7 - Episode 7", so the caller leaves them as they
+ * are.
+ *
+ * Anchored at the start of the string on purpose. A number appearing later is
+ * part of a name ("The Journey's End 2") rather than an announcement, and
+ * matching it would suppress the prefix on an entry that needs one. A URL is
+ * also unaffected, because it starts with its scheme rather than a marker.
+ *
+ * `E07` is accepted as well as `Episode 7` and `Ep. 7`, since some sources
+ * spell it that way. The `e` alternative cannot swallow "Episode": after the
+ * `e` comes `p`, not a digit.
+ */
+export function titleHasEpisodeNumber(title: string): boolean {
+  return /^\s*(?:ep(?:isode)?\.?\s*|e)\d+/i.test(title);
+}
+
 /** Index of the entry for `number`, or -1 when nothing matches. */
 export function indexOfEpisode(episodes: Episode[], number: number): number {
   return episodes.findIndex((ep) => episodeNumber(ep) === number);
