@@ -11,6 +11,7 @@ import {
   getPlayer,
   getStreamUrl,
   openInPlayer,
+  removeTorrent,
   setPlayer,
   suggestedPlayers,
 } from "./player";
@@ -38,6 +39,16 @@ describe("player command wrappers", () => {
     });
     expect(result.id).toBe(3);
     expect(result.files[0].name).toBe("episode.mkv");
+  });
+
+  it("removeTorrent passes the id", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await removeTorrent(3);
+
+    expect(invokeMock).toHaveBeenCalledWith(PLAYER_COMMANDS.removeTorrent, {
+      torrentId: 3,
+    });
   });
 
   it("getStreamUrl passes both indices", async () => {

@@ -13,6 +13,7 @@ import type { TorrentHandle } from "$lib/types";
 export const PLAYER_COMMANDS = {
   addTorrent: "add_torrent",
   addMagnet: "add_magnet",
+  removeTorrent: "remove_torrent",
   streamUrl: "get_stream_url",
   openInPlayer: "open_in_player",
   getPlayer: "get_player",
@@ -40,6 +41,18 @@ export async function addTorrent(path: string): Promise<TorrentHandle> {
  */
 export async function addMagnet(magnetUri: string): Promise<TorrentHandle> {
   return invoke<TorrentHandle>(PLAYER_COMMANDS.addMagnet, { magnetUri });
+}
+
+/**
+ * Drop a torrent from the session, deleting the pieces it cached.
+ *
+ * The counterpart of [`addMagnet`] and [`addTorrent`]: the watch page calls
+ * this when it is left, so a closed episode stops downloading. Not cached, and
+ * deliberately fire-and-forget at the call site -- the component that would
+ * show an error is already gone by then.
+ */
+export async function removeTorrent(torrentId: number): Promise<void> {
+  return invoke<void>(PLAYER_COMMANDS.removeTorrent, { torrentId });
 }
 
 /** The loopback URL that streams one file of one torrent. */

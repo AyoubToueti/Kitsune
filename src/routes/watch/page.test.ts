@@ -32,6 +32,7 @@ vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: openUrlMock }));
 
 const addTorrentMock = vi.hoisted(() => vi.fn());
 const addMagnetMock = vi.hoisted(() => vi.fn());
+const removeTorrentMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/player", async () => {
   const actual =
@@ -40,6 +41,10 @@ vi.mock("$lib/api/player", async () => {
     ...actual,
     addTorrent: addTorrentMock,
     addMagnet: addMagnetMock,
+    // Mocked because @testing-library/svelte unmounts the page after every
+    // test, and teardown calls this. Left real it would reach `invoke` with no
+    // Tauri runtime behind it.
+    removeTorrent: removeTorrentMock,
     getStreamUrl: getStreamUrlMock,
     // The sidebar button fetches these; stub them so the page renders.
     getPlayer: vi.fn().mockResolvedValue("mpv"),
@@ -144,6 +149,7 @@ beforeEach(() => {
   downloadTorrentMock.mockReset().mockResolvedValue(undefined);
   addTorrentMock.mockReset().mockResolvedValue(handle());
   addMagnetMock.mockReset().mockResolvedValue(handle());
+  removeTorrentMock.mockReset().mockResolvedValue(undefined);
   getStreamUrlMock
     .mockReset()
     .mockResolvedValue("http://127.0.0.1:3030/torrents/5/stream/0");
@@ -250,6 +256,77 @@ describe("watch page", () => {
     expect(addMagnetMock).toHaveBeenCalledWith("magnet:?xt=urn:btih:abc");
     // No episode selected, so it falls back to the first playable file.
     expect(getStreamUrlMock).toHaveBeenCalledWith(5, 0);
+  });
+
+  it("releases the torrent when the page is left", async () => {
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    const { unmount } = render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByTestId("release-play"));
+
+    // Live while the page is up: nothing has released it yet.
+    expect(removeTorrentMock).not.toHaveBeenCalled();
+
+    unmount();
+
+    // Without this the torrent keeps downloading for the life of the process,
+    // which is the leak: the session is created once and never torn down.
+    expect(removeTorrentMock).toHaveBeenCalledWith(5);
+  });
+
+  it("releases the previous torrent when another release is played", async () => {
+    searchReleasesMock.mockResolvedValue([
+      release(),
+      release({ title: "[Group] Show - 02 [1080p]", infoHash: "def" }),
+    ]);
+    // The second add resolves to a different torrent, as a real one would.
+    addMagnetMock
+      .mockResolvedValueOnce(handle())
+      .mockResolvedValueOnce({ id: 6, files: handle().files });
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getAllByTestId("release-play")[0]);
+
+    // Wait for the first torrent to be live, or the second click would be
+    // ignored: `playRelease` returns early while another add is in flight.
+    await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
+
+    await fireEvent.click(
+      within(screen.getByTestId("releases")).getAllByTestId("release-play")[1],
+    );
+
+    await waitFor(() => expect(removeTorrentMock).toHaveBeenCalledWith(5));
+  });
+
+  it("removes a torrent that resolves after the page is left", async () => {
+    searchReleasesMock.mockResolvedValue([release()]);
+
+    // Hold the add open, so the page can be torn down mid-flight. This is the
+    // case the unmount effect cannot catch: `torrentId` is still null when the
+    // component dies, so the handle it later returns would leak.
+    let settle!: (value: TorrentHandle) => void;
+    addMagnetMock.mockReturnValue(
+      new Promise<TorrentHandle>((resolve) => {
+        settle = resolve;
+      }),
+    );
+
+    const { unmount } = render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("releases");
+    await fireEvent.click(within(list).getByTestId("release-play"));
+
+    unmount();
+    settle(handle());
+
+    await waitFor(() => expect(removeTorrentMock).toHaveBeenCalledWith(5));
   });
 
   it("hands a release's magnet to the OS", async () => {

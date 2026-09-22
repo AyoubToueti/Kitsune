@@ -1,10 +1,17 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+
   import { page } from "$app/state";
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
 
   import { errorMessage, getAnime, getEpisodes } from "$lib/api/anime";
-  import { addMagnet, addTorrent, getStreamUrl } from "$lib/api/player";
+  import {
+    addMagnet,
+    addTorrent,
+    getStreamUrl,
+    removeTorrent,
+  } from "$lib/api/player";
   import {
     downloadTorrent,
     onProbeResult,
@@ -34,6 +41,7 @@
     type Release,
     type Resolution,
     type TorrentFile,
+    type TorrentHandle,
   } from "$lib/types";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import ExternalPlayerButton from "$lib/components/ExternalPlayerButton.svelte";
@@ -60,6 +68,55 @@
   let torrentId = $state<number | null>(null);
   let files = $state<TorrentFile[]>([]);
   let chosen = $state<TorrentFile | null>(null);
+
+  /**
+   * Which add is the current one, bumped by every new add AND by teardown.
+   *
+   * An add can still be resolving when the reader navigates away, and the
+   * handle it returns names a live torrent that nothing will ever reference.
+   * Bumping on teardown as well as on each add makes this single counter the
+   * whole answer to "is this result still wanted": equal means yes, otherwise
+   * the result belongs to a page that is gone or has moved on.
+   *
+   * Two adds can also overlap -- a release clicked and then a `.torrent` picked
+   * by hand -- and the loser would otherwise never be removed. Sharing one
+   * counter between both entry points is what makes that race detectable.
+   */
+  let addGeneration = 0;
+
+  onDestroy(() => {
+    addGeneration += 1;
+  });
+
+  /**
+   * Take ownership of an add's result, or release it when it is unwanted.
+   *
+   * False means the page is gone or a later add has superseded this one; the
+   * torrent is removed rather than left running, because nothing will ever
+   * reference its id again.
+   */
+  function adopt(handle: TorrentHandle, generation: number): boolean {
+    if (generation === addGeneration) return true;
+
+    void removeTorrent(handle.id);
+    return false;
+  }
+
+  /**
+   * Release the current torrent when it is replaced or the page is left.
+   *
+   * Reading `torrentId` inside the effect is what registers the dependency, so
+   * the cleanup fires both when a new torrent is adopted and on unmount. That
+   * covers every add that *completed*; the in-flight case is `adopt`'s job.
+   */
+  $effect(() => {
+    const id = torrentId;
+    if (id === null) return;
+
+    return () => {
+      void removeTorrent(id);
+    };
+  });
   let streamUrl = $state<string | undefined>(undefined);
 
   // --- the indexer search --------------------------------------------------
@@ -554,7 +611,10 @@
     releaseError = null;
     loadingRelease = true;
     try {
+      const generation = ++addGeneration;
       const handle = await addMagnet(release.magnetUri);
+      if (!adopt(handle, generation)) return;
+
       torrentId = handle.id;
       files = handle.files;
 
@@ -649,7 +709,10 @@
     loadingTorrent = true;
     torrentError = null;
     try {
+      const generation = ++addGeneration;
       const handle = await addTorrent(picked);
+      if (!adopt(handle, generation)) return;
+
       torrentId = handle.id;
       files = handle.files;
 
