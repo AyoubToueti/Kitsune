@@ -9,6 +9,7 @@
   import Skeleton from "$lib/components/Skeleton.svelte";
   import Synopsis from "$lib/components/Synopsis.svelte";
   import { episodesFor } from "$lib/episodes";
+  import { genreHref } from "$lib/filter";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
@@ -164,8 +165,15 @@
         {#if (anime.genres ?? []).length}
           <ul class="mt-2 flex flex-wrap gap-2">
             {#each (anime.genres ?? []).slice(0, 6) as genre (genre)}
-              <li class="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
-                {genre}
+              <!-- A link, not a label: a genre is a filter, and the pills are
+                   the shortest path to the rest of it. -->
+              <li>
+                <a
+                  href={genreHref(genre)}
+                  class="inline-block rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted transition-colors hover:bg-surface-raised hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  {genre}
+                </a>
               </li>
             {/each}
           </ul>
