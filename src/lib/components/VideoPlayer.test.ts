@@ -1,7 +1,27 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 
 import VideoPlayer from "./VideoPlayer.svelte";
+
+/**
+ * jsdom implements neither `pause` nor `load`, and destroy calls both.
+ *
+ * Patched once at module scope rather than in `beforeEach`. Restoring them in
+ * an `afterEach` does NOT work: vitest runs those hooks LIFO, so the restore
+ * lands before @testing-library/svelte's cleanup, and teardown then reaches the
+ * real unimplemented methods -- which is what fills the console with "Not
+ * implemented" for every test that rendered a source.
+ */
+const pauseMock = vi.fn();
+const loadMock = vi.fn();
+HTMLMediaElement.prototype.pause = pauseMock;
+HTMLMediaElement.prototype.load = loadMock;
+
+beforeEach(() => {
+  // Cleared, never restored: the patches must outlive each test.
+  pauseMock.mockClear();
+  loadMock.mockClear();
+});
 
 describe("VideoPlayer", () => {
   it("shows the empty state when there is no source", () => {
@@ -68,5 +88,29 @@ describe("VideoPlayer", () => {
     render(VideoPlayer, { props: { src: "http://127.0.0.1:3030/x" } });
 
     expect(document.querySelector("video")?.getAttribute("title")).toBe("Video player");
+  });
+
+  it("releases the stream when the component is destroyed", () => {
+    const { unmount } = render(VideoPlayer, {
+      props: { src: "http://127.0.0.1:3030/x" },
+    });
+
+    const video = document.querySelector("video")!;
+    unmount();
+
+    // Detaching the node does not stop WebKitGTK's pipeline, which is why
+    // leaving the watch page used to leave the episode audible. Clearing the
+    // source and reloading is what actually aborts the stream.
+    expect(video.getAttribute("src")).toBeNull();
+    expect(loadMock).toHaveBeenCalled();
+  });
+
+  it("does not touch the element when there was no source", () => {
+    const { unmount } = render(VideoPlayer, { props: {} });
+
+    unmount();
+
+    // No element to release: the empty state renders no <video> at all.
+    expect(loadMock).not.toHaveBeenCalled();
   });
 });

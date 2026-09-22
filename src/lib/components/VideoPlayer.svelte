@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
+
   /**
    * An in-app video player.
    *
@@ -10,6 +12,13 @@
    * WebKitGTK, whose media stack is GStreamer, so it plays the same
    * containers mpv does. What it will NOT render is an embedded ASS subtitle
    * track, which is why the watch page also offers an external player.
+   *
+   * Releasing the element on destroy is load-bearing, not tidiness. Removing
+   * the media node from the DOM does not stop the pipeline behind it: WebKitGTK
+   * keeps playing what it has buffered, so leaving the watch page left the
+   * previous episode audible. `load()` after clearing `src` aborts the fetch
+   * and tears the pipeline down, which is the only reliable way to stop it from
+   * script.
    */
 
   let {
@@ -32,6 +41,14 @@
   /** Tracks if the user has clicked play at least once. */
   let hasPlayed = $state(false);
 
+  /**
+   * The media element, so destroy can release it.
+   *
+   * Svelte drops the node on its own, but a detached `<video>` is not a
+   * stopped one: the element has to be told to let go of the stream.
+   */
+  let videoEl = $state<HTMLVideoElement | null>(null);
+
   // A new source is a new load, so the previous failure and buffering state
   // must not carry over -- otherwise a second attempt would show the first
   // attempt's error.
@@ -40,6 +57,21 @@
     failed = false;
     buffering = true;
     hasPlayed = false; // Reset interaction state when the video changes
+  });
+
+  // Stop playback when the component goes away.
+  //
+  // Detaching the node is not enough on WebKitGTK: the GStreamer pipeline keeps
+  // running on what it buffered, so navigating away left the audio playing.
+  // Clearing `src` and calling `load()` aborts the resource fetch and tears the
+  // pipeline down. Guarded because `load()` on an element that never had a
+  // source is harmless but pointless.
+  onDestroy(() => {
+    if (!videoEl) return;
+
+    videoEl.pause();
+    videoEl.removeAttribute("src");
+    videoEl.load();
   });
 </script>
 
@@ -53,6 +85,7 @@
          player for those; a captions element would have nothing to load. -->
     <!-- svelte-ignore a11y_media_has_caption -->
     <video
+      bind:this={videoEl}
       {src}
       {poster}
       title={title ?? "Video player"}
