@@ -66,14 +66,21 @@ pub async fn get_stream_url(
 }
 
 /// Open a URL in an external player, returning the player that was launched.
+///
+/// `torrentId` is the torrent the URL streams from. While the player runs, a
+/// removal of that torrent is deferred, so leaving the watch page does not cut
+/// off a player that is still reading it. Omitted for a URL with no torrent
+/// behind it.
 #[tauri::command]
-pub fn open_in_player(
+pub async fn open_in_player(
     state: State<'_, PlayerState>,
     url: String,
     player: Option<String>,
+    torrent_id: Option<usize>,
 ) -> Result<String, String> {
     state
-        .open_in_player(&url, player.as_deref())
+        .open_in_player(&url, player.as_deref(), torrent_id)
+        .await
         .map_err(|err| err.to_string())
 }
 
