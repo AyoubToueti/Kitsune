@@ -113,11 +113,118 @@ describe("episodesFromInfo", () => {
         },
       ];
 
-      const episodes = episodesFor(anime({ episodeCount: 500 }), info);
+      // The count matches the catalogue, so nothing is padded and the real
+      // title is what the reader sees.
+      const episodes = episodesFor(anime({ episodeCount: 1 }), info);
 
       expect(episodes).toHaveLength(1);
       expect(episodes[0].number).toBe(1);
       expect(episodes[0].title).toBe("Theatrical Malice");
+    });
+
+    it("pads a short catalogue up to the announced count", () => {
+      // The case this exists for: MAL reports twelve episodes but has only
+      // published the first. The grid must still reach all twelve.
+      const info: EpisodeInfo[] = [
+        {
+          number: 1,
+          title: "The Future Is In Our Hands",
+          aired: "2026-07-04T00:00:00+00:00",
+          filler: false,
+          recap: false,
+        },
+      ];
+
+      const episodes = episodesFor(
+        anime({ episodeCount: 12, status: "FINISHED" }),
+        info,
+      );
+
+      expect(episodes).toHaveLength(12);
+      expect(episodes.map((ep) => ep.number)).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+      ]);
+      // The catalogue entry keeps its real title; the invented ones are bare.
+      expect(episodes[0].title).toBe("The Future Is In Our Hands");
+      expect(episodes[1].title).toBe("Episode 2");
+      // A padded entry carries no air date, so it cannot be mistaken for
+      // catalogue data.
+      expect(episodes[1].aired).toBeUndefined();
+    });
+
+    it("fills a hole in the middle of the catalogue", () => {
+      const info: EpisodeInfo[] = [
+        { number: 1, title: "One", filler: false, recap: false },
+        { number: 3, title: "Three", filler: false, recap: false },
+      ];
+
+      const episodes = episodesFor(
+        anime({ episodeCount: 3, status: "FINISHED" }),
+        info,
+      );
+
+      expect(episodes.map((ep) => ep.number)).toEqual([1, 2, 3]);
+      expect(episodes[1].title).toBe("Episode 2");
+      expect(episodes[2].title).toBe("Three");
+    });
+
+    it("does not pad a later cour numbered from 13", () => {
+      // A cour listed as 13..24 is twelve episodes of a longer work. Padding it
+      // to the franchise total would invent the previous cour's episodes.
+      const info: EpisodeInfo[] = Array.from({ length: 12 }, (_, i) => ({
+        number: i + 13,
+        title: `Episode ${i + 13}`,
+        filler: false,
+        recap: false,
+      }));
+
+      const episodes = episodesFor(
+        anime({ episodeCount: 24, status: "FINISHED" }),
+        info,
+      );
+
+      expect(episodes).toHaveLength(12);
+      expect(episodes[0].number).toBe(13);
+    });
+
+    it("does not pad a work that is still airing", () => {
+      // The gap on a releasing work may be episodes that have not aired, so
+      // inventing them would present unwatchable episodes as ready.
+      const info: EpisodeInfo[] = [
+        { number: 1, title: "One", filler: false, recap: false },
+      ];
+
+      const episodes = episodesFor(
+        anime({ episodeCount: 12, status: "RELEASING" }),
+        info,
+      );
+
+      expect(episodes).toHaveLength(1);
+    });
+
+    it("does not pad when the status is unknown", () => {
+      const info: EpisodeInfo[] = [
+        { number: 1, title: "One", filler: false, recap: false },
+      ];
+
+      expect(episodesFor(anime({ episodeCount: 12 }), info)).toHaveLength(1);
+    });
+
+    it("leaves the catalogue alone when the count is unknown", () => {
+      const info: EpisodeInfo[] = [
+        { number: 1, title: "One", filler: false, recap: false },
+      ];
+
+      expect(episodesFor(anime(), info)).toHaveLength(1);
+    });
+
+    it("does not pad when the catalogue already covers the count", () => {
+      const info: EpisodeInfo[] = [
+        { number: 1, title: "One", filler: false, recap: false },
+        { number: 2, title: "Two", filler: false, recap: false },
+      ];
+
+      expect(episodesFor(anime({ episodeCount: 2 }), info)).toHaveLength(2);
     });
 
     it("ignores streaming links, which are not an episode list", () => {

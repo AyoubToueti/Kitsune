@@ -139,6 +139,10 @@ export function airedEpisodes(
  * unaired therefore yields an empty list, which is the honest answer -- it must
  * not fall back to synthesis, because that would invent viewable episodes.
  *
+ * A catalogue that is merely *short* is different, and is padded up to the
+ * announced count by [`withMissingEpisodes`]: the episodes exist, the provider
+ * simply has not published their titles yet.
+ *
  * `info` defaults to empty so a caller that has not fetched it yet still gets
  * the fallback rather than a crash. `now` defaults to the current time and is
  * injectable for tests.
@@ -149,9 +153,84 @@ export function episodesFor(
   now: Date = new Date(),
 ): Episode[] {
   if (info.length > 0) {
-    return episodesFromInfo(airedEpisodes(info, now), anime.coverImage);
+    const known = episodesFromInfo(airedEpisodes(info, now), anime.coverImage);
+
+    // Only a finished work is padded. Every episode of a finished work has
+    // aired by definition, so a missing entry is one the provider has not
+    // titled yet. On a releasing work the same gap could equally be episodes
+    // that have not aired, and adding them would present unwatchable episodes
+    // as ready -- so the short list stands and the "N of M aired" label
+    // explains it.
+    return anime.status === "FINISHED"
+      ? withMissingEpisodes(known, anime.episodeCount, anime.coverImage)
+      : known;
   }
   return synthesizeEpisodes(anime.episodeCount, anime.coverImage);
+}
+
+/**
+ * Fill the gaps between a catalogue and the count the provider announced.
+ *
+ * MyAnimeList is slow to publish a per-episode list for a recent work: it can
+ * report a title as having twelve episodes while Jikan's catalogue holds one,
+ * which left the grid showing a single card and the reader unable to reach the
+ * rest. The announced count is the better authority on *how many* episodes
+ * exist, so the missing numbers are added as bare entries.
+ *
+ * The caller must establish that the missing episodes have aired -- see the
+ * `FINISHED` gate in [`episodesFor`]. This function cannot tell an untitled
+ * episode from an unaired one, and would happily invent the latter.
+ *
+ * A bare entry is deliberately generic: it carries a number and nothing else,
+ * because nothing else is known. Its title reads `Episode 7`, not a real name,
+ * and it has no air date -- so it is never mistaken for catalogue data. What it
+ * buys is reachability: the reader can select it, and the watch page can search
+ * for it.
+ *
+ * Only a 1-based list is filled. A later cour is numbered 13..24 while its own
+ * list runs 1..12, and padding that to the franchise total would invent the
+ * previous cour's episodes. Requiring the lowest number to be 1 keeps the two
+ * cases apart.
+ *
+ * Returns the catalogue untouched when the count is unknown, when the catalogue
+ * already covers it, or when the numbering does not look 1-based.
+ */
+function withMissingEpisodes(
+  known: Episode[],
+  count: number | undefined,
+  coverImage?: string,
+): Episode[] {
+  if (count === undefined || count <= 0) return known;
+
+  const numbers = known
+    .map((episode) => episode.number)
+    .filter((number): number is number => number !== undefined);
+
+  // Without numbers there is nothing to compare against, and a guess would put
+  // entries in the wrong slots.
+  if (numbers.length === 0) return known;
+
+  const lowest = Math.min(...numbers);
+  const highest = Math.max(...numbers);
+
+  // `lowest !== 1` means this is not a 1-based cour; `highest > count` means the
+  // catalogue is already numbered beyond what was announced.
+  if (lowest !== 1 || highest > count) return known;
+  if (known.length >= count) return known;
+
+  const present = new Set(numbers);
+  const filled = known.slice();
+
+  for (let number = 1; number <= count; number += 1) {
+    if (present.has(number)) continue;
+    filled.push({
+      number,
+      title: `Episode ${number}`,
+      thumbnail: coverImage,
+    });
+  }
+
+  return filled.sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
 }
 
 /**

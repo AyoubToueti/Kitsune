@@ -204,10 +204,29 @@ describe("detail page", () => {
     );
   });
 
+  it("fills a short catalogue for a finished work and drops the aired label", async () => {
+    // The reported case: MAL has published one episode of a finished
+    // twelve-episode work. The grid must still reach all twelve, and because
+    // every episode has aired the "N of M aired" label would be a lie.
+    getAnimeMock.mockResolvedValue(
+      withCatalogue(1, { episodeCount: 12, status: "FINISHED" }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    const list = screen.getByTestId("episode-list");
+    expect(list.querySelectorAll("button")).toHaveLength(12);
+    expect(screen.queryByText(/of 12 aired/)).toBeNull();
+  });
+
   it("shows how many episodes have aired when the work is still airing", async () => {
-    // Four catalogue entries, but the work claims twelve: the list has four
-    // aired rows and the header says so instead of implying twelve are ready.
-    getAnimeMock.mockResolvedValue(withCatalogue(4, { episodeCount: 12 }));
+    // Four catalogue entries, but the work claims twelve and is still airing:
+    // the remaining eight may not have aired, so they are not invented and the
+    // header says how many actually have.
+    getAnimeMock.mockResolvedValue(
+      withCatalogue(4, { episodeCount: 12, status: "RELEASING" }),
+    );
 
     render(Page);
     await screen.findByRole("heading", { name: "One Piece" });
