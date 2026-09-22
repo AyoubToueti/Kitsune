@@ -34,6 +34,7 @@ pub fn run() {
             // connections and re-resolve DNS.
             .manage(indexer::IndexerRegistry::new())
             .invoke_handler(tauri::generate_handler![
+                // Metadata.
                 greet,
                 commands::get_trending,
                 commands::get_list,
@@ -43,23 +44,19 @@ pub fn run() {
                 commands::get_schedule,
                 commands::get_anime,
                 commands::get_episodes,
+                // Finding releases.
                 indexer::commands::search_releases,
                 indexer::commands::download_torrent,
                 indexer::commands::probe_releases,
+                // Playing one: the torrent session and the external player.
                 player::commands::add_torrent,
                 player::commands::add_magnet,
                 player::commands::get_stream_url,
                 player::commands::open_in_player,
-                player::commands::get_player,                commands::get_episodes,
-            indexer::commands::probe_releases,
-            player::commands::add_torrent,
-            player::commands::add_magnet,
-            player::commands::get_stream_url,
-            player::commands::open_in_player,
-            player::commands::get_player,
-            player::commands::set_player,
-            player::commands::suggested_players,
-        ])
+                player::commands::get_player,
+                player::commands::set_player,
+                player::commands::suggested_players,
+            ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
