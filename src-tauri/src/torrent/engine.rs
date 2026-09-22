@@ -162,6 +162,25 @@ impl TorrentEngine {
         &self.download_dir
     }
 
+    /// Drop a torrent from the session, deleting the pieces it cached.
+    ///
+    /// Removing the torrent is what stops the transfer: the session keeps
+    /// running, but the bridge stops serving this id and no peer connections
+    /// remain for it. Called when the reader leaves the watch page, so an
+    /// episode does not keep downloading after it has been closed.
+    ///
+    /// The files go too. That reclaims the disk a partly-watched episode was
+    /// holding, at the cost of re-fetching from the start on the next visit.
+    ///
+    /// An unknown id is not an error: librqbit reports a missing torrent as
+    /// `Ok`, so a double removal is harmless.
+    pub async fn remove_torrent(&self, id: usize) -> Result<()> {
+        self.session
+            .delete(id.into(), true)
+            .await
+            .with_context(|| format!("failed to remove torrent {id}"))
+    }
+
     /// Stop the session and all managed tasks.
     pub async fn stop(&self) {
         self.session.stop().await;
@@ -217,6 +236,37 @@ mod tests {
         ensure_download_dir(tmp.path()).expect("second call");
 
         assert!(tmp.path().is_dir());
+    }
+
+    /// Adds a torrent and removes it again, exercising the removal against a
+    /// live session. Ignored for the same reason as the test below: it binds
+    /// sockets and joins the DHT.
+    #[tokio::test]
+    #[ignore = "binds sockets and joins the DHT; run explicitly"]
+    async fn torrent_can_be_added_and_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = TorrentEngine::start(EngineConfig::new(tmp.path()))
+            .await
+            .expect("engine should start");
+
+        // A well-formed hash with no swarm behind it: enough to register the
+        // torrent, so the removal has something real to act on.
+        let id = engine
+            .add_magnet("magnet:?xt=urn:btih:cab507494d02ebb1178b38f2e9d7be299c86b862")
+            .await
+            .expect("a well-formed magnet should be accepted");
+
+        engine
+            .remove_torrent(id)
+            .await
+            .expect("removing an added torrent should succeed");
+
+        assert!(
+            engine.torrent_files(id).is_empty(),
+            "a removed torrent should report no files"
+        );
+
+        engine.stop().await;
     }
 
     /// Starts a real session, which binds sockets and joins the DHT.

@@ -37,6 +37,21 @@ pub async fn add_magnet(
         .map_err(|err| err.to_string())
 }
 
+/// Drop a torrent from the session, deleting the pieces it cached.
+///
+/// The counterpart of [`add_magnet`] and [`add_torrent`]: the watch page calls
+/// this on the way out, so a closed episode stops consuming bandwidth.
+#[tauri::command]
+pub async fn remove_torrent(
+    state: State<'_, PlayerState>,
+    torrent_id: usize,
+) -> Result<(), String> {
+    state
+        .remove_torrent(torrent_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
 /// The loopback URL that streams one file of one torrent.
 #[tauri::command]
 pub async fn get_stream_url(

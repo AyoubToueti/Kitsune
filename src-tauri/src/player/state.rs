@@ -148,6 +148,24 @@ impl PlayerState {
         Ok(TorrentHandle { id, files })
     }
 
+    /// Drop a torrent from the session, deleting the pieces it cached.
+    ///
+    /// Called when the reader leaves the watch page: without this the torrent
+    /// keeps downloading and seeding for the life of the process, because the
+    /// session is created once and never torn down.
+    ///
+    /// A removal before anything was added is a no-op rather than an error. The
+    /// page can unmount without the reader ever having played, and the session
+    /// must NOT be started just to remove nothing from it -- so this reads the
+    /// cell rather than going through [`Self::session`], which would start one.
+    pub async fn remove_torrent(&self, id: usize) -> Result<()> {
+        let Some(session) = self.session.get() else {
+            return Ok(());
+        };
+
+        session.engine.remove_torrent(id).await
+    }
+
     /// The loopback URL that streams one file of one torrent.
     pub async fn stream_url(&self, torrent_id: usize, file_idx: usize) -> Result<String> {
         let session = self.session().await?;
@@ -230,6 +248,27 @@ mod tests {
         state.set_player("vlc");
         state.set_player("   ");
         assert_eq!(state.player(), DEFAULT_PLAYER);
+    }
+
+    /// Removal must not start a session in order to remove nothing from it.
+    ///
+    /// The tempting implementation routes through `Self::session`, which uses
+    /// `get_or_try_init` and would therefore bind sockets, join the DHT and
+    /// start the bridge -- on a page the reader may never have played. This
+    /// pins that the guard reads the cell instead.
+    #[tokio::test]
+    async fn remove_torrent_before_any_session_is_a_noop() {
+        let state = PlayerState::new();
+
+        state
+            .remove_torrent(7)
+            .await
+            .expect("removing before any add should succeed");
+
+        assert!(
+            state.session.get().is_none(),
+            "removal must not start a session"
+        );
     }
 
     #[test]

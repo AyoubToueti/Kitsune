@@ -51,6 +51,7 @@ pub fn run() {
                 // Playing one: the torrent session and the external player.
                 player::commands::add_torrent,
                 player::commands::add_magnet,
+                player::commands::remove_torrent,
                 player::commands::get_stream_url,
                 player::commands::open_in_player,
                 player::commands::get_player,
