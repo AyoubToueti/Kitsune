@@ -799,7 +799,7 @@
               : "Load torrent"}
         </button>
 
-        <ExternalPlayerButton url={streamUrl} />
+        <ExternalPlayerButton url={streamUrl} torrentId={torrentId ?? undefined} />
       </div>
 
       {#if torrentError}

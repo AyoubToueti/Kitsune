@@ -88,6 +88,18 @@ describe("player command wrappers", () => {
     });
   });
 
+  it("openInPlayer forwards the torrent id", async () => {
+    invokeMock.mockResolvedValue("mpv");
+
+    await openInPlayer("http://127.0.0.1:3030/x", "mpv", 5);
+
+    // Asserted explicitly because the tests above cannot see this field: they
+    // compare objects, and an `undefined` property is ignored by that
+    // comparison, so they would pass whether or not the id was forwarded.
+    const [, payload] = invokeMock.mock.calls[0];
+    expect(payload.torrentId).toBe(5);
+  });
+
   it("getPlayer returns the stored name", async () => {
     invokeMock.mockResolvedValue("mpv");
 

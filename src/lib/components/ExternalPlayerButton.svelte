@@ -5,10 +5,19 @@
   let {
     url,
     label = "Open in external player",
+    torrentId,
   }: {
     /** Stream URL. The button is disabled without one. */
     url?: string;
     label?: string;
+    /**
+     * The torrent the URL streams from.
+     *
+     * Passed to the backend so it holds the torrent while the player runs:
+     * without it, leaving the watch page would remove the torrent and stop the
+     * player mid-episode.
+     */
+    torrentId?: number;
   } = $props();
 
   let player = $state("mpv");
@@ -42,7 +51,7 @@
     try {
       // Pass the chosen player explicitly so a change here takes effect on
       // this call rather than only after a save.
-      await openInPlayer(url, player);
+      await openInPlayer(url, player, torrentId);
     } catch (err) {
       error = errorMessage(err);
     } finally {

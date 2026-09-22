@@ -68,9 +68,22 @@ export async function getStreamUrl(
  *
  * Resolves to the name of the player that was launched, which is useful when
  * `player` was omitted and the stored preference is unknown to the caller.
+ *
+ * `torrentId` is the torrent the URL streams from. While the player runs, the
+ * backend defers a removal of that torrent, so leaving the watch page does not
+ * cut off a player that is still reading it. Omit it for a URL with no torrent
+ * behind it.
  */
-export async function openInPlayer(url: string, player?: string): Promise<string> {
-  return invoke<string>(PLAYER_COMMANDS.openInPlayer, { url, player });
+export async function openInPlayer(
+  url: string,
+  player?: string,
+  torrentId?: number,
+): Promise<string> {
+  return invoke<string>(PLAYER_COMMANDS.openInPlayer, {
+    url,
+    player,
+    torrentId,
+  });
 }
 
 /** The chosen external player. */

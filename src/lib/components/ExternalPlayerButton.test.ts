@@ -47,7 +47,29 @@ describe("ExternalPlayerButton", () => {
 
     await fireEvent.click(screen.getByRole("button"));
 
-    expect(openInPlayerMock).toHaveBeenCalledWith("http://127.0.0.1:3030/x", "mpv");
+    // `undefined` rather than absent: no torrent means nothing to hold.
+    expect(openInPlayerMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:3030/x",
+      "mpv",
+      undefined,
+    );
+  });
+
+  it("passes the torrent id so the backend can hold it", async () => {
+    render(ExternalPlayerButton, {
+      props: { url: "http://127.0.0.1:3030/x", torrentId: 5 },
+    });
+    await screen.findByRole("button");
+
+    await fireEvent.click(screen.getByRole("button"));
+
+    // Without this the watch page's teardown would remove the torrent and stop
+    // the player mid-episode.
+    expect(openInPlayerMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:3030/x",
+      "mpv",
+      5,
+    );
   });
 
   it("offers the suggested players", async () => {
