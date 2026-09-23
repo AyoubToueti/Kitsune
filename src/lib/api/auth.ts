@@ -12,7 +12,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { ListEntry, ListStatus } from "$lib/types";
+import type { Anime, ListEntry, ListStatus } from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const AUTH_COMMANDS = {
@@ -21,6 +21,7 @@ export const AUTH_COMMANDS = {
   logout: "logout",
   getListEntry: "get_list_entry",
   setListEntry: "set_list_entry",
+  continueWatching: "continue_watching",
 } as const;
 
 /**
@@ -107,4 +108,16 @@ export async function setListEntry(
     status,
     progress,
   });
+}
+
+/**
+ * The works the reader is currently watching, most recently touched first.
+ *
+ * Returns an empty list when signed out, so a caller can render it
+ * unconditionally without first asking `authStatus`. Not cached: the list is
+ * changed by playing an episode, and a cached copy would leave the home page
+ * showing a stale "Continue Watching".
+ */
+export async function getContinueWatching(limit = 12): Promise<Anime[]> {
+  return invoke<Anime[]>(AUTH_COMMANDS.continueWatching, { limit });
 }

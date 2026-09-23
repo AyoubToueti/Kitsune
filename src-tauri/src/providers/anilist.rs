@@ -643,6 +643,64 @@ impl AniListProvider {
             .and_then(|media| media.list_entry)
             .and_then(map_list_entry))
     }
+
+    /// The works the reader is currently watching, most recently touched first.
+    ///
+    /// Reads the reader's own CURRENT list via `MediaListCollection`, which
+    /// takes no paging arguments -- so the whole list is fetched and trimmed
+    /// here. A CURRENT list is bounded by what someone is actively watching, so
+    /// it is small; taking it whole is cheaper than a second round trip and
+    /// keeps the ordering in one place.
+    ///
+    /// Requires a token. Without one AniList answers with a GraphQL error,
+    /// which surfaces as a provider error rather than an empty list.
+    pub async fn continue_watching(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<Anime>, ProviderError> {
+        let query = format!(
+            r#"
+            query {{
+              MediaListCollection(type: ANIME, status: CURRENT) {{
+                lists {{
+                  entries {{
+                    media {{ {MEDIA_FIELDS} }}
+                    updatedAt
+                  }}
+                }}
+              }}
+            }}
+            "#
+        );
+
+        let data: MediaListCollectionData =
+            self.query(&query, serde_json::json!({})).await?;
+
+        // `lists` is normally one group for a status query, but it is a list in
+        // the schema, so flatten rather than reaching for the first.
+        let mut entries: Vec<(i64, Anime)> = data
+            .collection
+            .map(|collection| collection.lists)
+            .unwrap_or_default()
+            .into_iter()
+            .flat_map(|group| group.entries)
+            .filter_map(|entry| {
+                let media = entry.media?;
+                // A missing timestamp sorts last rather than dropping the work:
+                // it is still being watched, just not knowably recent.
+                Some((entry.updated_at.unwrap_or(0), map_media(media)))
+            })
+            .collect();
+
+        // Descending, so the work played last leads.
+        entries.sort_by(|a, b| b.0.cmp(&a.0));
+
+        Ok(entries
+            .into_iter()
+            .take(limit as usize)
+            .map(|(_, anime)| anime)
+            .collect())
+    }
 }
 
 /// The reader's own entry for a work.
@@ -681,6 +739,37 @@ struct ListEntryWire {
     status: Option<String>,
     #[serde(default)]
     progress: Option<u32>,
+}
+
+/// The envelope around `MediaListCollection`, which is a root field.
+#[derive(Deserialize, Default)]
+struct MediaListCollectionData {
+    #[serde(rename = "MediaListCollection", default)]
+    collection: Option<MediaListCollection>,
+}
+
+#[derive(Deserialize, Default)]
+struct MediaListCollection {
+    /// One group per status in the schema, so a status-filtered query normally
+    /// fills exactly one -- but it is a list, so it is flattened rather than
+    /// indexed.
+    #[serde(default)]
+    lists: Vec<MediaListGroup>,
+}
+
+#[derive(Deserialize, Default)]
+struct MediaListGroup {
+    #[serde(default)]
+    entries: Vec<MediaListEntry>,
+}
+
+#[derive(Deserialize, Default)]
+struct MediaListEntry {
+    #[serde(default)]
+    media: Option<Media>,
+    /// A Unix timestamp in seconds. `0` when absent, which sorts last.
+    #[serde(rename = "updatedAt", default)]
+    updated_at: Option<i64>,
 }
 
 /// Map the wire entry onto the domain type.
@@ -2331,6 +2420,112 @@ mod tests {
         // AniList could add a status this app has never heard of, and claiming
         // the reader's position is something it is not would be a lie.
         assert!(provider.list_entry(21).await.expect("read").is_none());
+    }
+
+    /// One `MediaListCollection` entry: the standard media fixture plus the
+    /// `updatedAt` stamp the ordering depends on.
+    fn collection_entry(updated_at: i64) -> serde_json::Value {
+        serde_json::json!({ "media": media_json(), "updatedAt": updated_at })
+    }
+
+    fn collection_response(entries: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "MediaListCollection": { "lists": [{ "entries": entries }] }
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn continue_watching_maps_the_current_list() {
+        let (_server, provider) =
+            provider_with(collection_response(vec![collection_entry(100)]), 200).await;
+
+        let anime = provider
+            .continue_watching(10)
+            .await
+            .expect("read should succeed");
+
+        assert_eq!(anime.len(), 1);
+        assert_eq!(anime[0].id, 21);
+        assert_eq!(anime[0].title.romaji.as_deref(), Some("One Piece"));
+    }
+
+    /// One collection entry for a given work id and timestamp, so the ordering
+    /// is observable by id rather than inferred from identical fixtures.
+    fn collection_entry_for(id: i64, updated_at: i64) -> serde_json::Value {
+        let mut media = media_json();
+        media["id"] = serde_json::json!(id);
+        serde_json::json!({ "media": media, "updatedAt": updated_at })
+    }
+
+    /// Most recently touched first: "Continue Watching" is only useful if the
+    /// last thing played leads, and AniList does not guarantee an order.
+    #[tokio::test]
+    async fn continue_watching_orders_by_updated_at_descending() {
+        // Deliberately out of order, with distinct ids so the resulting order
+        // can be asserted rather than just the count.
+        let older = collection_entry_for(1, 100);
+        let newest = collection_entry_for(2, 300);
+        let middle = collection_entry_for(3, 200);
+        let (_server, provider) =
+            provider_with(collection_response(vec![older, newest, middle]), 200).await;
+
+        let anime = provider.continue_watching(10).await.expect("read");
+
+        let ids: Vec<i64> = anime.iter().map(|a| a.id).collect();
+        assert_eq!(ids, vec![2, 3, 1], "newest updatedAt should lead");
+    }
+
+    /// An entry whose work is missing cannot be rendered, so it is dropped
+    /// rather than surfaced as a blank card.
+    #[tokio::test]
+    async fn continue_watching_drops_entries_without_media() {
+        let mut orphan = collection_entry(300);
+        orphan["media"] = serde_json::Value::Null;
+        let kept = collection_entry(100);
+
+        let (_server, provider) =
+            provider_with(collection_response(vec![orphan, kept]), 200).await;
+
+        let anime = provider.continue_watching(10).await.expect("read");
+
+        assert_eq!(anime.len(), 1);
+    }
+
+    /// The limit is applied here because `MediaListCollection` takes no paging
+    /// arguments.
+    #[tokio::test]
+    async fn continue_watching_honours_the_limit() {
+        let entries: Vec<serde_json::Value> =
+            (0..5).map(|i| collection_entry(i * 10)).collect();
+        let (_server, provider) = provider_with(collection_response(entries), 200).await;
+
+        let anime = provider.continue_watching(2).await.expect("read");
+
+        assert_eq!(anime.len(), 2);
+    }
+
+    /// An empty list is not an error.
+    #[tokio::test]
+    async fn continue_watching_handles_an_empty_list() {
+        let (_server, provider) = provider_with(collection_response(vec![]), 200).await;
+
+        let anime = provider.continue_watching(10).await.expect("read");
+
+        assert!(anime.is_empty());
+    }
+
+    /// The reader's own list requires their credential.
+    #[tokio::test]
+    async fn continue_watching_carries_the_token() {
+        let (server, provider) =
+            provider_with(collection_response(vec![collection_entry(100)]), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider.continue_watching(10).await.expect("read");
+
+        assert_auth(&server, Some("Bearer secret-token")).await;
     }
 
     /// Anonymous until a token is set, which is how every request worked before

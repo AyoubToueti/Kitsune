@@ -20,6 +20,14 @@ vi.mock("$lib/api/anime", async () => {
   };
 });
 
+// The Continue Watching section reads the reader's own list, which needs a
+// Tauri command. Mocked to an empty list so the section renders nothing, which
+// is what a signed-out reader sees.
+const getContinueWatchingMock = vi.hoisted(() => vi.fn());
+vi.mock("$lib/api/auth", () => ({
+  getContinueWatching: getContinueWatchingMock,
+}));
+
 import Page from "./+page.svelte";
 
 function anime(id: number, title: string): Anime {
@@ -56,6 +64,7 @@ function many(count: number): Anime[] {
       getListMock.mockReset().mockResolvedValue([]);
       getGenresMock.mockReset().mockResolvedValue([]);
       browseAnimeMock.mockReset().mockResolvedValue(emptyPage());
+      getContinueWatchingMock.mockReset().mockResolvedValue([]);
 });
 
 describe("home page", () => {

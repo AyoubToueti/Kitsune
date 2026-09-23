@@ -13,6 +13,7 @@ import {
   AUTH_COMMANDS,
   authStatus,
   beginLogin,
+  getContinueWatching,
   getListEntry,
   logout,
   onAuthChanged,
@@ -122,6 +123,27 @@ describe("list entry wrappers", () => {
     await getListEntry(21);
 
     expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("getContinueWatching forwards the limit", async () => {
+    invokeMock.mockResolvedValue([]);
+
+    await getContinueWatching(6);
+
+    expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.continueWatching, {
+      limit: 6,
+    });
+  });
+
+  /// The home page calls this with no argument, so the default has to be a
+  /// real number rather than `undefined`, which the command cannot decode.
+  it("getContinueWatching defaults the limit", async () => {
+    invokeMock.mockResolvedValue([]);
+
+    await getContinueWatching();
+
+    const [, payload] = invokeMock.mock.calls[0];
+    expect(typeof payload.limit).toBe("number");
   });
 });
 

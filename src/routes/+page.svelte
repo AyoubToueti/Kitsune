@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getGenres, getList, getTrending } from "$lib/api/anime";
+  import ContinueWatching from "$lib/components/ContinueWatching.svelte";
   import GenreGrid from "$lib/components/GenreGrid.svelte";
   import GenreGridSkeleton from "$lib/components/GenreGridSkeleton.svelte";
   import HeroCarousel from "$lib/components/HeroCarousel.svelte";
@@ -98,6 +99,8 @@
     load={latestCompleted}
   />
 </div>
+
+<ContinueWatching />
 
 {#if genresLoading}
   <GenreGridSkeleton />

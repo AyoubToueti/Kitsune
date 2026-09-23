@@ -12,7 +12,7 @@
 use tauri::State;
 
 use super::SharedAniList;
-use crate::types::ListStatus;
+use crate::types::{Anime, ListStatus};
 
 /// A work's position on the reader's list, or `null` when it is not on it.
 ///
@@ -43,6 +43,29 @@ pub async fn set_list_entry(
 ) -> Result<(), String> {
     provider
         .save_list_entry(media_id, status, progress)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+/// The works the reader is currently watching, most recently touched first.
+///
+/// Returns an empty list when signed out rather than an error: the home page
+/// renders this unconditionally, and "nothing to show" is the correct state
+/// for a reader with no account.
+#[tauri::command]
+pub async fn continue_watching(
+    provider: State<'_, SharedAniList>,
+    limit: u32,
+) -> Result<Vec<Anime>, String> {
+    // No token means nothing to read. Short-circuited here rather than letting
+    // AniList reject the query, so a signed-out home page makes no request at
+    // all.
+    if !provider.has_token() {
+        return Ok(Vec::new());
+    }
+
+    provider
+        .continue_watching(limit)
         .await
         .map_err(|err| err.to_string())
 }

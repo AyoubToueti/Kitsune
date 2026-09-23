@@ -156,6 +156,7 @@ pub fn run() {
                 // The reader's own list.
                 auth::list::get_list_entry,
                 auth::list::set_list_entry,
+                auth::list::continue_watching,
             ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
