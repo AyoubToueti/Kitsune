@@ -213,6 +213,18 @@ export interface ListEntry {
   progress: number;
 }
 
+/**
+ * One entry in the reader's "Continue Watching" row.
+ *
+ * Carries the work AND how far the reader got, because the row's resume button
+ * needs the episode number -- which is not part of the catalogue `Anime` shape.
+ */
+export interface ContinueWatchingItem {
+  anime: Anime;
+  /** Episodes watched so far, `0` for one never started. */
+  progress: number;
+}
+
 /** Which release format to keep. */
 export type FormatFilter = "tv" | "movie" | "ova" | "ona" | "special" | "music";
 

@@ -3,16 +3,30 @@
 
   import { errorMessage } from "$lib/api/anime";
   import { getContinueWatching } from "$lib/api/auth";
-  import type { Anime } from "$lib/types";
+  import type { ContinueWatchingItem } from "$lib/types";
   import AnimeCard from "./AnimeCard.svelte";
   import AnimeGridSkeleton from "./AnimeGridSkeleton.svelte";
 
   /** Six columns at the widest, so two rows. */
   const LIMIT = 12;
 
-  let anime = $state<Anime[]>([]);
+  let items = $state<ContinueWatchingItem[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+
+  /**
+   * The watch-page `?ep=` value that resumes a work.
+   *
+   * AniList's progress is a 1-based episode number; the watch page's `?ep=`
+   * is a 0-based list index. So the index is `progress - 1`, and a work never
+   * started (progress 0) resumes at the first episode rather than at -1.
+   *
+   * This matches how this app writes progress: recording an episode stores its
+   * NUMBER, so progress is the last episode started.
+   */
+  function resumeIndex(progress: number): number {
+    return Math.max(0, progress - 1);
+  }
 
   /**
    * Whether the reader has anything to continue.
@@ -22,13 +36,13 @@
    * a "Continue Watching" heading and then vanish for every signed-out reader
    * -- which is most home-page loads.
    */
-  const visible = $derived(!loading && (error !== null || anime.length > 0));
+  const visible = $derived(!loading && (error !== null || items.length > 0));
 
   async function load() {
     loading = true;
     error = null;
     try {
-      anime = await getContinueWatching(LIMIT);
+      items = await getContinueWatching(LIMIT);
     } catch (err) {
       error = errorMessage(err);
     } finally {
@@ -60,8 +74,24 @@
       </button>
     {:else}
       <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-        {#each anime as item (item.id)}
-          <AnimeCard anime={item} />
+        {#each items as entry (entry.anime.id)}
+          <div class="relative">
+            <AnimeCard anime={entry.anime} />
+            <!-- A sibling of the card's link, not a child: nesting an anchor
+                 inside an anchor is invalid HTML. Positioned over the card's
+                 bottom-right corner, which is the "resume" affordance. -->
+            <a
+              href={`/watch/${entry.anime.id}?ep=${resumeIndex(entry.progress)}`}
+              data-testid="resume"
+              aria-label={`Resume ${entry.anime.title.romaji ?? "this work"}`}
+              title={entry.progress > 0
+                ? `Resume at episode ${entry.progress}`
+                : "Start watching"}
+              class="absolute right-1 bottom-1 flex h-8 w-8 items-center justify-center rounded-full bg-accent text-sm text-white shadow-lg transition-transform hover:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <span aria-hidden="true">▶</span>
+            </a>
+          </div>
         {/each}
       </div>
     {/if}

@@ -12,7 +12,8 @@
 use tauri::State;
 
 use super::SharedAniList;
-use crate::types::{Anime, ListStatus};
+use crate::providers::anilist::ContinueWatchingItem;
+use crate::types::ListStatus;
 
 /// A work's position on the reader's list, or `null` when it is not on it.
 ///
@@ -56,7 +57,7 @@ pub async fn set_list_entry(
 pub async fn continue_watching(
     provider: State<'_, SharedAniList>,
     limit: u32,
-) -> Result<Vec<Anime>, String> {
+) -> Result<Vec<ContinueWatchingItem>, String> {
     // No token means nothing to read. Short-circuited here rather than letting
     // AniList reject the query, so a signed-out home page makes no request at
     // all.

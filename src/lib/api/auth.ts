@@ -12,7 +12,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { Anime, ListEntry, ListStatus } from "$lib/types";
+import type { ContinueWatchingItem, ListEntry, ListStatus } from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const AUTH_COMMANDS = {
@@ -118,6 +118,10 @@ export async function setListEntry(
  * changed by playing an episode, and a cached copy would leave the home page
  * showing a stale "Continue Watching".
  */
-export async function getContinueWatching(limit = 12): Promise<Anime[]> {
-  return invoke<Anime[]>(AUTH_COMMANDS.continueWatching, { limit });
+export async function getContinueWatching(
+  limit = 12,
+): Promise<ContinueWatchingItem[]> {
+  return invoke<ContinueWatchingItem[]>(AUTH_COMMANDS.continueWatching, {
+    limit,
+  });
 }

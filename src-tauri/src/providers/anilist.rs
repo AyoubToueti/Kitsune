@@ -163,10 +163,7 @@ impl AniListProvider {
 
     /// Whether a token is currently held.
     pub fn has_token(&self) -> bool {
-        self.token
-            .lock()
-            .expect("token mutex poisoned")
-            .is_some()
+        self.token.lock().expect("token mutex poisoned").is_some()
     }
 
     /// The token to send with a request, cloned out of the lock.
@@ -608,9 +605,7 @@ impl AniListProvider {
         // refused without an `errors` entry, so a null here is a failure the
         // status check above would not have caught.
         if data.save.is_none() {
-            return Err(ProviderError::Remote(
-                "the list entry was not saved".into(),
-            ));
+            return Err(ProviderError::Remote("the list entry was not saved".into()));
         }
 
         Ok(())
@@ -622,10 +617,7 @@ impl AniListProvider {
     /// signed in -- AniList returns a null entry in both cases and does not
     /// distinguish them. The caller already knows whether it has a token, so
     /// the ambiguity costs nothing.
-    pub async fn list_entry(
-        &self,
-        media_id: i64,
-    ) -> Result<Option<ListEntry>, ProviderError> {
+    pub async fn list_entry(&self, media_id: i64) -> Result<Option<ListEntry>, ProviderError> {
         let query = r#"
             query ($mediaId: Int) {
               Media(id: $mediaId) {
@@ -659,7 +651,7 @@ impl AniListProvider {
     pub async fn continue_watching(
         &self,
         limit: u32,
-    ) -> Result<Vec<Anime>, ProviderError> {
+    ) -> Result<Vec<ContinueWatchingItem>, ProviderError> {
         // `MediaListCollection` does NOT infer the user from the token, even
         // when authenticated: without an explicit `userId` (or `userName`) it
         // answers "User ID/Name & Type arguments required". The id is fetched
@@ -670,9 +662,7 @@ impl AniListProvider {
             .await?;
         let user_id = viewer
             .viewer
-            .ok_or_else(|| {
-                ProviderError::Remote("the token has no viewer".into())
-            })?
+            .ok_or_else(|| ProviderError::Remote("the token has no viewer".into()))?
             .id;
 
         let query = format!(
@@ -683,6 +673,7 @@ impl AniListProvider {
                   entries {{
                     media {{ {MEDIA_FIELDS} }}
                     updatedAt
+                    progress
                   }}
                 }}
               }}
@@ -696,7 +687,7 @@ impl AniListProvider {
 
         // `lists` is normally one group for a status query, but it is a list in
         // the schema, so flatten rather than reaching for the first.
-        let mut entries: Vec<(i64, Anime)> = data
+        let mut entries: Vec<(i64, ContinueWatchingItem)> = data
             .collection
             .map(|collection| collection.lists)
             .unwrap_or_default()
@@ -706,7 +697,16 @@ impl AniListProvider {
                 let media = entry.media?;
                 // A missing timestamp sorts last rather than dropping the work:
                 // it is still being watched, just not knowably recent.
-                Some((entry.updated_at.unwrap_or(0), map_media(media)))
+                Some((
+                    entry.updated_at.unwrap_or(0),
+                    ContinueWatchingItem {
+                        anime: map_media(media),
+                        // The number of episodes watched, which is where a
+                        // "resume" play button should pick up. Zero for an entry
+                        // put on the list but never started.
+                        progress: entry.progress.unwrap_or(0),
+                    },
+                ))
             })
             .collect();
 
@@ -716,9 +716,21 @@ impl AniListProvider {
         Ok(entries
             .into_iter()
             .take(limit as usize)
-            .map(|(_, anime)| anime)
+            .map(|(_, item)| item)
             .collect())
     }
+}
+
+/// One entry in the reader's "Continue Watching" row.
+///
+/// Carries the work AND how far the reader got: the row's resume button needs
+/// the episode number, which is not part of the catalogue [`Anime`] shape.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinueWatchingItem {
+    pub anime: Anime,
+    /// Episodes watched so far, `0` for one never started.
+    pub progress: u32,
 }
 
 /// The reader's own entry for a work.
@@ -803,6 +815,9 @@ struct MediaListEntry {
     /// A Unix timestamp in seconds. `0` when absent, which sorts last.
     #[serde(rename = "updatedAt", default)]
     updated_at: Option<i64>,
+    /// Episodes watched so far. `0` when absent, matching the domain type.
+    #[serde(default)]
+    progress: Option<u32>,
 }
 
 /// Map the wire entry onto the domain type.
@@ -1157,7 +1172,7 @@ fn map_media(media: Media) -> Anime {
     Anime {
         id: media.id,
         provider: ProviderId::AniList,
-            id_mal: media.id_mal,
+        id_mal: media.id_mal,
         title: Title {
             romaji: non_empty(title.romaji),
             english: non_empty(title.english),
@@ -2174,8 +2189,7 @@ mod tests {
     async fn id_mal_is_absent_when_the_provider_has_none() {
         // Not every work is linked to MAL, so the field must stay `None` rather
         // than defaulting to a wrong id that would enrich the wrong episodes.
-        let (_server, provider) =
-            provider_with(page_response(vec![media_json()]), 200).await;
+        let (_server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
 
         let anime = provider.trending(1).await.unwrap();
         assert_eq!(anime[0].id_mal, None);
@@ -2301,8 +2315,7 @@ mod tests {
             .received_requests()
             .await
             .expect("requests should be recorded");
-        let body: serde_json::Value =
-            serde_json::from_slice(&requests[0].body).expect("json body");
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
         body["variables"].clone()
     }
 
@@ -2359,8 +2372,7 @@ mod tests {
             .received_requests()
             .await
             .expect("requests should be recorded");
-        let body: serde_json::Value =
-            serde_json::from_slice(&requests[0].body).expect("json body");
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
 
         let document = body["query"]
             .as_str()
@@ -2416,7 +2428,9 @@ mod tests {
         let (_server, provider) = provider_with(response, 200).await;
         provider.set_token(Some("secret-token".into()));
 
-        let result = provider.save_list_entry(21, ListStatus::Current, None).await;
+        let result = provider
+            .save_list_entry(21, ListStatus::Current, None)
+            .await;
 
         // GraphQL answers 200 with a null field when it refuses, so the status
         // check alone would have reported this as success.
@@ -2536,8 +2550,7 @@ mod tests {
 
     #[tokio::test]
     async fn continue_watching_maps_the_current_list() {
-        let (_server, provider) =
-            provider_for_collection(vec![collection_entry(100)]).await;
+        let (_server, provider) = provider_for_collection(vec![collection_entry(100)]).await;
 
         let anime = provider
             .continue_watching(10)
@@ -2545,8 +2558,40 @@ mod tests {
             .expect("read should succeed");
 
         assert_eq!(anime.len(), 1);
-        assert_eq!(anime[0].id, 21);
-        assert_eq!(anime[0].title.romaji.as_deref(), Some("One Piece"));
+        assert_eq!(anime[0].anime.id, 21);
+        assert_eq!(anime[0].anime.title.romaji.as_deref(), Some("One Piece"));
+    }
+
+    /// One collection entry carrying a `progress`, so the resume point is
+    /// observable rather than assumed.
+    fn collection_entry_with_progress(progress: u32) -> serde_json::Value {
+        serde_json::json!({
+            "media": media_json(),
+            "updatedAt": 100,
+            "progress": progress,
+        })
+    }
+
+    /// The resume point has to survive: it is what a play button picks up from.
+    #[tokio::test]
+    async fn continue_watching_carries_the_progress() {
+        let (_server, provider) =
+            provider_for_collection(vec![collection_entry_with_progress(7)]).await;
+
+        let items = provider.continue_watching(10).await.expect("read");
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].progress, 7);
+    }
+
+    /// An entry that was never started reports zero rather than failing.
+    #[tokio::test]
+    async fn continue_watching_defaults_missing_progress_to_zero() {
+        let (_server, provider) = provider_for_collection(vec![collection_entry(100)]).await;
+
+        let items = provider.continue_watching(10).await.expect("read");
+
+        assert_eq!(items[0].progress, 0);
     }
 
     /// One collection entry for a given work id and timestamp, so the ordering
@@ -2566,12 +2611,11 @@ mod tests {
         let older = collection_entry_for(1, 100);
         let newest = collection_entry_for(2, 300);
         let middle = collection_entry_for(3, 200);
-        let (_server, provider) =
-            provider_for_collection(vec![older, newest, middle]).await;
+        let (_server, provider) = provider_for_collection(vec![older, newest, middle]).await;
 
         let anime = provider.continue_watching(10).await.expect("read");
 
-        let ids: Vec<i64> = anime.iter().map(|a| a.id).collect();
+        let ids: Vec<i64> = anime.iter().map(|item| item.anime.id).collect();
         assert_eq!(ids, vec![2, 3, 1], "newest updatedAt should lead");
     }
 
@@ -2583,8 +2627,7 @@ mod tests {
         orphan["media"] = serde_json::Value::Null;
         let kept = collection_entry(100);
 
-        let (_server, provider) =
-            provider_for_collection(vec![orphan, kept]).await;
+        let (_server, provider) = provider_for_collection(vec![orphan, kept]).await;
 
         let anime = provider.continue_watching(10).await.expect("read");
 
@@ -2595,8 +2638,7 @@ mod tests {
     /// arguments.
     #[tokio::test]
     async fn continue_watching_honours_the_limit() {
-        let entries: Vec<serde_json::Value> =
-            (0..5).map(|i| collection_entry(i * 10)).collect();
+        let entries: Vec<serde_json::Value> = (0..5).map(|i| collection_entry(i * 10)).collect();
         let (_server, provider) = provider_for_collection(entries).await;
 
         let anime = provider.continue_watching(2).await.expect("read");
@@ -2617,8 +2659,7 @@ mod tests {
     /// The reader's own list requires their credential.
     #[tokio::test]
     async fn continue_watching_carries_the_token() {
-        let (server, provider) =
-            provider_for_collection(vec![collection_entry(100)]).await;
+        let (server, provider) = provider_for_collection(vec![collection_entry(100)]).await;
         provider.set_token(Some("secret-token".into()));
 
         provider.continue_watching(10).await.expect("read");
@@ -2715,8 +2756,7 @@ mod tests {
             .received_requests()
             .await
             .expect("requests should be recorded");
-        let body: serde_json::Value =
-            serde_json::from_slice(&requests[0].body).expect("json body");
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json body");
 
         assert!(
             body.get("query").is_some(),

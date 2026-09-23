@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 
-import type { Anime } from "$lib/types";
+import type { Anime, ContinueWatchingItem } from "$lib/types";
 
 const getContinueWatchingMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/auth", () => ({
@@ -20,6 +20,11 @@ function anime(id: number, title: string): Anime {
     relations: [],
     recommendations: [],
   };
+}
+
+/** A continue-watching entry: the work plus how far the reader got. */
+function entry(id: number, title: string, progress = 0): ContinueWatchingItem {
+  return { anime: anime(id, title), progress };
 }
 
 beforeEach(() => {
@@ -42,14 +47,37 @@ describe("ContinueWatching", () => {
 
   it("renders a card per work", async () => {
     getContinueWatchingMock.mockResolvedValue([
-      anime(1, "One Piece"),
-      anime(2, "Naruto"),
+      entry(1, "One Piece"),
+      entry(2, "Naruto"),
     ]);
 
     render(ContinueWatching);
 
     expect(await screen.findByText("One Piece")).toBeInTheDocument();
     expect(screen.getByText("Naruto")).toBeInTheDocument();
+  });
+
+  it("resumes at the next episode after the one watched", async () => {
+    // `progress` is the last episode NUMBER started; the watch page's `?ep=`
+    // is a 0-based index, so episode 3 is index 2.
+    getContinueWatchingMock.mockResolvedValue([entry(1, "One Piece", 3)]);
+
+    render(ContinueWatching);
+
+    const resume = await screen.findByTestId("resume");
+    expect(resume).toHaveAttribute("href", "/watch/1?ep=2");
+  });
+
+  it("starts from the beginning when nothing has been watched", async () => {
+    getContinueWatchingMock.mockResolvedValue([entry(1, "One Piece", 0)]);
+
+    render(ContinueWatching);
+
+    // Never clamped to -1: an unstarted work resumes at the first episode.
+    expect(await screen.findByTestId("resume")).toHaveAttribute(
+      "href",
+      "/watch/1?ep=0",
+    );
   });
 
   it("asks for a bounded number of works", async () => {
@@ -71,7 +99,7 @@ describe("ContinueWatching", () => {
 
     expect(await screen.findByText(/could not load/i)).toBeInTheDocument();
 
-    getContinueWatchingMock.mockResolvedValue([anime(1, "One Piece")]);
+    getContinueWatchingMock.mockResolvedValue([entry(1, "One Piece")]);
     await fireEvent.click(screen.getByRole("button", { name: /try again/i }));
 
     expect(await screen.findByText("One Piece")).toBeInTheDocument();
