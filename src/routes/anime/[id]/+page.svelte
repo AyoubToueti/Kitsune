@@ -11,6 +11,7 @@
   import { episodesFor } from "$lib/episodes";
   import { genreHref } from "$lib/filter";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
+  import ListStatusMenu from "$lib/components/ListStatusMenu.svelte";
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
   import StreamingLinks from "$lib/components/StreamingLinks.svelte";
@@ -178,6 +179,10 @@
             {/each}
           </ul>
         {/if}
+
+        <div class="mt-3">
+          <ListStatusMenu mediaId={anime.id} />
+        </div>
 
         <div class="mt-3">
           <MetadataStrip {anime} />
