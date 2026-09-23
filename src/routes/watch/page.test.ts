@@ -63,6 +63,11 @@ vi.mock("$lib/api/releases", () => ({
   downloadTorrent: downloadTorrentMock,
 }));
 
+// Starting an episode writes progress to the reader's list. Mocked so a test
+// can assert WHAT was written without a Tauri runtime.
+const setListEntryMock = vi.hoisted(() => vi.fn());
+vi.mock("$lib/api/auth", () => ({ setListEntry: setListEntryMock }));
+
 import Page from "./[id]/+page.svelte";
 
 function anime(overrides: Partial<Anime> = {}): Anime {
@@ -160,6 +165,7 @@ beforeEach(() => {
   // rather than return undefined.
   probeReleasesMock.mockReset().mockResolvedValue([]);
   onProbeResultMock.mockReset().mockResolvedValue(() => {});
+  setListEntryMock.mockReset().mockResolvedValue(undefined);
   setId(16498);
 });
 
@@ -497,6 +503,39 @@ describe("watch page", () => {
     await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
 
     expect(getStreamUrlMock).toHaveBeenCalledWith(5, 1);
+  });
+
+  it("records the episode NUMBER, not the list index, when playback starts", async () => {
+    getAnimeMock.mockResolvedValue(animeWithEpisodes(3));
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    // Select the second entry: its list INDEX is 1, its episode NUMBER is 2.
+    // Recording the index would write the wrong progress on every entry.
+    const list = await screen.findByTestId("episode-list");
+    await fireEvent.click(within(list).getAllByRole("button")[1]);
+
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+    await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(setListEntryMock).toHaveBeenCalledWith(16498, "current", 2),
+    );
+  });
+
+  it("does not record progress without a selected episode", async () => {
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    // Play a file directly, with no episode selected. There is no episode
+    // number to write, so a batch or film must not be recorded as a phantom
+    // episode.
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+    await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
+
+    expect(setListEntryMock).not.toHaveBeenCalled();
   });
 
   it("offers the relations sidebar", async () => {

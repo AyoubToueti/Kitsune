@@ -31,6 +31,8 @@
     episodeNumber as episodeNumberFor,
   } from "$lib/episode";
   import { episodesFor } from "$lib/episodes";
+  import { createProgressRecorder } from "$lib/progress";
+  import { setListEntry } from "$lib/api/auth";
   import {
     displayTitle,
     titleForms,
@@ -54,6 +56,18 @@
   let anime = $state<Anime | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
+
+  /**
+   * Marks the current episode as watched once playback actually starts.
+   *
+   * Built once for the page's life: the set it keeps must survive across
+   * re-selections, or switching files back and forth would re-write the same
+   * episode every time. A failed write is swallowed inside the recorder, so
+   * nothing here can break playback.
+   */
+  const progress = createProgressRecorder((animeId, episode) =>
+    setListEntry(animeId, "current", episode),
+  );
 
   // --- resolving a stream --------------------------------------------------
   //
@@ -593,7 +607,16 @@
     } catch (err) {
       streamUrl = undefined;
       torrentError = errorMessage(err);
+      return;
     }
+
+    // Only once the stream actually resolved, so a release that failed to open
+    // is not marked watched. The episode NUMBER is recorded, not the list
+    // index: `wantedEpisode` is already derived through `episodeNumberFor`, and
+    // sending the index would be off by one on every entry. Without a selected
+    // episode there is no number, so a title-less batch write is skipped.
+    const episode = wantedEpisode;
+    if (episode !== undefined) progress.record(id, episode);
   }
 
   /**
