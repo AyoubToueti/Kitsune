@@ -110,6 +110,62 @@ pub enum StatusFilter {
     NotYetReleased,
 }
 
+/// Where a work sits on the reader's own AniList list.
+///
+/// Distinct from [`StatusFilter`] even though the names overlap: that one is
+/// the WORK's release state ("is it still airing"), this is the READER's
+/// relationship to it ("am I watching it"). A finished show can be `Current`
+/// on someone's list, so conflating them would be wrong.
+///
+/// The variants serialise camelCase for the frontend, and [`Self::literal`]
+/// maps them to the SCREAMING_SNAKE values AniList expects -- the same split
+/// the other filter enums use, because the two audiences disagree on spelling
+/// and one enum cannot satisfy both without a hand-rolled conversion anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ListStatus {
+    /// Watching it now.
+    Current,
+    /// Not started, intending to.
+    Planning,
+    /// Finished.
+    Completed,
+    /// Started and abandoned.
+    Dropped,
+    /// Started, set aside, possibly resumable.
+    Paused,
+}
+
+impl ListStatus {
+    /// The value AniList's GraphQL expects.
+    pub fn literal(self) -> &'static str {
+        match self {
+            Self::Current => "CURRENT",
+            Self::Planning => "PLANNING",
+            Self::Completed => "COMPLETED",
+            Self::Dropped => "DROPPED",
+            Self::Paused => "PAUSED",
+        }
+    }
+
+    /// Read a status AniList reported back.
+    ///
+    /// `None` for anything unrecognised rather than a default. AniList could
+    /// add a status this app has never heard of, and reporting the reader's
+    /// list position as "Planning" when it is something else would be a lie
+    /// where showing nothing is merely incomplete.
+    pub fn from_literal(raw: &str) -> Option<Self> {
+        match raw {
+            "CURRENT" => Some(Self::Current),
+            "PLANNING" => Some(Self::Planning),
+            "COMPLETED" => Some(Self::Completed),
+            "DROPPED" => Some(Self::Dropped),
+            "PAUSED" => Some(Self::Paused),
+            _ => None,
+        }
+    }
+}
+
 /// Which release format to keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

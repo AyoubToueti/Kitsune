@@ -11,13 +11,13 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::traits::{AnimeProvider, ProviderError};
 use crate::types::{
-    Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, MediaTag, PageInfo, ProviderId,
-    RecommendedAnime, RelatedAnime, ScheduledEpisode, SeasonFilter, SortOption, StatusFilter,
-    StreamingEpisode, Title, Trailer,
+    Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, ListStatus, MediaTag, PageInfo,
+    ProviderId, RecommendedAnime, RelatedAnime, ScheduledEpisode, SeasonFilter, SortOption,
+    StatusFilter, StreamingEpisode, Title, Trailer,
 };
 
 /// AniList's public GraphQL endpoint.
@@ -550,6 +550,154 @@ impl AnimeProvider for AniListProvider {
         let data: MediaData = self.query(&query, serde_json::json!({ "id": id })).await?;
         Ok(data.media.map(map_media))
     }
+}
+
+/// The reader's own list, which is not part of the [`AnimeProvider`] trait.
+///
+/// Kept inherent rather than added to the trait because the trait describes
+/// reading a CATALOGUE, and every provider must be able to do it. Writing to a
+/// user's list is an AniList capability -- Jikan has no such thing -- so
+/// widening the trait would force a second provider to implement methods it
+/// cannot honour.
+impl AniListProvider {
+    /// Put a work on the reader's list, or move it between lists.
+    ///
+    /// One mutation covers both create and update: AniList decides which based
+    /// on whether the entry already exists for this work, so the caller does
+    /// not have to know. Passing `progress` is optional and, when omitted,
+    /// leaves the stored value alone -- which is what makes this usable both
+    /// for the status menu and for a progress update.
+    ///
+    /// Requires a token. Without one AniList answers with a GraphQL error,
+    /// which surfaces here as a provider error rather than a silent success.
+    pub async fn save_list_entry(
+        &self,
+        media_id: i64,
+        status: ListStatus,
+        progress: Option<u32>,
+    ) -> Result<(), ProviderError> {
+        let mutation = r#"
+            mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int) {
+              SaveMediaListEntry(mediaId: $mediaId, status: $status, progress: $progress) {
+                id
+                status
+                progress
+              }
+            }
+        "#;
+
+        // `status` travels as AniList's own literal, not the serde form: the
+        // GraphQL enum has no camelCase spelling, and the two are deliberately
+        // kept apart so the frontend's vocabulary and the wire vocabulary can
+        // differ.
+        let data: SaveEntryData = self
+            .mutate(
+                mutation,
+                serde_json::json!({
+                    "mediaId": media_id,
+                    "status": status.literal(),
+                    "progress": progress,
+                }),
+            )
+            .await?;
+
+        // GraphQL returns `null` for a mutation field when the write was
+        // refused without an `errors` entry, so a null here is a failure the
+        // status check above would not have caught.
+        if data.save.is_none() {
+            return Err(ProviderError::Remote(
+                "the list entry was not saved".into(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Where a work sits on the reader's list, if it is on it at all.
+    ///
+    /// `None` means either that the work is not on the list or that nobody is
+    /// signed in -- AniList returns a null entry in both cases and does not
+    /// distinguish them. The caller already knows whether it has a token, so
+    /// the ambiguity costs nothing.
+    pub async fn list_entry(
+        &self,
+        media_id: i64,
+    ) -> Result<Option<ListEntry>, ProviderError> {
+        let query = r#"
+            query ($mediaId: Int) {
+              Media(id: $mediaId) {
+                mediaListEntry {
+                  status
+                  progress
+                }
+              }
+            }
+        "#;
+
+        let data: ListEntryData = self
+            .query(query, serde_json::json!({ "mediaId": media_id }))
+            .await?;
+
+        Ok(data
+            .media
+            .and_then(|media| media.list_entry)
+            .and_then(map_list_entry))
+    }
+}
+
+/// The reader's own entry for a work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListEntry {
+    pub status: ListStatus,
+    /// Episodes watched so far.
+    pub progress: u32,
+}
+
+#[derive(Deserialize, Default)]
+struct SaveEntryData {
+    #[serde(rename = "SaveMediaListEntry", default)]
+    save: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize, Default)]
+struct ListEntryData {
+    /// The key is capitalised, like every other root field AniList returns.
+    /// Serde matches case-sensitively, so without this rename the whole
+    /// response decodes to `None` and an entry that exists looks absent.
+    #[serde(rename = "Media", default)]
+    media: Option<ListEntryMedia>,
+}
+
+#[derive(Deserialize, Default)]
+struct ListEntryMedia {
+    #[serde(rename = "mediaListEntry", default)]
+    list_entry: Option<ListEntryWire>,
+}
+
+#[derive(Deserialize, Default)]
+struct ListEntryWire {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    progress: Option<u32>,
+}
+
+/// Map the wire entry onto the domain type.
+///
+/// An unrecognised status drops the whole entry rather than defaulting to
+/// something: AniList could add a status this app has never heard of, and
+/// showing the reader's list position as "Planning" when it is not would be
+/// worse than showing nothing.
+fn map_list_entry(wire: ListEntryWire) -> Option<ListEntry> {
+    let status = ListStatus::from_literal(wire.status.as_deref()?)?;
+
+    Some(ListEntry {
+        status,
+        // A missing progress is zero rather than an error: AniList omits it for
+        // an entry that has never been watched.
+        progress: wire.progress.unwrap_or(0),
+    })
 }
 
 /// The window query for broadcasts.
@@ -2023,6 +2171,166 @@ mod tests {
             .map(str::to_string);
 
         assert_eq!(actual.as_deref(), expected);
+    }
+
+    /// The `variables` object of the one request the server received.
+    async fn sent_variables(server: &MockServer) -> serde_json::Value {
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("json body");
+        body["variables"].clone()
+    }
+
+    fn saved_entry_response() -> serde_json::Value {
+        serde_json::json!({
+            "data": { "SaveMediaListEntry": { "id": 4, "status": "CURRENT", "progress": 3 } }
+        })
+    }
+
+    #[tokio::test]
+    async fn saving_a_list_entry_sends_the_anilist_literal() {
+        let (server, provider) = provider_with(saved_entry_response(), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .save_list_entry(21, ListStatus::Paused, None)
+            .await
+            .expect("save should succeed");
+
+        // SCREAMING_SNAKE, not the camelCase the frontend uses: the GraphQL
+        // enum has no camelCase spelling, so sending the serde form would be
+        // rejected.
+        assert_eq!(sent_variables(&server).await["status"], "PAUSED");
+    }
+
+    #[tokio::test]
+    async fn saving_a_list_entry_sends_the_media_id() {
+        let (server, provider) = provider_with(saved_entry_response(), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .save_list_entry(21, ListStatus::Current, None)
+            .await
+            .expect("save should succeed");
+
+        assert_eq!(sent_variables(&server).await["mediaId"], 21);
+    }
+
+    /// Omitting progress must send `null`, not `0`: AniList leaves a stored
+    /// value alone when the field is absent, so sending zero would reset the
+    /// reader's progress every time they changed the status.
+    #[tokio::test]
+    async fn saving_without_progress_does_not_reset_it() {
+        let (server, provider) = provider_with(saved_entry_response(), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .save_list_entry(21, ListStatus::Current, None)
+            .await
+            .expect("save should succeed");
+
+        assert!(
+            sent_variables(&server).await["progress"].is_null(),
+            "progress must be null rather than 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn saving_can_set_progress() {
+        let (server, provider) = provider_with(saved_entry_response(), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .save_list_entry(21, ListStatus::Current, Some(3))
+            .await
+            .expect("save should succeed");
+
+        assert_eq!(sent_variables(&server).await["progress"], 3);
+    }
+
+    /// A refused write must not look like a success.
+    #[tokio::test]
+    async fn a_refused_save_is_an_error() {
+        let response = serde_json::json!({ "data": { "SaveMediaListEntry": null } });
+        let (_server, provider) = provider_with(response, 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        let result = provider.save_list_entry(21, ListStatus::Current, None).await;
+
+        // GraphQL answers 200 with a null field when it refuses, so the status
+        // check alone would have reported this as success.
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_save_carries_the_token() {
+        let (server, provider) = provider_with(saved_entry_response(), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .save_list_entry(21, ListStatus::Current, None)
+            .await
+            .expect("save should succeed");
+
+        assert_auth(&server, Some("Bearer secret-token")).await;
+    }
+
+    #[tokio::test]
+    async fn a_list_entry_is_read_back() {
+        let response = serde_json::json!({
+            "data": { "Media": { "mediaListEntry": { "status": "COMPLETED", "progress": 26 } } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let entry = provider
+            .list_entry(21)
+            .await
+            .expect("read should succeed")
+            .expect("an entry should be present");
+
+        assert_eq!(entry.status, ListStatus::Completed);
+        assert_eq!(entry.progress, 26);
+    }
+
+    /// A work that is not on the list comes back as a null entry.
+    #[tokio::test]
+    async fn a_work_off_the_list_has_no_entry() {
+        let response = serde_json::json!({
+            "data": { "Media": { "mediaListEntry": null } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        assert!(provider.list_entry(21).await.expect("read").is_none());
+    }
+
+    /// AniList omits progress for an entry that has never been watched, which
+    /// means zero rather than an error.
+    #[tokio::test]
+    async fn a_missing_progress_reads_as_zero() {
+        let response = serde_json::json!({
+            "data": { "Media": { "mediaListEntry": { "status": "PLANNING" } } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let entry = provider.list_entry(21).await.expect("read").expect("entry");
+
+        assert_eq!(entry.progress, 0);
+    }
+
+    /// An unrecognised status drops the entry rather than guessing at one.
+    #[tokio::test]
+    async fn an_unknown_status_drops_the_entry() {
+        let response = serde_json::json!({
+            "data": { "Media": { "mediaListEntry": { "status": "REWATCHING", "progress": 4 } } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        // AniList could add a status this app has never heard of, and claiming
+        // the reader's position is something it is not would be a lie.
+        assert!(provider.list_entry(21).await.expect("read").is_none());
     }
 
     /// Anonymous until a token is set, which is how every request worked before
