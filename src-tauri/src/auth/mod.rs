@@ -10,6 +10,10 @@
 //! is a separate change. What exists now is the storage the rest of the flow
 //! will build on, so it can be tested without a network or a browser.
 
+pub mod commands;
+pub mod flow;
 pub mod store;
 
+pub use commands::{apply_token, restore_token, SharedAniList, AUTH_CHANGED_EVENT};
+pub use flow::{authorize_url, parse_token, CLIENT_ID};
 pub use store::TokenStore;

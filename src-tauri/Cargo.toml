@@ -30,6 +30,7 @@ tracing = "0.1.44"
 reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
 async-trait = "0.1.92"
 tauri-plugin-dialog = "2.7.3"
+tauri-plugin-deep-link = "2"
 # Release-name parsing ports Sonarr's regexes, which use lookaround and
 # backreferences that the `regex` crate cannot express.
 fancy-regex = "0.14"
@@ -40,6 +41,17 @@ tempfile = "3.27.0"
 # Resolves the OS data directory for the AniList token store. Already present
 # transitively in Cargo.lock, so this promotes rather than adds to the graph.
 dirs = "6"
+
+# Desktop only: single-instance has no mobile equivalent, and the `deep-link`
+# feature is what makes a link delivered to a second process reach the running
+# one. On Linux and Windows a deep link arrives as a command-line argument to a
+# NEW process, so without this the app would open twice and the original would
+# never see the token.
+#
+# MUST stay last: a `[target...]` header makes every key below it belong to that
+# table, so anything placed after this line silently becomes desktop-only.
+[target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
