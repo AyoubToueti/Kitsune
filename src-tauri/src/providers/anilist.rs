@@ -719,6 +719,133 @@ impl AniListProvider {
             .map(|(_, item)| item)
             .collect())
     }
+
+    /// The reader's whole anime list, every status, for the My List page.
+    ///
+    /// No `status:` argument, so AniList returns every group; the caller groups
+    /// by each entry's own `status` rather than by which group it arrived in.
+    /// That matters because a work can be hidden from the status lists and live
+    /// only in a custom list -- keying off the entry's `status` still finds it.
+    ///
+    /// Deduplicated by media id: a work in both a status list and a custom list
+    /// would otherwise appear twice.
+    ///
+    /// Requires a token. Without one AniList answers with a GraphQL error,
+    /// which surfaces as a provider error rather than an empty list.
+    pub async fn user_list(&self) -> Result<Vec<UserListEntry>, ProviderError> {
+        // Same reason as `continue_watching`: the user is not inferred from the
+        // token, and the id cannot be fed into the sibling argument in one
+        // request.
+        let viewer: ViewerData = self
+            .query("{ Viewer { id } }", serde_json::json!({}))
+            .await?;
+        let user_id = viewer
+            .viewer
+            .ok_or_else(|| ProviderError::Remote("the token has no viewer".into()))?
+            .id;
+
+        let query = format!(
+            r#"
+            query ($userId: Int) {{
+              MediaListCollection(userId: $userId, type: ANIME) {{
+                lists {{
+                  entries {{
+                    id
+                    status
+                    progress
+                    media {{ {MEDIA_FIELDS} }}
+                  }}
+                }}
+              }}
+            }}
+            "#
+        );
+
+        let data: MediaListCollectionData = self
+            .query(&query, serde_json::json!({ "userId": user_id }))
+            .await?;
+
+        let mut seen = std::collections::HashSet::new();
+        let mut entries: Vec<UserListEntry> = Vec::new();
+
+        for group in data
+            .collection
+            .map(|collection| collection.lists)
+            .unwrap_or_default()
+        {
+            for entry in group.entries {
+                // No media means nothing to render; no id means it cannot be
+                // deleted, so both are dropped rather than surfaced broken.
+                let Some(media) = entry.media else { continue };
+                let Some(entry_id) = entry.id else { continue };
+                let Some(status) = entry
+                    .status
+                    .as_deref()
+                    .and_then(ListStatus::from_literal)
+                else {
+                    continue;
+                };
+
+                // First sighting wins: a work in more than one group is one row.
+                if !seen.insert(media.id) {
+                    continue;
+                }
+
+                entries.push(UserListEntry {
+                    anime: map_media(media),
+                    status,
+                    progress: entry.progress.unwrap_or(0),
+                    entry_id,
+                });
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Remove a work from the reader's list.
+    ///
+    /// Takes the LIST ENTRY id (from [`UserListEntry::entry_id`]), not the media
+    /// id: `DeleteMediaListEntry` identifies the entry, and a media id would
+    /// target the wrong thing.
+    pub async fn delete_list_entry(&self, entry_id: i64) -> Result<(), ProviderError> {
+        let mutation = r#"
+            mutation ($id: Int) {
+              DeleteMediaListEntry(id: $id) {
+                deleted
+              }
+            }
+        "#;
+
+        let data: DeleteEntryData = self
+            .mutate(mutation, serde_json::json!({ "id": entry_id }))
+            .await?;
+
+        // A refused delete answers with a present object whose `deleted` is
+        // false, so the outer Option alone is not enough -- the bool is checked.
+        match data.deleted {
+            Some(wire) if wire.deleted => Ok(()),
+            _ => Err(ProviderError::Remote(
+                "the list entry was not deleted".into(),
+            )),
+        }
+    }
+}
+
+/// One entry in the reader's own list, for the My List page.
+///
+/// Carries the status so the page can group by it, and the list-entry id so the
+/// row's menu can remove it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserListEntry {
+    pub anime: Anime,
+    /// Which list the work is on.
+    pub status: ListStatus,
+    /// Episodes watched so far, `0` for one never started.
+    pub progress: u32,
+    /// The id of the list entry itself, needed to delete it.
+    pub entry_id: i64,
 }
 
 /// One entry in the reader's "Continue Watching" row.
@@ -818,6 +945,26 @@ struct MediaListEntry {
     /// Episodes watched so far. `0` when absent, matching the domain type.
     #[serde(default)]
     progress: Option<u32>,
+    /// The list entry's own id, needed to delete it. Not the media id.
+    #[serde(default)]
+    id: Option<i64>,
+    /// The entry's status, as AniList spells it. Read per entry so grouping
+    /// does not depend on which `lists` group the entry arrived in.
+    #[serde(default)]
+    status: Option<String>,
+}
+
+/// The `DeleteMediaListEntry` response, which is a `Deleted` object.
+#[derive(Deserialize, Default)]
+struct DeleteEntryData {
+    #[serde(rename = "DeleteMediaListEntry", default)]
+    deleted: Option<DeletedWire>,
+}
+
+#[derive(Deserialize, Default)]
+struct DeletedWire {
+    #[serde(default)]
+    deleted: bool,
 }
 
 /// Map the wire entry onto the domain type.
@@ -2496,13 +2643,29 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_status_drops_the_entry() {
         let response = serde_json::json!({
-            "data": { "Media": { "mediaListEntry": { "status": "REWATCHING", "progress": 4 } } }
+            "data": { "Media": { "mediaListEntry": { "status": "BINGING", "progress": 4 } } }
         });
         let (_server, provider) = provider_with(response, 200).await;
 
         // AniList could add a status this app has never heard of, and claiming
         // the reader's position is something it is not would be a lie.
         assert!(provider.list_entry(21).await.expect("read").is_none());
+    }
+
+    /// A rewatch folds into `Current` rather than being dropped: AniList has
+    /// REWATCHING/REPEATING as distinct statuses, and losing those entries
+    /// would be worse than showing them under "Watching".
+    #[tokio::test]
+    async fn a_rewatch_folds_into_current() {
+        let response = serde_json::json!({
+            "data": { "Media": { "mediaListEntry": { "status": "REWATCHING", "progress": 4 } } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let entry = provider.list_entry(21).await.expect("read").expect("entry");
+
+        assert_eq!(entry.status, ListStatus::Current);
+        assert_eq!(entry.progress, 4);
     }
 
     /// One `MediaListCollection` entry: the standard media fixture plus the
@@ -2665,6 +2828,150 @@ mod tests {
         provider.continue_watching(10).await.expect("read");
 
         assert_auth(&server, Some("Bearer secret-token")).await;
+    }
+
+    /// A full user-list entry: id, status, progress and the media fixture.
+    fn user_list_entry(id: i64, status: &str, progress: u32) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "status": status,
+            "progress": progress,
+            "media": media_json(),
+        })
+    }
+
+    /// Like [`user_list_entry`] but for a distinct work, so dedupe (which keys
+    /// off the media id) does not collapse entries that differ only by status.
+    fn user_list_entry_for(
+        media_id: i64,
+        entry_id: i64,
+        status: &str,
+        progress: u32,
+    ) -> serde_json::Value {
+        let mut media = media_json();
+        media["id"] = serde_json::json!(media_id);
+        serde_json::json!({
+            "id": entry_id,
+            "status": status,
+            "progress": progress,
+            "media": media,
+        })
+    }
+
+    #[tokio::test]
+    async fn user_list_maps_every_status() {
+        let (_server, provider) = provider_for_collection(vec![
+            user_list_entry_for(1, 1, "CURRENT", 3),
+            user_list_entry_for(2, 2, "COMPLETED", 26),
+            user_list_entry_for(3, 3, "PLANNING", 0),
+            user_list_entry_for(4, 4, "PAUSED", 1),
+            user_list_entry_for(5, 5, "DROPPED", 2),
+        ])
+        .await;
+
+        let entries = provider.user_list().await.expect("read");
+
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[0].status, ListStatus::Current);
+        assert_eq!(entries[1].status, ListStatus::Completed);
+        assert_eq!(entries[2].status, ListStatus::Planning);
+        assert_eq!(entries[3].status, ListStatus::Paused);
+        assert_eq!(entries[4].status, ListStatus::Dropped);
+    }
+
+    /// The list-entry id has to survive: the row's remove action needs it, and
+    /// the media id would target the wrong thing.
+    #[tokio::test]
+    async fn user_list_keeps_the_entry_id_and_progress() {
+        let (_server, provider) = provider_for_collection(vec![user_list_entry(7, "CURRENT", 4)]).await;
+
+        let entries = provider.user_list().await.expect("read");
+
+        assert_eq!(entries[0].entry_id, 7);
+        assert_eq!(entries[0].progress, 4);
+        assert_eq!(entries[0].anime.id, 21);
+    }
+
+    /// A rewatch is not a separate tab here, so it lands under Current rather
+    /// than being lost.
+    #[tokio::test]
+    async fn user_list_folds_rewatches_into_current() {
+        let (_server, provider) = provider_for_collection(vec![user_list_entry(1, "REWATCHING", 5)]).await;
+
+        let entries = provider.user_list().await.expect("read");
+
+        assert_eq!(entries[0].status, ListStatus::Current);
+    }
+
+    /// A work in both a status list and a custom list arrives twice; the list
+    /// page must show it once.
+    #[tokio::test]
+    async fn user_list_deduplicates_by_media() {
+        // Same media fixture (id 21) in two groups.
+        let (_server, provider) = provider_for_collection(vec![
+            user_list_entry(1, "CURRENT", 3),
+            user_list_entry(2, "PLANNING", 0),
+        ])
+        .await;
+
+        let entries = provider.user_list().await.expect("read");
+
+        assert_eq!(entries.len(), 1);
+    }
+
+    /// An entry with no id cannot be deleted, so it is dropped rather than
+    /// rendering a row whose remove button is dead.
+    #[tokio::test]
+    async fn user_list_drops_entries_without_an_id() {
+        let mut no_id = user_list_entry(1, "CURRENT", 3);
+        no_id["id"] = serde_json::Value::Null;
+
+        let (_server, provider) = provider_for_collection(vec![
+            no_id,
+            user_list_entry(2, "COMPLETED", 26),
+        ])
+        .await;
+
+        let entries = provider.user_list().await.expect("read");
+
+        // Only the media fixture has id 21, so dedupe alone would leave one --
+        // this asserts the id-less one was skipped, not merely deduped.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].entry_id, 2);
+    }
+
+    fn deleted_response(deleted: bool) -> serde_json::Value {
+        serde_json::json!({ "data": { "DeleteMediaListEntry": { "deleted": deleted } } })
+    }
+
+    #[tokio::test]
+    async fn deleting_a_list_entry_sends_the_entry_id() {
+        let (server, provider) = provider_with(deleted_response(true), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider.delete_list_entry(7).await.expect("delete");
+
+        assert_eq!(sent_variables(&server).await["id"], 7);
+    }
+
+    /// A delete that AniList refuses answers `deleted: false`, which must be an
+    /// error rather than a silent success.
+    #[tokio::test]
+    async fn a_refused_delete_is_an_error() {
+        let (_server, provider) = provider_with(deleted_response(false), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        assert!(provider.delete_list_entry(7).await.is_err());
+    }
+
+    /// The outer field being null is also a failure.
+    #[tokio::test]
+    async fn a_null_delete_response_is_an_error() {
+        let response = serde_json::json!({ "data": { "DeleteMediaListEntry": null } });
+        let (_server, provider) = provider_with(response, 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        assert!(provider.delete_list_entry(7).await.is_err());
     }
 
     /// Anonymous until a token is set, which is how every request worked before

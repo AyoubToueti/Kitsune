@@ -154,9 +154,15 @@ impl ListStatus {
     /// add a status this app has never heard of, and reporting the reader's
     /// list position as "Planning" when it is something else would be a lie
     /// where showing nothing is merely incomplete.
+    ///
+    /// `REWATCHING` and `REPEATING` are AniList's own extra statuses for a work
+    /// being watched again. This app has no separate tab for them, so they fold
+    /// into `Current` rather than being dropped: a rewatch IS active watching,
+    /// and silently losing those entries would be worse than showing them under
+    /// "Watching".
     pub fn from_literal(raw: &str) -> Option<Self> {
         match raw {
-            "CURRENT" => Some(Self::Current),
+            "CURRENT" | "REWATCHING" | "REPEATING" => Some(Self::Current),
             "PLANNING" => Some(Self::Planning),
             "COMPLETED" => Some(Self::Completed),
             "DROPPED" => Some(Self::Dropped),

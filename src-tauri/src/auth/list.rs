@@ -12,7 +12,7 @@
 use tauri::State;
 
 use super::SharedAniList;
-use crate::providers::anilist::ContinueWatchingItem;
+use crate::providers::anilist::{ContinueWatchingItem, UserListEntry};
 use crate::types::ListStatus;
 
 /// A work's position on the reader's list, or `null` when it is not on it.
@@ -67,6 +67,38 @@ pub async fn continue_watching(
 
     provider
         .continue_watching(limit)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+/// The reader's whole anime list, every status, for the My List page.
+///
+/// Returns an empty list when signed out rather than an error, so the page can
+/// render its signed-out state without a failed request.
+#[tauri::command]
+pub async fn user_list(
+    provider: State<'_, SharedAniList>,
+) -> Result<Vec<UserListEntry>, String> {
+    // No token means nothing to read; short-circuited so a signed-out page
+    // makes no request at all.
+    if !provider.has_token() {
+        return Ok(Vec::new());
+    }
+
+    provider.user_list().await.map_err(|err| err.to_string())
+}
+
+/// Remove a work from the reader's list.
+///
+/// `entry_id` is the LIST ENTRY id, not the media id -- see
+/// [`AniListProvider::delete_list_entry`].
+#[tauri::command]
+pub async fn delete_list_entry(
+    provider: State<'_, SharedAniList>,
+    entry_id: i64,
+) -> Result<(), String> {
+    provider
+        .delete_list_entry(entry_id)
         .await
         .map_err(|err| err.to_string())
 }
