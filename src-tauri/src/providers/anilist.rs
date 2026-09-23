@@ -8,6 +8,8 @@
 //! - `coverImage` offers both `large` and `extraLarge`. Both are requested
 //!   and `large` is kept, since that is the right size for a card thumbnail.
 
+use std::sync::Mutex;
+
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -114,6 +116,13 @@ const MEDIA_DETAIL_FIELDS: &str = r#"
 pub struct AniListProvider {
     http: reqwest::Client,
     endpoint: String,
+    /// The reader's access token, when signed in.
+    ///
+    /// `None` means every request is anonymous, which is what the app did
+    /// before sign-in existed. A `Mutex` rather than an atomic because the
+    /// value is a `String`; the guard is only ever held long enough to clone
+    /// the token, never across an await.
+    token: Mutex<Option<String>>,
 }
 
 impl AniListProvider {
@@ -130,21 +139,102 @@ impl AniListProvider {
         Self {
             http: reqwest::Client::new(),
             endpoint: endpoint.into(),
+            token: Mutex::new(None),
         }
     }
 
+    /// Start sending `token` as a bearer credential.
+    ///
+    /// A blank token is discarded rather than stored: it is not a credential,
+    /// and sending `Bearer ` would turn every request into a 401 instead of
+    /// leaving it anonymous.
+    pub fn set_token(&self, token: Option<String>) {
+        let cleaned = token
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty());
+
+        *self.token.lock().expect("token mutex poisoned") = cleaned;
+    }
+
+    /// Stop sending a token. Every later request is anonymous.
+    pub fn clear_token(&self) {
+        self.set_token(None);
+    }
+
+    /// Whether a token is currently held.
+    pub fn has_token(&self) -> bool {
+        self.token
+            .lock()
+            .expect("token mutex poisoned")
+            .is_some()
+    }
+
+    /// The token to send with a request, cloned out of the lock.
+    ///
+    /// Cloned rather than borrowed so the guard is released before the caller
+    /// awaits: holding a `std::sync::Mutex` across an await is how a deadlock
+    /// gets built.
+    fn current_token(&self) -> Option<String> {
+        self.token.lock().expect("token mutex poisoned").clone()
+    }
+
     /// Execute a GraphQL query and return the `data` payload.
+    ///
+    /// Anonymous unless a token is held, which is how every call worked before
+    /// sign-in existed.
     async fn query<T: for<'de> Deserialize<'de>>(
         &self,
         query: &str,
         variables: serde_json::Value,
     ) -> Result<T, ProviderError> {
-        let body = serde_json::json!({ "query": query, "variables": variables });
+        self.send("query", query, variables).await
+    }
 
-        let response = self
-            .http
-            .post(&self.endpoint)
-            .json(&body)
+    /// Execute a GraphQL mutation and return the `data` payload.
+    ///
+    /// GraphQL requires the `mutation` keyword where a query may omit `query`,
+    /// so the operation kind is a parameter rather than hard-coded. AniList
+    /// rejects a mutation sent without a token, which surfaces here as the
+    /// provider's own error rather than an empty result.
+    async fn mutate<T: for<'de> Deserialize<'de>>(
+        &self,
+        mutation: &str,
+        variables: serde_json::Value,
+    ) -> Result<T, ProviderError> {
+        self.send("mutation", mutation, variables).await
+    }
+
+    /// Send one GraphQL operation and return the `data` payload.
+    ///
+    /// Split from [`Self::query`] so the transport -- the bearer header, the
+    /// status check, the `errors` array -- lives in exactly one place. A
+    /// mutation with its own copy could drift and report a rejected write as
+    /// success, which is the failure this shape prevents.
+    async fn send<T: for<'de> Deserialize<'de>>(
+        &self,
+        operation: &str,
+        document: &str,
+        variables: serde_json::Value,
+    ) -> Result<T, ProviderError> {
+        // Built by hand rather than with `json!` because the key is computed:
+        // the same document is sent as `query` or as `mutation`.
+        let mut body = serde_json::Map::new();
+        body.insert(
+            operation.to_string(),
+            serde_json::Value::String(document.to_string()),
+        );
+        body.insert("variables".to_string(), variables);
+        let body = serde_json::Value::Object(body);
+
+        let mut request = self.http.post(&self.endpoint).json(&body);
+
+        // Cloned out of the lock before the await: holding a `std` Mutex
+        // across one is how a deadlock gets built.
+        if let Some(token) = self.current_token() {
+            request = request.bearer_auth(token);
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| ProviderError::Transport(e.to_string()))?;
@@ -1912,6 +2002,168 @@ mod tests {
 
         let provider = AniListProvider::with_endpoint(server.uri());
         (server, provider)
+    }
+
+    /// Assert the one request the server received carried `expected`.
+    ///
+    /// `None` means the request must be anonymous. A helper rather than a bare
+    /// `assert` per test because reading the header involves an await, an
+    /// `Option` chain, and a `to_str` that can fail on non-ASCII -- repeated
+    /// across five tests that is five chances to get the unwrapping wrong.
+    async fn assert_auth(server: &MockServer, expected: Option<&str>) {
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+
+        let actual = requests
+            .first()
+            .and_then(|request| request.headers.get("authorization"))
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+
+        assert_eq!(actual.as_deref(), expected);
+    }
+
+    /// Anonymous until a token is set, which is how every request worked before
+    /// sign-in existed.
+    #[tokio::test]
+    async fn requests_are_anonymous_without_a_token() {
+        let (server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+
+        provider.trending(1).await.unwrap();
+
+        // An anonymous request must not carry a credential.
+        assert_auth(&server, None).await;
+    }
+
+    #[tokio::test]
+    async fn a_token_is_sent_as_a_bearer_credential() {
+        let (server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider.trending(1).await.unwrap();
+
+        assert_auth(&server, Some("Bearer secret-token")).await;
+    }
+
+    #[tokio::test]
+    async fn clearing_the_token_makes_later_requests_anonymous() {
+        let (server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+        provider.set_token(Some("secret-token".into()));
+        provider.clear_token();
+
+        provider.trending(1).await.unwrap();
+
+        assert_auth(&server, None).await;
+    }
+
+    /// A token pasted out of a browser address bar often carries whitespace,
+    /// and `Bearer  secret ` would be rejected by the server.
+    #[tokio::test]
+    async fn a_token_is_trimmed_before_it_is_sent() {
+        let (server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+        provider.set_token(Some("  secret-token\n".into()));
+
+        provider.trending(1).await.unwrap();
+
+        assert_auth(&server, Some("Bearer secret-token")).await;
+    }
+
+    #[test]
+    fn a_blank_token_is_not_stored() {
+        let provider = AniListProvider::with_endpoint("http://localhost");
+
+        provider.set_token(Some("   ".into()));
+
+        // A blank bearer would make every request 401 instead of leaving it
+        // anonymous, so it is discarded rather than sent.
+        assert!(!provider.has_token());
+    }
+
+    #[test]
+    fn has_token_reflects_the_stored_token() {
+        let provider = AniListProvider::with_endpoint("http://localhost");
+        assert!(!provider.has_token());
+
+        provider.set_token(Some("secret-token".into()));
+        assert!(provider.has_token());
+
+        provider.set_token(None);
+        assert!(!provider.has_token());
+    }
+
+    /// The operation keyword is the whole difference between a query and a
+    /// mutation, and AniList rejects a mutation sent as a query.
+    #[tokio::test]
+    async fn a_mutation_is_sent_under_the_mutation_key() {
+        let response = serde_json::json!({ "data": { "ok": true } });
+        let (server, provider) = provider_with(response, 200).await;
+
+        let _: serde_json::Value = provider
+            .mutate(
+                "mutation { SaveMediaListEntry(mediaId: 1) { id } }",
+                serde_json::json!({}),
+            )
+            .await
+            .expect("mutation should succeed");
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("json body");
+
+        assert!(
+            body.get("mutation").is_some(),
+            "a mutation must be sent under the mutation key"
+        );
+        assert!(
+            body.get("query").is_none(),
+            "the same document sent as a query would be rejected"
+        );
+    }
+
+    /// The whole point of the shared transport: a write carries the credential.
+    #[tokio::test]
+    async fn a_mutation_carries_the_token() {
+        let response = serde_json::json!({ "data": { "ok": true } });
+        let (server, provider) = provider_with(response, 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        let _: serde_json::Value = provider
+            .mutate(
+                "mutation { SaveMediaListEntry(mediaId: 1) { id } }",
+                serde_json::json!({}),
+            )
+            .await
+            .expect("mutation should succeed");
+
+        assert_auth(&server, Some("Bearer secret-token")).await;
+    }
+
+    /// A rejected write must report an error rather than look like a success,
+    /// which is the failure a separate mutation path could hide.
+    #[tokio::test]
+    async fn a_rejected_mutation_is_an_error() {
+        let response = serde_json::json!({
+            "data": null,
+            "errors": [{ "message": "not authorized" }]
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let result: Result<serde_json::Value, ProviderError> = provider
+            .mutate(
+                "mutation { SaveMediaListEntry(mediaId: 1) { id } }",
+                serde_json::json!({}),
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a GraphQL error must not be reported as a successful write"
+        );
     }
 
     #[tokio::test]
