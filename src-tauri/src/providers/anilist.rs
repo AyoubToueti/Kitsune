@@ -584,19 +584,24 @@ impl AniListProvider {
             }
         "#;
 
+        // Built as a map rather than with `json!` so `progress` can be left OUT
+        // entirely when it is `None`. Sending `"progress": null` is not the same
+        // as omitting it: AniList validates a present argument and answers
+        // "The progress must be an integer", which broke every status-only
+        // change. An absent variable leaves the stored progress untouched.
+        let mut variables = serde_json::Map::new();
+        variables.insert("mediaId".into(), serde_json::json!(media_id));
         // `status` travels as AniList's own literal, not the serde form: the
         // GraphQL enum has no camelCase spelling, and the two are deliberately
         // kept apart so the frontend's vocabulary and the wire vocabulary can
         // differ.
+        variables.insert("status".into(), serde_json::json!(status.literal()));
+        if let Some(progress) = progress {
+            variables.insert("progress".into(), serde_json::json!(progress));
+        }
+
         let data: SaveEntryData = self
-            .mutate(
-                mutation,
-                serde_json::json!({
-                    "mediaId": media_id,
-                    "status": status.literal(),
-                    "progress": progress,
-                }),
-            )
+            .mutate(mutation, serde_json::Value::Object(variables))
             .await?;
 
         // GraphQL returns `null` for a mutation field when the write was
@@ -2340,11 +2345,13 @@ mod tests {
         );
     }
 
-    /// Omitting progress must send `null`, not `0`: AniList leaves a stored
-    /// value alone when the field is absent, so sending zero would reset the
-    /// reader's progress every time they changed the status.
+    /// Omitting progress must leave the key OUT of the variables entirely, not
+    /// send `null`: a present-but-null argument is validated and rejected with
+    /// "The progress must be an integer", whereas an absent variable leaves the
+    /// stored value untouched. Sending `0` would also be wrong -- it would reset
+    /// the reader's progress every time they changed the status.
     #[tokio::test]
-    async fn saving_without_progress_does_not_reset_it() {
+    async fn saving_without_progress_omits_the_variable() {
         let (server, provider) = provider_with(saved_entry_response(), 200).await;
         provider.set_token(Some("secret-token".into()));
 
@@ -2354,8 +2361,8 @@ mod tests {
             .expect("save should succeed");
 
         assert!(
-            sent_variables(&server).await["progress"].is_null(),
-            "progress must be null rather than 0"
+            sent_variables(&server).await.get("progress").is_none(),
+            "progress must be absent rather than null or 0"
         );
     }
 
