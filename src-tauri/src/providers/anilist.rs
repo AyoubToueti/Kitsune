@@ -652,8 +652,7 @@ impl AniListProvider {
     /// Reads the reader's own CURRENT list via `MediaListCollection`, which
     /// takes no paging arguments -- so the whole list is fetched and trimmed
     /// here. A CURRENT list is bounded by what someone is actively watching, so
-    /// it is small; taking it whole is cheaper than a second round trip and
-    /// keeps the ordering in one place.
+    /// it is small; taking it whole keeps the ordering in one place.
     ///
     /// Requires a token. Without one AniList answers with a GraphQL error,
     /// which surfaces as a provider error rather than an empty list.
@@ -661,10 +660,25 @@ impl AniListProvider {
         &self,
         limit: u32,
     ) -> Result<Vec<Anime>, ProviderError> {
+        // `MediaListCollection` does NOT infer the user from the token, even
+        // when authenticated: without an explicit `userId` (or `userName`) it
+        // answers "User ID/Name & Type arguments required". The id is fetched
+        // first because GraphQL cannot feed one field's value into a sibling
+        // field's argument -- there is no single-request form.
+        let viewer: ViewerData = self
+            .query("{ Viewer { id } }", serde_json::json!({}))
+            .await?;
+        let user_id = viewer
+            .viewer
+            .ok_or_else(|| {
+                ProviderError::Remote("the token has no viewer".into())
+            })?
+            .id;
+
         let query = format!(
             r#"
-            query {{
-              MediaListCollection(type: ANIME, status: CURRENT) {{
+            query ($userId: Int) {{
+              MediaListCollection(userId: $userId, type: ANIME, status: CURRENT) {{
                 lists {{
                   entries {{
                     media {{ {MEDIA_FIELDS} }}
@@ -676,8 +690,9 @@ impl AniListProvider {
             "#
         );
 
-        let data: MediaListCollectionData =
-            self.query(&query, serde_json::json!({})).await?;
+        let data: MediaListCollectionData = self
+            .query(&query, serde_json::json!({ "userId": user_id }))
+            .await?;
 
         // `lists` is normally one group for a status query, but it is a list in
         // the schema, so flatten rather than reaching for the first.
@@ -742,6 +757,21 @@ struct ListEntryWire {
     status: Option<String>,
     #[serde(default)]
     progress: Option<u32>,
+}
+
+/// The root `Viewer` field: the authenticated user.
+///
+/// Used only to learn the reader's own id, which `MediaListCollection` needs
+/// explicitly.
+#[derive(Deserialize, Default)]
+struct ViewerData {
+    #[serde(rename = "Viewer", default)]
+    viewer: Option<Viewer>,
+}
+
+#[derive(Deserialize, Default)]
+struct Viewer {
+    id: i64,
 }
 
 /// The envelope around `MediaListCollection`, which is a root field.
@@ -2475,10 +2505,39 @@ mod tests {
         })
     }
 
+    /// A provider whose mock answers the two requests `continue_watching`
+    /// makes: the `Viewer` lookup, then the collection. A single static
+    /// response cannot serve both, because the two have different shapes and
+    /// the second depends on the id the first returns.
+    async fn provider_for_collection(
+        entries: Vec<serde_json::Value>,
+    ) -> (MockServer, AniListProvider) {
+        let server = MockServer::start().await;
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let collection = collection_response(entries);
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(move |_req: &wiremock::Request| {
+                let n = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = if n == 0 {
+                    serde_json::json!({ "data": { "Viewer": { "id": 7 } } })
+                } else {
+                    collection.clone()
+                };
+                ResponseTemplate::new(200).set_body_json(body)
+            })
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        (server, provider)
+    }
+
     #[tokio::test]
     async fn continue_watching_maps_the_current_list() {
         let (_server, provider) =
-            provider_with(collection_response(vec![collection_entry(100)]), 200).await;
+            provider_for_collection(vec![collection_entry(100)]).await;
 
         let anime = provider
             .continue_watching(10)
@@ -2508,7 +2567,7 @@ mod tests {
         let newest = collection_entry_for(2, 300);
         let middle = collection_entry_for(3, 200);
         let (_server, provider) =
-            provider_with(collection_response(vec![older, newest, middle]), 200).await;
+            provider_for_collection(vec![older, newest, middle]).await;
 
         let anime = provider.continue_watching(10).await.expect("read");
 
@@ -2525,7 +2584,7 @@ mod tests {
         let kept = collection_entry(100);
 
         let (_server, provider) =
-            provider_with(collection_response(vec![orphan, kept]), 200).await;
+            provider_for_collection(vec![orphan, kept]).await;
 
         let anime = provider.continue_watching(10).await.expect("read");
 
@@ -2538,7 +2597,7 @@ mod tests {
     async fn continue_watching_honours_the_limit() {
         let entries: Vec<serde_json::Value> =
             (0..5).map(|i| collection_entry(i * 10)).collect();
-        let (_server, provider) = provider_with(collection_response(entries), 200).await;
+        let (_server, provider) = provider_for_collection(entries).await;
 
         let anime = provider.continue_watching(2).await.expect("read");
 
@@ -2548,7 +2607,7 @@ mod tests {
     /// An empty list is not an error.
     #[tokio::test]
     async fn continue_watching_handles_an_empty_list() {
-        let (_server, provider) = provider_with(collection_response(vec![]), 200).await;
+        let (_server, provider) = provider_for_collection(vec![]).await;
 
         let anime = provider.continue_watching(10).await.expect("read");
 
@@ -2559,7 +2618,7 @@ mod tests {
     #[tokio::test]
     async fn continue_watching_carries_the_token() {
         let (server, provider) =
-            provider_with(collection_response(vec![collection_entry(100)]), 200).await;
+            provider_for_collection(vec![collection_entry(100)]).await;
         provider.set_token(Some("secret-token".into()));
 
         provider.continue_watching(10).await.expect("read");
