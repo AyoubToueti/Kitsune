@@ -188,6 +188,31 @@ export type SortOption =
 /** Which release status to keep. */
 export type StatusFilter = "releasing" | "finished" | "notYetReleased";
 
+/**
+ * Where a work sits on the reader's own AniList list.
+ *
+ * Distinct from `StatusFilter`: that one is the WORK's release state ("is it
+ * still airing"), this is the READER's relationship to it ("am I watching it").
+ * A finished show can be `current` on someone's list, so the two are not
+ * interchangeable.
+ *
+ * Mirrors the Rust `ListStatus`. The values are the wire format the backend
+ * accepts, so they pass straight through rather than being translated here.
+ */
+export type ListStatus =
+  | "current"
+  | "planning"
+  | "completed"
+  | "dropped"
+  | "paused";
+
+/** The reader's own entry for a work, when it has one. */
+export interface ListEntry {
+  status: ListStatus;
+  /** Episodes watched so far. */
+  progress: number;
+}
+
 /** Which release format to keep. */
 export type FormatFilter = "tv" | "movie" | "ova" | "ona" | "special" | "music";
 

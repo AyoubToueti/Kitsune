@@ -12,11 +12,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { ListEntry, ListStatus } from "$lib/types";
+
 /** Command names, centralised so a rename cannot drift. */
 export const AUTH_COMMANDS = {
   beginLogin: "begin_login",
   status: "auth_status",
   logout: "logout",
+  getListEntry: "get_list_entry",
+  setListEntry: "set_list_entry",
 } as const;
 
 /**
@@ -69,5 +73,38 @@ export async function onAuthChanged(
   return listen<boolean>(AUTH_CHANGED_EVENT, (event) => {
     if (typeof event.payload !== "boolean") return;
     handler(event.payload);
+  });
+}
+
+/**
+ * Where a work sits on the reader's list, or `null` when it is not on it.
+ *
+ * Not cached. A status can change from this app at any moment, and a cached
+ * entry would leave the menu showing a stale selection -- which reads as the
+ * write having silently failed.
+ */
+export async function getListEntry(
+  mediaId: number,
+): Promise<ListEntry | null> {
+  return invoke<ListEntry | null>(AUTH_COMMANDS.getListEntry, { mediaId });
+}
+
+/**
+ * Put a work on the reader's list, or move it between lists.
+ *
+ * `progress` is omitted rather than sent as zero when the caller only wants to
+ * change the status: the backend passes `null` on, and AniList leaves a stored
+ * progress value alone when the field is absent. Sending zero would silently
+ * reset how far the reader had got.
+ */
+export async function setListEntry(
+  mediaId: number,
+  status: ListStatus,
+  progress?: number,
+): Promise<void> {
+  return invoke<void>(AUTH_COMMANDS.setListEntry, {
+    mediaId,
+    status,
+    progress,
   });
 }

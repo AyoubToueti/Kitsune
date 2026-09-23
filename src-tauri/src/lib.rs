@@ -153,6 +153,9 @@ pub fn run() {
                 auth::commands::begin_login,
                 auth::commands::auth_status,
                 auth::commands::logout,
+                // The reader's own list.
+                auth::list::get_list_entry,
+                auth::list::set_list_entry,
             ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

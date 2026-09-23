@@ -12,6 +12,7 @@
 
 pub mod commands;
 pub mod flow;
+pub mod list;
 pub mod store;
 
 pub use commands::{apply_token, restore_token, SharedAniList, AUTH_CHANGED_EVENT};

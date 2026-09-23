@@ -13,8 +13,10 @@ import {
   AUTH_COMMANDS,
   authStatus,
   beginLogin,
+  getListEntry,
   logout,
   onAuthChanged,
+  setListEntry,
 } from "./auth";
 
 beforeEach(() => {
@@ -56,6 +58,70 @@ describe("auth command wrappers", () => {
     await logout();
 
     expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.logout);
+  });
+});
+
+describe("list entry wrappers", () => {
+  it("getListEntry passes the media id", async () => {
+    invokeMock.mockResolvedValue({ status: "current", progress: 3 });
+
+    const entry = await getListEntry(21);
+
+    expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.getListEntry, {
+      mediaId: 21,
+    });
+    expect(entry?.status).toBe("current");
+  });
+
+  /// A work that is not on the list is a legitimate answer, not an error.
+  it("getListEntry returns null for a work off the list", async () => {
+    invokeMock.mockResolvedValue(null);
+
+    await expect(getListEntry(21)).resolves.toBeNull();
+  });
+
+  it("setListEntry passes the status", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await setListEntry(21, "paused");
+
+    expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.setListEntry, {
+      mediaId: 21,
+      status: "paused",
+      progress: undefined,
+    });
+  });
+
+  /// Progress is omitted rather than sent as zero. The backend passes null on,
+  /// and AniList leaves a stored value alone when the field is absent -- so
+  /// sending zero would reset how far the reader had got.
+  it("setListEntry omits progress when it is not given", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await setListEntry(21, "current");
+
+    const [, payload] = invokeMock.mock.calls[0];
+    expect(payload.progress).toBeUndefined();
+  });
+
+  it("setListEntry forwards progress when it is given", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await setListEntry(21, "current", 7);
+
+    const [, payload] = invokeMock.mock.calls[0];
+    expect(payload.progress).toBe(7);
+  });
+
+  /// Deliberately not cached: a status can change at any moment, and a stale
+  /// entry would leave the menu showing a selection that is no longer true.
+  it("getListEntry asks the backend every time", async () => {
+    invokeMock.mockResolvedValue(null);
+
+    await getListEntry(21);
+    await getListEntry(21);
+
+    expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 });
 
