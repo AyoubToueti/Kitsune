@@ -187,21 +187,21 @@ impl AniListProvider {
         query: &str,
         variables: serde_json::Value,
     ) -> Result<T, ProviderError> {
-        self.send("query", query, variables).await
+        self.send(query, variables).await
     }
 
     /// Execute a GraphQL mutation and return the `data` payload.
     ///
-    /// GraphQL requires the `mutation` keyword where a query may omit `query`,
-    /// so the operation kind is a parameter rather than hard-coded. AniList
-    /// rejects a mutation sent without a token, which surfaces here as the
-    /// provider's own error rather than an empty result.
+    /// Kept as its own wrapper rather than folded into `query` so call sites
+    /// read as what they are. The document still carries the `mutation`
+    /// keyword; that keyword is what makes AniList treat it as a mutation, not
+    /// the key it travels under.
     async fn mutate<T: for<'de> Deserialize<'de>>(
         &self,
         mutation: &str,
         variables: serde_json::Value,
     ) -> Result<T, ProviderError> {
-        self.send("mutation", mutation, variables).await
+        self.send(mutation, variables).await
     }
 
     /// Send one GraphQL operation and return the `data` payload.
@@ -212,19 +212,17 @@ impl AniListProvider {
     /// success, which is the failure this shape prevents.
     async fn send<T: for<'de> Deserialize<'de>>(
         &self,
-        operation: &str,
         document: &str,
         variables: serde_json::Value,
     ) -> Result<T, ProviderError> {
-        // Built by hand rather than with `json!` because the key is computed:
-        // the same document is sent as `query` or as `mutation`.
-        let mut body = serde_json::Map::new();
-        body.insert(
-            operation.to_string(),
-            serde_json::Value::String(document.to_string()),
-        );
-        body.insert("variables".to_string(), variables);
-        let body = serde_json::Value::Object(body);
+        // The document ALWAYS travels under the `query` key, even for a
+        // mutation. AniList reads the operation from `query` and takes the
+        // kind from the keyword inside the string; sending a mutation under a
+        // `mutation` key is answered with "No query or mutation provided".
+        let body = serde_json::json!({
+            "query": document,
+            "variables": variables,
+        });
 
         let mut request = self.http.post(&self.endpoint).json(&body);
 
@@ -2308,6 +2306,40 @@ mod tests {
         assert_eq!(sent_variables(&server).await["mediaId"], 21);
     }
 
+    /// The whole 400 this fixes: AniList reads the operation from `query` and
+    /// takes the kind from the keyword inside the string. Sending the document
+    /// under a `mutation` key is answered with "No query or mutation provided",
+    /// which is exactly what a real "Add to list" click hit.
+    #[tokio::test]
+    async fn saving_a_list_entry_sends_the_document_under_the_query_key() {
+        let (server, provider) = provider_with(saved_entry_response(), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .save_list_entry(21, ListStatus::Current, None)
+            .await
+            .expect("save should succeed");
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("json body");
+
+        let document = body["query"]
+            .as_str()
+            .expect("the document must travel under the query key");
+        assert!(
+            document.contains("SaveMediaListEntry"),
+            "the mutation body should carry the operation"
+        );
+        assert!(
+            body.get("mutation").is_none(),
+            "a `mutation` key is not something AniList reads"
+        );
+    }
+
     /// Omitting progress must send `null`, not `0`: AniList leaves a stored
     /// value alone when the field is absent, so sending zero would reset the
     /// reader's progress every time they changed the status.
@@ -2596,10 +2628,12 @@ mod tests {
         assert!(!provider.has_token());
     }
 
-    /// The operation keyword is the whole difference between a query and a
-    /// mutation, and AniList rejects a mutation sent as a query.
+    /// AniList reads the operation from the `query` field and takes the kind
+    /// from the keyword INSIDE the document. A mutation sent under a
+    /// `mutation` key is answered with "No query or mutation provided", which
+    /// is the 400 this guards against.
     #[tokio::test]
-    async fn a_mutation_is_sent_under_the_mutation_key() {
+    async fn a_mutation_is_sent_under_the_query_key() {
         let response = serde_json::json!({ "data": { "ok": true } });
         let (server, provider) = provider_with(response, 200).await;
 
@@ -2619,12 +2653,18 @@ mod tests {
             serde_json::from_slice(&requests[0].body).expect("json body");
 
         assert!(
-            body.get("mutation").is_some(),
-            "a mutation must be sent under the mutation key"
+            body.get("query").is_some(),
+            "the document must travel under the query key"
         );
         assert!(
-            body.get("query").is_none(),
-            "the same document sent as a query would be rejected"
+            body.get("mutation").is_none(),
+            "a `mutation` key is not something AniList reads"
+        );
+        // The keyword inside the string is what makes it a mutation.
+        let document = body["query"].as_str().expect("query should be a string");
+        assert!(
+            document.contains("mutation"),
+            "the document must still carry the mutation keyword"
         );
     }
 
