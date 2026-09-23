@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod commands;
 pub mod indexer;
 pub mod player;
@@ -33,6 +34,9 @@ pub fn run() {
             // `reqwest::Client`, so rebuilding one per search would waste
             // connections and re-resolve DNS.
             .manage(indexer::IndexerRegistry::new())
+            // The AniList token, read from disk at startup so a signed-in
+            // reader stays signed in across restarts.
+            .manage(auth::TokenStore::new())
             .invoke_handler(tauri::generate_handler![
                 // Metadata.
                 greet,

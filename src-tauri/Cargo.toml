@@ -37,6 +37,9 @@ quick-xml = "0.37"
 once_cell = "1"
 # The metadata probe needs a scratch directory it can drop when it is done.
 tempfile = "3.27.0"
+# Resolves the OS data directory for the AniList token store. Already present
+# transitively in Cargo.lock, so this promotes rather than adds to the graph.
+dirs = "6"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
