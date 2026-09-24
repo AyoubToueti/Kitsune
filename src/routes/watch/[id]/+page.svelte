@@ -62,11 +62,18 @@
    *
    * Built once for the page's life: the set it keeps must survive across
    * re-selections, or switching files back and forth would re-write the same
-   * episode every time. A failed write is swallowed inside the recorder, so
-   * nothing here can break playback.
+   * episode every time. A failed write never breaks playback, but it is
+   * logged rather than swallowed -- a silently dropped write is exactly what
+   * made a watched work fail to appear on the list with no clue why.
    */
-  const progress = createProgressRecorder((animeId, episode) =>
-    setListEntry(animeId, "current", episode),
+  const progress = createProgressRecorder(
+    (animeId, episode) => setListEntry(animeId, "current", episode),
+    (animeId, episode, error) => {
+      console.warn(
+        `Could not record progress for ${animeId} episode ${episode ?? "?"}:`,
+        error,
+      );
+    },
   );
 
   // --- resolving a stream --------------------------------------------------

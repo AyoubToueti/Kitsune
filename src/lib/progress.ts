@@ -40,8 +40,20 @@ export interface ProgressRecorder {
  * The pair is the key rather than the episode alone: the same number belongs to
  * a different work on another page, and two works could otherwise share one
  * slot.
+ *
+ * `onError` is called when a save rejects. The recorder still never throws --
+ * progress is a side effect of watching -- but a caller that passes this can
+ * surface the failure instead of losing it, which is what the empty catch used
+ * to do.
  */
-export function createProgressRecorder(save: ProgressSaver): ProgressRecorder {
+export function createProgressRecorder(
+  save: ProgressSaver,
+  onError?: (
+    animeId: number,
+    episode: number | undefined,
+    error: unknown,
+  ) => void,
+): ProgressRecorder {
   const recorded = new Set<string>();
 
   return {
@@ -54,7 +66,11 @@ export function createProgressRecorder(save: ProgressSaver): ProgressRecorder {
       if (recorded.has(key)) return;
       recorded.add(key);
 
-      void save(animeId, episode).catch(() => {
+      void save(animeId, episode).catch((error: unknown) => {
+        // Reported BEFORE the key is dropped: a write that fails silently is
+        // worse than one that fails loudly, and this is the only place the
+        // error surfaces at all. Optional so existing callers are unaffected.
+        onError?.(animeId, episode, error);
         // A transient failure drops the key so the next play of this episode
         // tries again, rather than suppressing the write for the whole visit.
         // Still bounded by the reader's own actions, so it cannot spam.

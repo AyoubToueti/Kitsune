@@ -76,6 +76,35 @@ describe("createProgressRecorder", () => {
     await vi.waitFor(() => expect(save).toHaveBeenCalled());
   });
 
+  /// A failed write used to vanish into an empty catch, so a work watched but
+  /// never recorded left no clue. The reporter is how it surfaces.
+  it("reports a failed save to onError", async () => {
+    const failure = new Error("offline");
+    const save = vi.fn().mockRejectedValue(failure);
+    const onError = vi.fn();
+    const recorder = createProgressRecorder(save, onError);
+
+    recorder.record(21, 3);
+
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(21, 3, failure),
+    );
+  });
+
+  /// The no-episode case has no number to report, but it is still a write that
+  /// failed and must not pass silently.
+  it("reports a number-less failure too", async () => {
+    const save = vi.fn().mockRejectedValue(new Error("offline"));
+    const onError = vi.fn();
+    const recorder = createProgressRecorder(save, onError);
+
+    recorder.record(21);
+
+    await vi.waitFor(() =>
+      expect(onError).toHaveBeenCalledWith(21, undefined, expect.anything()),
+    );
+  });
+
   /// A transient failure should not suppress the episode for the whole visit.
   it("retries an episode after a failure", async () => {
     const save = vi
