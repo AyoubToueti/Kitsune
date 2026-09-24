@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
 import type { UserListEntry } from "$lib/types";
@@ -35,7 +35,33 @@ beforeEach(() => {
   deleteListEntryMock.mockReset().mockResolvedValue(undefined);
 });
 
+/**
+ * Give the component a viewport and a trigger position.
+ *
+ * jsdom reports zeros from `getBoundingClientRect` and does not set
+ * `innerWidth`, so without both stubs every render resolves to the same
+ * alignment and the flip is untestable.
+ */
+function setGeometry(triggerLeft: number, viewportWidth: number) {
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+    left: triggerLeft,
+    right: triggerLeft + 28,
+    top: 0,
+    bottom: 28,
+    width: 28,
+    height: 28,
+    x: triggerLeft,
+    y: 0,
+    toJSON: () => ({}),
+  } as DOMRect);
+  vi.spyOn(window, "innerWidth", "get").mockReturnValue(viewportWidth);
+}
+
 describe("ListItemMenu", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("starts closed", () => {
     render(ListItemMenu, {
       props: { entry: entry(), onchange: () => {}, onremove: () => {} },
@@ -46,6 +72,32 @@ describe("ListItemMenu", () => {
       "false",
     );
     expect(screen.queryByTestId("item-menu")).toBeNull();
+  });
+
+  /// The default: plenty of room to the right, so the menu unfolds that way.
+  it("opens rightward by default", async () => {
+    setGeometry(0, 1280);
+
+    render(ListItemMenu, {
+      props: { entry: entry(), onchange: () => {}, onremove: () => {} },
+    });
+    await fireEvent.click(screen.getByTestId("item-menu-button"));
+
+    expect(screen.getByTestId("item-menu").className).toContain("left-0");
+  });
+
+  /// A card at the right edge would push a right-opening menu off-screen, so
+  /// the menu flips to open leftward.
+  it("flips to open leftward near the right edge", async () => {
+    // 900 + 176 > 1000, so rightward cannot fit.
+    setGeometry(900, 1000);
+
+    render(ListItemMenu, {
+      props: { entry: entry(), onchange: () => {}, onremove: () => {} },
+    });
+    await fireEvent.click(screen.getByTestId("item-menu-button"));
+
+    expect(screen.getByTestId("item-menu").className).toContain("right-0");
   });
 
   it("lists every status plus remove when opened", async () => {

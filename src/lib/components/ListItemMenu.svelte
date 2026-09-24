@@ -1,5 +1,6 @@
 <script lang="ts">
   import { deleteListEntry, setListEntry } from "$lib/api/auth";
+  import { chooseMenuAlign, MENU_WIDTH, type MenuAlign } from "$lib/menu-position";
   import type { ListStatus, UserListEntry } from "$lib/types";
 
   let {
@@ -32,6 +33,16 @@
   let open = $state(false);
   let busy = $state(false);
   let container = $state<HTMLElement | null>(null);
+  let button = $state<HTMLElement | null>(null);
+
+  /**
+   * Which way the menu opens, decided when it is opened.
+   *
+   * A card in the last column would otherwise push a right-opening menu off the
+   * screen. Decided once at open time rather than reactively: the menu is
+   * short-lived and the reader does not resize mid-selection.
+   */
+  let align = $state<MenuAlign>("start");
 
   /** Close the menu when a click lands outside the control. */
   function onWindowClick(event: MouseEvent) {
@@ -41,6 +52,25 @@
     if (target !== null && !container.contains(target)) {
       open = false;
     }
+  }
+
+  /**
+   * Open or close, choosing the alignment at the moment it opens.
+   *
+   * Measured on open rather than kept reactive: the reader is not resizing
+   * mid-selection, and a single read is cheaper than tracking the viewport.
+   */
+  function toggle() {
+    if (open) {
+      open = false;
+      return;
+    }
+
+    // `getBoundingClientRect` is absent-but-safe to call in jsdom, returning
+    // zeros -- which resolves to "start", the default, so tests are unaffected.
+    const left = button?.getBoundingClientRect().left ?? 0;
+    align = chooseMenuAlign(left, window.innerWidth, MENU_WIDTH);
+    open = true;
   }
 
   /** Move the work to `next`, then tell the page so it can re-group. */
@@ -86,12 +116,13 @@
 <div bind:this={container} class="absolute top-1 left-1">
   <button
     type="button"
+    bind:this={button}
     data-testid="item-menu-button"
     aria-label="List options"
     aria-expanded={open}
     aria-controls="item-menu"
     disabled={busy}
-    onclick={() => (open = !open)}
+    onclick={toggle}
     class="flex h-7 w-7 items-center justify-center rounded-full bg-surface/85 text-ink shadow transition-colors hover:bg-surface-hover hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60"
   >
     <span aria-hidden="true">⋮</span>
@@ -101,7 +132,9 @@
     <div
       id="item-menu"
       data-testid="item-menu"
-      class="absolute right-0 top-full z-30 mt-1 w-44"
+      class="absolute top-full z-30 mt-1 w-44 {align === 'start'
+        ? 'left-0'
+        : 'right-0'}"
     >
       <ul class="rounded-xl bg-surface py-2 shadow-xl">
         {#each STATUSES as { value, label } (value)}
