@@ -17,4 +17,5 @@ pub mod store;
 
 pub use commands::{apply_token, restore_token, SharedAniList, AUTH_CHANGED_EVENT};
 pub use flow::{authorize_url, parse_token, CLIENT_ID};
+pub use list::LIST_CHANGED_EVENT;
 pub use store::TokenStore;

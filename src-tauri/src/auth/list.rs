@@ -9,11 +9,22 @@
 //! `Arc<dyn AnimeProvider>` the metadata commands use, because list writes are
 //! not on that trait. See the note on `AniListProvider::save_list_entry`.
 
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use super::SharedAniList;
 use crate::providers::anilist::{ContinueWatchingItem, UserListEntry};
 use crate::types::ListStatus;
+
+/// Event emitted after a write that changed the reader's list.
+///
+/// Carries no payload: it is a nudge to re-read, not the data itself. Both the
+/// resume disc and the Continue Watching row refetch on it, so a work watched
+/// on one page shows up everywhere without a reload.
+///
+/// Every list write funnels through `set_list_entry` and `delete_list_entry`,
+/// so emitting from those two is the whole story -- there is no third path that
+/// could forget to announce itself.
+pub const LIST_CHANGED_EVENT: &str = "list-changed";
 
 /// A work's position on the reader's list, or `null` when it is not on it.
 ///
@@ -37,6 +48,7 @@ pub async fn get_list_entry(
 /// existing progress value is left alone rather than reset to zero.
 #[tauri::command]
 pub async fn set_list_entry(
+    app: AppHandle,
     provider: State<'_, SharedAniList>,
     media_id: i64,
     status: ListStatus,
@@ -45,7 +57,12 @@ pub async fn set_list_entry(
     provider
         .save_list_entry(media_id, status, progress)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+
+    // Only after the write succeeded: a failed save did not change the list, so
+    // telling the UI to re-read would be a lie.
+    let _ = app.emit(LIST_CHANGED_EVENT, ());
+    Ok(())
 }
 
 /// The works the reader is currently watching, most recently touched first.
@@ -94,11 +111,16 @@ pub async fn user_list(
 /// [`AniListProvider::delete_list_entry`].
 #[tauri::command]
 pub async fn delete_list_entry(
+    app: AppHandle,
     provider: State<'_, SharedAniList>,
     entry_id: i64,
 ) -> Result<(), String> {
     provider
         .delete_list_entry(entry_id)
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+
+    // Only after the delete succeeded, same reasoning as `set_list_entry`.
+    let _ = app.emit(LIST_CHANGED_EVENT, ());
+    Ok(())
 }
