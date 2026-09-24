@@ -12,10 +12,12 @@
 
 pub mod commands;
 pub mod flow;
+pub mod last_played;
 pub mod list;
 pub mod store;
 
 pub use commands::{apply_token, restore_token, SharedAniList, AUTH_CHANGED_EVENT};
 pub use flow::{authorize_url, parse_token, CLIENT_ID};
+pub use last_played::{LastPlayed, LastPlayedStore};
 pub use list::LIST_CHANGED_EVENT;
 pub use store::TokenStore;

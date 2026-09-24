@@ -60,6 +60,7 @@ pub fn run() {
             // The AniList token, read from disk at startup so a signed-in
             // reader stays signed in across restarts.
             .manage(auth::TokenStore::new())
+            .manage(auth::LastPlayedStore::new())
             .setup(|app| {
                 use tauri::{Emitter, Manager};
                 // Imported once at the top of the closure: the trait provides
@@ -159,6 +160,9 @@ pub fn run() {
                 auth::list::continue_watching,
                 auth::list::user_list,
                 auth::list::delete_list_entry,
+                // Where the reader last was, kept locally.
+                auth::list::record_last_played,
+                auth::list::last_played,
             ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

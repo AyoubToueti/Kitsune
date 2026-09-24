@@ -11,7 +11,7 @@
 
 use tauri::{AppHandle, Emitter, State};
 
-use super::SharedAniList;
+use super::{LastPlayed, LastPlayedStore, SharedAniList};
 use crate::providers::anilist::{ContinueWatchingItem, UserListEntry};
 use crate::types::ListStatus;
 
@@ -123,4 +123,26 @@ pub async fn delete_list_entry(
     // Only after the delete succeeded, same reasoning as `set_list_entry`.
     let _ = app.emit(LIST_CHANGED_EVENT, ());
     Ok(())
+}
+
+/// Record that the reader opened a work, so the resume disc can find it again.
+///
+/// Local, not AniList: the list's `updatedAt` records the last CHANGE, so
+/// re-watching an episode you are already on does not move it. "What did I last
+/// open" is a different question, and this answers it.
+#[tauri::command]
+pub fn record_last_played(
+    store: State<'_, LastPlayedStore>,
+    anime_id: i64,
+    episode: Option<u32>,
+) -> Result<(), String> {
+    store
+        .write(anime_id, episode)
+        .map_err(|err| err.to_string())
+}
+
+/// The work the reader most recently opened, or `null` when nothing is recorded.
+#[tauri::command]
+pub fn last_played(store: State<'_, LastPlayedStore>) -> Option<LastPlayed> {
+    store.read()
 }
