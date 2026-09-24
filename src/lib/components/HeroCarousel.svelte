@@ -187,7 +187,7 @@
     {#if count > 1}
       <!-- Stacked on the right edge, over the artwork. z-10 keeps them above
            the scrims, which are painted after the track's own content. -->
-      <div class="absolute top-1/2 right-4 z-10 flex -translate-y-1/2 flex-col gap-2">
+      <div class="absolute top-1/2 right-4 z-9 flex -translate-y-1/2 flex-col gap-2">
         <button
           type="button"
           onclick={() => step(1)}

@@ -120,7 +120,7 @@
         type="button"
         onclick={() => (selectedKey = day.key)}
         aria-pressed={day.key === selectedKey}
-        class="flex min-w-[4.5rem] shrink-0 flex-col items-center rounded-lg px-3 py-1.5 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {day.key ===
+        class="flex min-w-18 shrink-0 flex-col items-center rounded-lg px-3 py-1.5 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {day.key ===
         selectedKey
           ? 'bg-accent text-white'
           : 'bg-surface-hover text-ink-muted hover:text-ink'}"
@@ -146,10 +146,10 @@
       data-testid="schedule-skeleton"
     >
       <span class="sr-only">Loading…</span>
-      {#each Array(5) as _, i (i)}
-        <div class="flex items-center gap-3 py-2">
-          <Skeleton class="h-3 w-12 shrink-0" />
-          <Skeleton class="h-4 min-w-0 flex-1" />
+      {#each Array(10) as _, i (i)}
+        <div class="flex items-center gap-3 py-3">
+          <Skeleton class="h-7 w-12 shrink-0" />
+          <Skeleton class="h-5 min-w-0 flex-1" />
           <Skeleton class="h-5 w-20 shrink-0 rounded" />
         </div>
       {/each}
