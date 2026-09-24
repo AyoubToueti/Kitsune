@@ -2,7 +2,11 @@
   import { onDestroy, onMount } from "svelte";
   import { page } from "$app/state";
 
-  import { getContinueWatching, onAuthChanged } from "$lib/api/auth";
+  import {
+    getContinueWatching,
+    onAuthChanged,
+    onListChanged,
+  } from "$lib/api/auth";
   import { resumeIndex } from "$lib/resume";
   import { displayTitle, type ContinueWatchingItem } from "$lib/types";
   import type { UnlistenFn } from "@tauri-apps/api/event";
@@ -16,6 +20,8 @@
   let item = $state<ContinueWatchingItem | null>(null);
   let loading = $state(true);
   let unlisten: UnlistenFn | null = null;
+  /** The list-change listener, kept apart so teardown removes both. */
+  let unlistenList: UnlistenFn | null = null;
 
   /**
    * Whether the disc should show at all.
@@ -65,6 +71,21 @@
         // Without the listener the disc still works on the next navigation.
       });
 
+    // A write from anywhere -- the detail page's menu, the watch page
+    // recording an episode, the My List page removing one -- announces itself
+    // and the disc re-reads. Without this it would show whatever was newest
+    // when the app started, because the layout never remounts.
+    onListChanged(() => {
+      void load();
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlistenList = fn;
+      })
+      .catch(() => {
+        // As above: the disc is an affordance, not a page that can fail.
+      });
+
     return () => {
       cancelled = true;
     };
@@ -72,6 +93,7 @@
 
   onDestroy(() => {
     unlisten?.();
+    unlistenList?.();
   });
 </script>
 

@@ -22,10 +22,12 @@ vi.mock("$lib/api/anime", async () => {
 
 // The Continue Watching section reads the reader's own list, which needs a
 // Tauri command. Mocked to an empty list so the section renders nothing, which
-// is what a signed-out reader sees.
+// is what a signed-out reader sees. `onListChanged` is stubbed because the
+// section subscribes on mount, and an undefined export would throw.
 const getContinueWatchingMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/auth", () => ({
   getContinueWatching: getContinueWatchingMock,
+  onListChanged: vi.fn().mockResolvedValue(() => {}),
 }));
 
 import Page from "./+page.svelte";

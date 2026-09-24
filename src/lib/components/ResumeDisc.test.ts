@@ -9,9 +9,11 @@ import { page as appState } from "$app/state";
 
 const getContinueWatchingMock = vi.hoisted(() => vi.fn());
 const onAuthChangedMock = vi.hoisted(() => vi.fn());
+const onListChangedMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/auth", () => ({
   getContinueWatching: getContinueWatchingMock,
   onAuthChanged: onAuthChangedMock,
+  onListChanged: onListChangedMock,
 }));
 
 import ResumeDisc from "./ResumeDisc.svelte";
@@ -40,6 +42,7 @@ function setPath(pathname: string) {
 beforeEach(() => {
   getContinueWatchingMock.mockReset().mockResolvedValue([]);
   onAuthChangedMock.mockReset().mockResolvedValue(() => {});
+  onListChangedMock.mockReset().mockResolvedValue(() => {});
   setPath("/");
 });
 
@@ -105,6 +108,28 @@ describe("ResumeDisc", () => {
 
     const card = await screen.findByTestId("resume-disc-card");
     expect(card).toHaveTextContent("Not started");
+  });
+  /// The disc lives in the layout, which never remounts -- so without this it
+  /// would show whatever was newest when the app started, all session.
+  it("refetches when the list changes", async () => {
+    getContinueWatchingMock.mockResolvedValue([item(3)]);
+
+    let fire: (() => void) | undefined;
+    onListChangedMock.mockImplementation((cb: () => void) => {
+      fire = cb;
+      return Promise.resolve(() => {});
+    });
+
+    render(ResumeDisc);
+    await screen.findByTestId("resume-disc");
+    expect(getContinueWatchingMock).toHaveBeenCalledTimes(1);
+
+    // A write elsewhere in the app fires the event...
+    getContinueWatchingMock.mockResolvedValue([item(9)]);
+    fire!();
+
+    // ...and the disc re-reads, picking up the newer work.
+    await waitFor(() => expect(getContinueWatchingMock).toHaveBeenCalledTimes(2));
   });
 
   /// Resuming what is already on screen is nonsense, and the disc would sit

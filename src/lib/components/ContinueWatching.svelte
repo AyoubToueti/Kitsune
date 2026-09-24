@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
 
   import { errorMessage } from "$lib/api/anime";
-  import { getContinueWatching } from "$lib/api/auth";
+  import { getContinueWatching, onListChanged } from "$lib/api/auth";
   import { resumeIndex } from "$lib/resume";
   import type { ContinueWatchingItem } from "$lib/types";
+  import type { UnlistenFn } from "@tauri-apps/api/event";
   import AnimeCard from "./AnimeCard.svelte";
   import AnimeGridSkeleton from "./AnimeGridSkeleton.svelte";
 
@@ -37,7 +38,35 @@
     }
   }
 
-  onMount(load);
+  let unlisten: UnlistenFn | null = null;
+
+  onMount(() => {
+    let cancelled = false;
+    load();
+
+    // A write from the watch page (recording an episode) or the My List page
+    // (a status change, a removal) re-reads this row, so a work just watched
+    // appears without a reload.
+    onListChanged(() => {
+      void load();
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {
+        // The row still loads on mount; a missing listener only means it will
+        // not refresh while visible.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  onDestroy(() => {
+    unlisten?.();
+  });
 </script>
 
 {#if visible}

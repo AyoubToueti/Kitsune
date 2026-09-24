@@ -4,8 +4,10 @@ import { render, screen, fireEvent } from "@testing-library/svelte";
 import type { Anime, ContinueWatchingItem } from "$lib/types";
 
 const getContinueWatchingMock = vi.hoisted(() => vi.fn());
+const onListChangedMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/auth", () => ({
   getContinueWatching: getContinueWatchingMock,
+  onListChanged: onListChangedMock,
 }));
 
 import ContinueWatching from "./ContinueWatching.svelte";
@@ -29,6 +31,7 @@ function entry(id: number, title: string, progress = 0): ContinueWatchingItem {
 
 beforeEach(() => {
   getContinueWatchingMock.mockReset().mockResolvedValue([]);
+  onListChangedMock.mockReset().mockResolvedValue(() => {});
 });
 
 describe("ContinueWatching", () => {
@@ -67,6 +70,27 @@ describe("ContinueWatching", () => {
       "href",
       "/list",
     );
+  });
+
+  /// A work watched on the watch page announces itself, so the row picks it up
+  /// while still visible rather than only on the next visit.
+  it("refetches when the list changes", async () => {
+    getContinueWatchingMock.mockResolvedValue([entry(1, "One Piece")]);
+
+    let fire: (() => void) | undefined;
+    onListChangedMock.mockImplementation((cb: () => void) => {
+      fire = cb;
+      return Promise.resolve(() => {});
+    });
+
+    render(ContinueWatching);
+    await screen.findByText("One Piece");
+    expect(getContinueWatchingMock).toHaveBeenCalledTimes(1);
+
+    getContinueWatchingMock.mockResolvedValue([entry(2, "Naruto")]);
+    fire!();
+
+    expect(await screen.findByText("Naruto")).toBeInTheDocument();
   });
 
   it("resumes at the next episode after the one watched", async () => {
