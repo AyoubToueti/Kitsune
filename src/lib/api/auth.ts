@@ -41,6 +41,15 @@ export const AUTH_COMMANDS = {
 export const AUTH_CHANGED_EVENT = "auth-changed";
 
 /**
+ * Event the backend emits after a write changed the reader's list.
+ *
+ * No payload: it is a nudge to re-read, not the data. The resume disc and
+ * Continue Watching both refetch on it, so a work watched on one page shows up
+ * everywhere without a reload.
+ */
+export const LIST_CHANGED_EVENT = "list-changed";
+
+/**
  * The URL to open so the reader can authorise Kitsune.
  *
  * Returned rather than opened by the backend because launching a browser is a
@@ -82,6 +91,17 @@ export async function onAuthChanged(
     if (typeof event.payload !== "boolean") return;
     handler(event.payload);
   });
+}
+
+/**
+ * Subscribe to list changes.
+ *
+ * Same shape as `onAuthChanged`: `listen` resolves with an unlisten, so the
+ * caller cannot forget to await it and leak the listener. The event carries no
+ * payload -- it only says "the list changed, re-read it".
+ */
+export async function onListChanged(handler: () => void): Promise<UnlistenFn> {
+  return listen(LIST_CHANGED_EVENT, () => handler());
 }
 
 /**

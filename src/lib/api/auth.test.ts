@@ -17,8 +17,10 @@ import {
   getContinueWatching,
   getListEntry,
   getUserList,
+  LIST_CHANGED_EVENT,
   logout,
   onAuthChanged,
+  onListChanged,
   setListEntry,
 } from "./auth";
 
@@ -217,6 +219,43 @@ describe("onAuthChanged", () => {
     listenMock.mockResolvedValue(unlisten);
 
     const returned = await onAuthChanged(() => {});
+
+    expect(returned).toBe(unlisten);
+  });
+});
+
+describe("onListChanged", () => {
+  it("subscribes to the list event", async () => {
+    listenMock.mockResolvedValue(() => {});
+
+    await onListChanged(() => {});
+
+    expect(listenMock).toHaveBeenCalledWith(
+      LIST_CHANGED_EVENT,
+      expect.any(Function),
+    );
+  });
+
+  /// The event carries no payload; it only says "re-read the list".
+  it("calls the handler when the event fires", async () => {
+    let fire: (() => void) | undefined;
+    listenMock.mockImplementation((_event: string, cb: () => void) => {
+      fire = cb;
+      return Promise.resolve(() => {});
+    });
+    const handler = vi.fn();
+
+    await onListChanged(handler);
+    fire!();
+
+    expect(handler).toHaveBeenCalled();
+  });
+
+  it("returns the unlisten function", async () => {
+    const unlisten = vi.fn();
+    listenMock.mockResolvedValue(unlisten);
+
+    const returned = await onListChanged(() => {});
 
     expect(returned).toBe(unlisten);
   });
