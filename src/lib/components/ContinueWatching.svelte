@@ -3,6 +3,7 @@
 
   import { errorMessage } from "$lib/api/anime";
   import { getContinueWatching } from "$lib/api/auth";
+  import { resumeIndex } from "$lib/resume";
   import type { ContinueWatchingItem } from "$lib/types";
   import AnimeCard from "./AnimeCard.svelte";
   import AnimeGridSkeleton from "./AnimeGridSkeleton.svelte";
@@ -13,20 +14,6 @@
   let items = $state<ContinueWatchingItem[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
-
-  /**
-   * The watch-page `?ep=` value that resumes a work.
-   *
-   * AniList's progress is a 1-based episode number; the watch page's `?ep=`
-   * is a 0-based list index. So the index is `progress - 1`, and a work never
-   * started (progress 0) resumes at the first episode rather than at -1.
-   *
-   * This matches how this app writes progress: recording an episode stores its
-   * NUMBER, so progress is the last episode started.
-   */
-  function resumeIndex(progress: number): number {
-    return Math.max(0, progress - 1);
-  }
 
   /**
    * Whether the reader has anything to continue.

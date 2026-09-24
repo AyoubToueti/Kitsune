@@ -35,6 +35,19 @@
      (sveltejs/vite-plugin-svelte#1333). */
   --animate-preview-in-bottom: preview-in-bottom 140ms ease-out;
   --animate-preview-in-top: preview-in-top 140ms ease-out;
+
+  /* The resume disc, idle and hovered. A record turning on a turntable: slow
+     while it sits, fast once the reader points at it, which reads as "playing".
+     Two tokens because the speed IS the affordance. */
+  --animate-spin-record: spin-record 8s linear infinite;
+  --animate-spin-record-fast: spin-record 1.4s linear infinite;
+}
+
+/* One keyframe serves both speeds; only the duration differs. */
+@keyframes spin-record {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Keyframes for the hover preview, referenced by the animation tokens above.
