@@ -2,22 +2,26 @@
   import { onDestroy, onMount } from "svelte";
   import { page } from "$app/state";
 
+  import { getAnime } from "$lib/api/anime";
   import {
     getContinueWatching,
+    getLastPlayed,
     onAuthChanged,
     onListChanged,
   } from "$lib/api/auth";
   import { resumeIndex } from "$lib/resume";
-  import { displayTitle, type ContinueWatchingItem } from "$lib/types";
+  import { displayTitle, type Anime } from "$lib/types";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
   /**
-   * The most recently watched work, or `null` when there is nothing to resume.
+   * The work to resume, or `null` when there is nothing.
    *
-   * Only the newest is kept: the disc is a single "get back to it" control, and
-   * the Continue Watching row and My List already cover everything else.
+   * `episode` is the 1-based episode NUMBER to resume at, or `undefined` for a
+   * work never started (or a film). Not a `ContinueWatchingItem`: that carries
+   * the LIST's progress, whereas this may come from the local last-opened
+   * record instead, which is a different number for a re-watch.
    */
-  let item = $state<ContinueWatchingItem | null>(null);
+  let item = $state<{ anime: Anime; episode?: number } | null>(null);
   let loading = $state(true);
   let unlisten: UnlistenFn | null = null;
   /** The list-change listener, kept apart so teardown removes both. */
@@ -38,12 +42,40 @@
 
   const title = $derived(item ? (displayTitle(item.anime.title) ?? "Untitled") : "");
 
+  /**
+   * The work to resume.
+   *
+   * The local record is preferred: it answers "what did I last OPEN", which the
+   * list cannot, because AniList only reorders on a CHANGE -- re-watching the
+   * episode you are already on would not move you up. The list is the fallback
+   * for a reader who has not played anything since this feature existed.
+   */
+  async function resolveTarget(): Promise<{ anime: Anime; episode?: number } | null> {
+    const record = await getLastPlayed().catch(() => null);
+    if (record) {
+      // A cached lookup, so re-reading the same work is cheap.
+      const anime = await getAnime(record.animeId).catch(() => null);
+      if (anime) return { anime, episode: record.episode };
+    }
+
+    // Nothing recorded (or the work could not be fetched): fall back to the
+    // list's newest entry, which is the best guess available.
+    const items = await getContinueWatching(1);
+    const first = items[0];
+    if (!first) return null;
+
+    return {
+      anime: first.anime,
+      // `progress` is how many episodes were watched; 0 means never started, so
+      // there is no episode to resume at.
+      episode: first.progress > 0 ? first.progress : undefined,
+    };
+  }
+
   async function load() {
     loading = true;
     try {
-      // One entry: the newest, since `continue_watching` sorts by updatedAt desc.
-      const items = await getContinueWatching(1);
-      item = items[0] ?? null;
+      item = await resolveTarget();
     } catch {
       // A failed read just means no disc; it is an affordance, not a page.
       item = null;
@@ -102,9 +134,9 @@
        link, so the panel is aria-hidden: the accessible name already says the
        work and the episode. -->
   <a
-    href={`/watch/${item.anime.id}?ep=${resumeIndex(item.progress)}`}
+    href={`/watch/${item.anime.id}?ep=${resumeIndex(item.episode ?? 0)}`}
     data-testid="resume-disc"
-    aria-label={`Resume ${title}${item.progress > 0 ? ` at episode ${item.progress}` : ""}`}
+    aria-label={`Resume ${title}${item.episode ? ` at episode ${item.episode}` : ""}`}
     class="group fixed right-6 bottom-6 z-40 flex items-center justify-end focus:outline-none"
   >
     <!-- The now-playing card. Slides out to the left on hover, and is not
@@ -120,7 +152,7 @@
         </p>
         <p class="mt-1 line-clamp-2 text-sm font-semibold text-ink">{title}</p>
         <p class="mt-0.5 text-xs text-ink-muted">
-          {item.progress > 0 ? `Episode ${item.progress}` : "Not started"}
+          {item.episode ? `Episode ${item.episode}` : "Not started"}
         </p>
         <p class="mt-2 text-xs text-accent">Resume ›</p>
       </div>
