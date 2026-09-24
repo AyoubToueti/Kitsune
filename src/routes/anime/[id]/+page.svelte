@@ -139,17 +139,23 @@
   </div>
 {:else}
   <!-- Hero section: banner backdrop + cover + title + metadata + synopsis -->
-  <section class="relative overflow-hidden rounded-xl border border-border-subtle">
-    {#if backdrop}
-      <img
-        src={backdrop}
-        alt=""
-        class="absolute inset-0 h-full w-full object-cover opacity-40"
-      />
-    {/if}
-    <div
-      class="absolute inset-0 bg-gradient-to-r from-surface via-surface/85 to-surface/40"
-    ></div>
+  <!-- `overflow-hidden` lives on the backdrop layer, NOT the section. On the
+       section it would also clip the list-status dropdown, which is an
+       absolutely-positioned child; on an inner layer it still clips the image
+       to the rounded corners and leaves the menu free. -->
+  <section class="relative rounded-xl border border-border-subtle">
+    <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
+      {#if backdrop}
+        <img
+          src={backdrop}
+          alt=""
+          class="absolute inset-0 h-full w-full object-cover opacity-40"
+        />
+      {/if}
+      <div
+        class="absolute inset-0 bg-gradient-to-r from-surface via-surface/85 to-surface/40"
+      ></div>
+    </div>
 
     <div class="relative flex gap-5 p-6">
       {#if anime.coverImage}
