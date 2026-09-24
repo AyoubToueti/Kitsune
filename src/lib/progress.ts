@@ -11,21 +11,27 @@
  * is unit-testable without rendering the whole watch page.
  */
 
-/** Save one episode's progress. Rejections are handled by the recorder. */
+/**
+ * Save one work's progress. Rejections are handled by the recorder.
+ *
+ * `episode` is optional: a release played without a selected episode has no
+ * number to record, but the work still belongs on the reader's list. Omitting
+ * it marks the work Current without touching a stored progress value.
+ */
 export type ProgressSaver = (
   animeId: number,
-  episode: number,
+  episode: number | undefined,
 ) => Promise<unknown>;
 
 export interface ProgressRecorder {
   /**
-   * Record that `episode` of `animeId` started playing.
+   * Record that `animeId` started playing, at `episode` when one is known.
    *
    * Returns immediately: the save runs in the background and any failure is
    * swallowed. Callers never await it, because progress is a side effect of
    * watching and must never delay or break playback.
    */
-  record(animeId: number, episode: number): void;
+  record(animeId: number, episode?: number): void;
 }
 
 /**
@@ -40,6 +46,8 @@ export function createProgressRecorder(save: ProgressSaver): ProgressRecorder {
 
   return {
     record(animeId, episode) {
+      // An absent episode still forms a key ("21:undefined"), so a work played
+      // repeatedly without a number is written once, like any other.
       const key = `${animeId}:${episode}`;
       // Deduplicated before the save is issued, so overlapping plays of the
       // same episode (a fast double-click, say) cannot both reach the API.

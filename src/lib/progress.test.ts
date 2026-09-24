@@ -35,6 +35,29 @@ describe("createProgressRecorder", () => {
     await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(2));
   });
 
+  /// A release played with no episode selected has no number, but the work
+  /// still belongs on the list -- so the saver is called with `undefined` so it
+  /// can mark the work Current without touching a stored progress.
+  it("records a work with no episode number", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const recorder = createProgressRecorder(save);
+
+    recorder.record(21);
+
+    await vi.waitFor(() => expect(save).toHaveBeenCalledWith(21, undefined));
+  });
+
+  /// The no-number case is still deduplicated, keyed on the work.
+  it("writes a number-less work only once", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const recorder = createProgressRecorder(save);
+
+    recorder.record(21);
+    recorder.record(21);
+
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+  });
+
   it("does not await the save", () => {
     // A promise that never settles: `record` must return regardless.
     const save = vi.fn().mockReturnValue(new Promise(() => {}));

@@ -613,10 +613,14 @@
     // Only once the stream actually resolved, so a release that failed to open
     // is not marked watched. The episode NUMBER is recorded, not the list
     // index: `wantedEpisode` is already derived through `episodeNumberFor`, and
-    // sending the index would be off by one on every entry. Without a selected
-    // episode there is no number, so a title-less batch write is skipped.
-    const episode = wantedEpisode;
-    if (episode !== undefined) progress.record(id, episode);
+    // sending the index would be off by one on every entry.
+    //
+    // Recorded even without a number: playing a release with no episode
+    // selected still means the reader is watching this work, and skipping the
+    // write left it off their list entirely. The recorder passes `undefined`
+    // through, which marks the work Current without disturbing a stored
+    // progress value.
+    progress.record(id, wantedEpisode);
   }
 
   /**

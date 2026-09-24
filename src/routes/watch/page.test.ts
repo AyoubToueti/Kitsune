@@ -523,19 +523,25 @@ describe("watch page", () => {
     );
   });
 
-  it("does not record progress without a selected episode", async () => {
+  /// Playing without a selected episode still means the reader is watching
+  /// this work, so it must land on their list -- with no progress, not a
+  /// phantom episode 0. Skipping the write left the work off the list entirely.
+  it("records the work without a progress when no episode is selected", async () => {
     render(Page);
     await screen.findByRole("heading", { name: /attack on titan/i });
     await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
 
-    // Play a file directly, with no episode selected. There is no episode
-    // number to write, so a batch or film must not be recorded as a phantom
-    // episode.
     const files = await screen.findByTestId("torrent-files");
     await fireEvent.click(within(files).getAllByRole("button")[0]);
     await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
 
-    expect(setListEntryMock).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(setListEntryMock).toHaveBeenCalledWith(
+        16498,
+        "current",
+        undefined,
+      ),
+    );
   });
 
   it("offers the relations sidebar", async () => {
