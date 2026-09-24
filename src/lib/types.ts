@@ -225,6 +225,22 @@ export interface ContinueWatchingItem {
   progress: number;
 }
 
+/**
+ * One entry in the reader's own list, for the My List page.
+ *
+ * Carries the status so the page can group by it, and the list-entry id so the
+ * row's menu can remove it. `entryId` is the LIST ENTRY's id, not the media id.
+ */
+export interface UserListEntry {
+  anime: Anime;
+  /** Which list the work is on. */
+  status: ListStatus;
+  /** Episodes watched so far, `0` for one never started. */
+  progress: number;
+  /** The id of the list entry itself, needed to delete it. */
+  entryId: number;
+}
+
 /** Which release format to keep. */
 export type FormatFilter = "tv" | "movie" | "ova" | "ona" | "special" | "music";
 

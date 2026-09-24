@@ -13,8 +13,10 @@ import {
   AUTH_COMMANDS,
   authStatus,
   beginLogin,
+  deleteListEntry,
   getContinueWatching,
   getListEntry,
+  getUserList,
   logout,
   onAuthChanged,
   setListEntry,
@@ -144,6 +146,26 @@ describe("list entry wrappers", () => {
 
     const [, payload] = invokeMock.mock.calls[0];
     expect(typeof payload.limit).toBe("number");
+  });
+
+  it("getUserList returns the entries", async () => {
+    const entries = [{ anime: { id: 1 }, status: "current", progress: 3, entryId: 9 }];
+    invokeMock.mockResolvedValue(entries);
+
+    await expect(getUserList()).resolves.toBe(entries);
+    expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.userList);
+  });
+
+  /// Removing must send the LIST ENTRY id, not the media id: the backend keys
+  /// the delete on the entry, and a media id would target the wrong thing.
+  it("deleteListEntry forwards the entry id", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await deleteListEntry(9);
+
+    expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.deleteListEntry, {
+      entryId: 9,
+    });
   });
 });
 

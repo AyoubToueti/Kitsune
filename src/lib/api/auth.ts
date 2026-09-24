@@ -12,7 +12,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { ContinueWatchingItem, ListEntry, ListStatus } from "$lib/types";
+import type {
+  ContinueWatchingItem,
+  ListEntry,
+  ListStatus,
+  UserListEntry,
+} from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const AUTH_COMMANDS = {
@@ -22,6 +27,8 @@ export const AUTH_COMMANDS = {
   getListEntry: "get_list_entry",
   setListEntry: "set_list_entry",
   continueWatching: "continue_watching",
+  userList: "user_list",
+  deleteListEntry: "delete_list_entry",
 } as const;
 
 /**
@@ -124,4 +131,25 @@ export async function getContinueWatching(
   return invoke<ContinueWatchingItem[]>(AUTH_COMMANDS.continueWatching, {
     limit,
   });
+}
+
+/**
+ * The reader's whole anime list, every status.
+ *
+ * Returns an empty list when signed out, like `getContinueWatching`. Not
+ * cached: the My List page mutates the list (status changes, removals), and a
+ * cached copy would show a stale grid after every action.
+ */
+export async function getUserList(): Promise<UserListEntry[]> {
+  return invoke<UserListEntry[]>(AUTH_COMMANDS.userList);
+}
+
+/**
+ * Remove a work from the reader's list.
+ *
+ * `entryId` is the LIST ENTRY id (from `UserListEntry.entryId`), not the media
+ * id -- `DeleteMediaListEntry` identifies the entry.
+ */
+export async function deleteListEntry(entryId: number): Promise<void> {
+  return invoke<void>(AUTH_COMMANDS.deleteListEntry, { entryId });
 }
