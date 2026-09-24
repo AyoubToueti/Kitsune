@@ -17,6 +17,13 @@
       <SearchBox />
 
       <a
+        href="/list"
+        class="shrink-0 rounded-full border border-border-subtle bg-surface-hover px-4 py-2 text-sm text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        My List
+      </a>
+
+      <a
         href="/filter"
         class="shrink-0 rounded-full border border-border-subtle bg-surface-hover px-4 py-2 text-sm text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >

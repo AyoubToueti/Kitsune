@@ -57,6 +57,18 @@ describe("ContinueWatching", () => {
     expect(screen.getByText("Naruto")).toBeInTheDocument();
   });
 
+  it("links to the full list", async () => {
+    getContinueWatchingMock.mockResolvedValue([entry(1, "One Piece")]);
+
+    render(ContinueWatching);
+    await screen.findByText("One Piece");
+
+    expect(screen.getByRole("link", { name: /view all/i })).toHaveAttribute(
+      "href",
+      "/list",
+    );
+  });
+
   it("resumes at the next episode after the one watched", async () => {
     // `progress` is the last episode NUMBER started; the watch page's `?ep=`
     // is a 0-based index, so episode 3 is index 2.

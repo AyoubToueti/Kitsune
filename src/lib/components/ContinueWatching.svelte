@@ -57,6 +57,13 @@
   <section class="mt-8">
     <div class="mb-3 flex items-baseline justify-between gap-3">
       <h2 class="text-lg font-semibold tracking-tight">Continue Watching</h2>
+
+      <a
+        href="/list"
+        class="shrink-0 text-xs text-ink-muted transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        View all ›
+      </a>
     </div>
 
     {#if loading}

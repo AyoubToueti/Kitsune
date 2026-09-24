@@ -29,6 +29,15 @@ describe("NavBar", () => {
       "/filter",
     );
   });
+
+  it("links to the reader's own list", () => {
+    render(NavBar);
+
+    expect(screen.getByRole("link", { name: "My List" })).toHaveAttribute(
+      "href",
+      "/list",
+    );
+  });
 });
 
 describe("SearchBox", () => {
