@@ -639,12 +639,16 @@ impl AniListProvider {
             .and_then(map_list_entry))
     }
 
-    /// The works the reader is currently watching, most recently touched first.
+    /// The works the reader has actually STARTED, most recently touched first.
     ///
     /// Reads the reader's own CURRENT list via `MediaListCollection`, which
     /// takes no paging arguments -- so the whole list is fetched and trimmed
     /// here. A CURRENT list is bounded by what someone is actively watching, so
     /// it is small; taking it whole keeps the ordering in one place.
+    ///
+    /// Entries with `progress: 0` are dropped: adding a work to "Watching" puts
+    /// it on the CURRENT list without playing anything, and this shelf is for
+    /// continuing, not for mirroring that list.
     ///
     /// Requires a token. Without one AniList answers with a GraphQL error,
     /// which surfaces as a provider error rather than an empty list.
@@ -695,6 +699,16 @@ impl AniListProvider {
             .flat_map(|group| group.entries)
             .filter_map(|entry| {
                 let media = entry.media?;
+                // Only a work actually STARTED belongs here. An entry added to
+                // "Watching" from the status menu sits on the CURRENT list with
+                // `progress: 0` and has never been played, so it is not
+                // something to continue -- including it made the row a copy of
+                // the Watching list rather than a resume shelf.
+                let progress = entry.progress.unwrap_or(0);
+                if progress == 0 {
+                    return None;
+                }
+
                 // A missing timestamp sorts last rather than dropping the work:
                 // it is still being watched, just not knowably recent.
                 Some((
@@ -702,9 +716,8 @@ impl AniListProvider {
                     ContinueWatchingItem {
                         anime: map_media(media),
                         // The number of episodes watched, which is where a
-                        // "resume" play button should pick up. Zero for an entry
-                        // put on the list but never started.
-                        progress: entry.progress.unwrap_or(0),
+                        // "resume" play button should pick up.
+                        progress,
                     },
                 ))
             })
@@ -2670,8 +2683,11 @@ mod tests {
 
     /// One `MediaListCollection` entry: the standard media fixture plus the
     /// `updatedAt` stamp the ordering depends on.
+    ///
+    /// Carries a non-zero `progress` so it survives the started-only filter;
+    /// `collection_entry_at_progress` is the knob for that axis.
     fn collection_entry(updated_at: i64) -> serde_json::Value {
-        serde_json::json!({ "media": media_json(), "updatedAt": updated_at })
+        serde_json::json!({ "media": media_json(), "updatedAt": updated_at, "progress": 1 })
     }
 
     fn collection_response(entries: Vec<serde_json::Value>) -> serde_json::Value {
@@ -2747,14 +2763,37 @@ mod tests {
         assert_eq!(items[0].progress, 7);
     }
 
-    /// An entry that was never started reports zero rather than failing.
+    /// A work added to "Watching" but never played sits on the CURRENT list with
+    /// `progress: 0`. It is NOT something to continue, so it is dropped -- this
+    /// shelf is for resuming, not for mirroring the Watching list.
     #[tokio::test]
-    async fn continue_watching_defaults_missing_progress_to_zero() {
-        let (_server, provider) = provider_for_collection(vec![collection_entry(100)]).await;
+    async fn continue_watching_drops_unstarted_entries() {
+        let unstarted = serde_json::json!({
+            "media": media_json(),
+            "updatedAt": 100,
+            "progress": 0,
+        });
+        let started = collection_entry_with_progress(2);
+
+        let (_server, provider) = provider_for_collection(vec![unstarted, started]).await;
 
         let items = provider.continue_watching(10).await.expect("read");
 
-        assert_eq!(items[0].progress, 0);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].progress, 2);
+    }
+
+    /// An entry with no `progress` field at all is treated as unstarted and
+    /// dropped, for the same reason as an explicit zero.
+    #[tokio::test]
+    async fn continue_watching_drops_entries_without_progress() {
+        let no_progress = serde_json::json!({ "media": media_json(), "updatedAt": 100 });
+
+        let (_server, provider) = provider_for_collection(vec![no_progress]).await;
+
+        let items = provider.continue_watching(10).await.expect("read");
+
+        assert!(items.is_empty());
     }
 
     /// One collection entry for a given work id and timestamp, so the ordering
@@ -2762,7 +2801,7 @@ mod tests {
     fn collection_entry_for(id: i64, updated_at: i64) -> serde_json::Value {
         let mut media = media_json();
         media["id"] = serde_json::json!(id);
-        serde_json::json!({ "media": media, "updatedAt": updated_at })
+        serde_json::json!({ "media": media, "updatedAt": updated_at, "progress": 1 })
     }
 
     /// Most recently touched first: "Continue Watching" is only useful if the
