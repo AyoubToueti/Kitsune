@@ -32,7 +32,7 @@
   } from "$lib/episode";
   import { episodesFor } from "$lib/episodes";
   import { createProgressRecorder } from "$lib/progress";
-  import { setListEntry } from "$lib/api/auth";
+  import { recordLastPlayed, setListEntry } from "$lib/api/auth";
   import {
     displayTitle,
     titleForms,
@@ -628,6 +628,15 @@
     // through, which marks the work Current without disturbing a stored
     // progress value.
     progress.record(id, wantedEpisode);
+
+    // Separately, remember this as the work the reader last OPENED. The resume
+    // disc reads this rather than the list, because the list only reorders on a
+    // CHANGE -- re-watching the current episode would not move it. Fire and
+    // forget: a failed record must never affect playback.
+    void recordLastPlayed(id, wantedEpisode).catch(() => {
+      // Swallowed deliberately: this is a convenience hint, and the disc falls
+      // back to the list when it is missing.
+    });
   }
 
   /**

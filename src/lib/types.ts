@@ -226,6 +226,21 @@ export interface ContinueWatchingItem {
 }
 
 /**
+ * The work the reader most recently opened, kept locally.
+ *
+ * Distinct from the AniList list: `updatedAt` there records the last CHANGE, so
+ * re-watching the episode you are already on does not move you up. "What did I
+ * last open" is a different question, and this is the local answer to it.
+ */
+export interface LastPlayed {
+  animeId: number;
+  /** The episode number, when one was known. Absent for a film or a play with no selection. */
+  episode?: number;
+  /** Unix seconds when it was recorded. */
+  at: number;
+}
+
+/**
  * One entry in the reader's own list, for the My List page.
  *
  * Carries the status so the page can group by it, and the list-entry id so the

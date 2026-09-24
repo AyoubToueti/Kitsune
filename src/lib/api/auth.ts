@@ -14,6 +14,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   ContinueWatchingItem,
+  LastPlayed,
   ListEntry,
   ListStatus,
   UserListEntry,
@@ -29,6 +30,8 @@ export const AUTH_COMMANDS = {
   continueWatching: "continue_watching",
   userList: "user_list",
   deleteListEntry: "delete_list_entry",
+  recordLastPlayed: "record_last_played",
+  lastPlayed: "last_played",
 } as const;
 
 /**
@@ -172,4 +175,28 @@ export async function getUserList(): Promise<UserListEntry[]> {
  */
 export async function deleteListEntry(entryId: number): Promise<void> {
   return invoke<void>(AUTH_COMMANDS.deleteListEntry, { entryId });
+}
+
+/**
+ * Remember that the reader opened a work.
+ *
+ * Local, not AniList: the list's `updatedAt` records the last CHANGE, so
+ * re-watching the current episode does not move it. Fire-and-forget at the call
+ * site -- a failed record must never affect playback.
+ */
+export async function recordLastPlayed(
+  animeId: number,
+  episode?: number,
+): Promise<void> {
+  return invoke<void>(AUTH_COMMANDS.recordLastPlayed, { animeId, episode });
+}
+
+/**
+ * The work the reader most recently opened, or `null` when nothing is recorded.
+ *
+ * Not cached: it changes on every play, and a cached value would leave the disc
+ * pointing at the previous work.
+ */
+export async function getLastPlayed(): Promise<LastPlayed | null> {
+  return invoke<LastPlayed | null>(AUTH_COMMANDS.lastPlayed);
 }

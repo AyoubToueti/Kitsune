@@ -15,12 +15,14 @@ import {
   beginLogin,
   deleteListEntry,
   getContinueWatching,
+  getLastPlayed,
   getListEntry,
   getUserList,
   LIST_CHANGED_EVENT,
   logout,
   onAuthChanged,
   onListChanged,
+  recordLastPlayed,
   setListEntry,
 } from "./auth";
 
@@ -168,6 +170,34 @@ describe("list entry wrappers", () => {
     expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.deleteListEntry, {
       entryId: 9,
     });
+  });
+
+  it("recordLastPlayed forwards the work and episode", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await recordLastPlayed(21, 3);
+
+    expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.recordLastPlayed, {
+      animeId: 21,
+      episode: 3,
+    });
+  });
+
+  it("recordLastPlayed allows a missing episode", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await recordLastPlayed(21);
+
+    const [, payload] = invokeMock.mock.calls[0];
+    expect(payload.episode).toBeUndefined();
+  });
+
+  it("getLastPlayed returns the record", async () => {
+    const record = { animeId: 21, episode: 3, at: 1_700_000_000 };
+    invokeMock.mockResolvedValue(record);
+
+    await expect(getLastPlayed()).resolves.toBe(record);
+    expect(invokeMock).toHaveBeenCalledWith(AUTH_COMMANDS.lastPlayed);
   });
 });
 

@@ -66,7 +66,11 @@ vi.mock("$lib/api/releases", () => ({
 // Starting an episode writes progress to the reader's list. Mocked so a test
 // can assert WHAT was written without a Tauri runtime.
 const setListEntryMock = vi.hoisted(() => vi.fn());
-vi.mock("$lib/api/auth", () => ({ setListEntry: setListEntryMock }));
+const recordLastPlayedMock = vi.hoisted(() => vi.fn());
+vi.mock("$lib/api/auth", () => ({
+  setListEntry: setListEntryMock,
+  recordLastPlayed: recordLastPlayedMock,
+}));
 
 import Page from "./[id]/+page.svelte";
 
@@ -166,6 +170,7 @@ beforeEach(() => {
   probeReleasesMock.mockReset().mockResolvedValue([]);
   onProbeResultMock.mockReset().mockResolvedValue(() => {});
   setListEntryMock.mockReset().mockResolvedValue(undefined);
+  recordLastPlayedMock.mockReset().mockResolvedValue(undefined);
   setId(16498);
 });
 
@@ -520,6 +525,40 @@ describe("watch page", () => {
 
     await waitFor(() =>
       expect(setListEntryMock).toHaveBeenCalledWith(16498, "current", 2),
+    );
+  });
+
+  /// The resume disc reads the local last-opened record, not the list, so this
+  /// is what makes the disc follow the work actually being watched.
+  it("records the work as last-played when playback starts", async () => {
+    getAnimeMock.mockResolvedValue(animeWithEpisodes(3));
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    const list = await screen.findByTestId("episode-list");
+    await fireEvent.click(within(list).getAllByRole("button")[1]);
+
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+    await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(recordLastPlayedMock).toHaveBeenCalledWith(16498, 2),
+    );
+  });
+
+  /// Re-watching the episode you are already on is exactly the case the list
+  /// cannot express, so the local record must still be written.
+  it("records last-played even without a selected episode", async () => {
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+    await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
+
+    await waitFor(() =>
+      expect(recordLastPlayedMock).toHaveBeenCalledWith(16498, undefined),
     );
   });
 
