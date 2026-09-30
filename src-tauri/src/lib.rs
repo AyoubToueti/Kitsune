@@ -146,6 +146,7 @@ pub fn run() {
                 player::commands::add_magnet,
                 player::commands::remove_torrent,
                 player::commands::get_stream_url,
+                player::commands::get_torrent_stats,
                 player::commands::open_in_player,
                 player::commands::get_player,
                 player::commands::set_player,

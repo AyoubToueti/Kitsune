@@ -9,6 +9,7 @@ use tauri::State;
 
 use super::launch::SUGGESTED_PLAYERS;
 use super::state::{PlayerState, TorrentHandle};
+use crate::torrent::TorrentProgress;
 
 /// Add a `.torrent` file, returning its id and the files inside it.
 #[tauri::command]
@@ -63,6 +64,18 @@ pub async fn get_stream_url(
         .stream_url(torrent_id, file_idx)
         .await
         .map_err(|err| err.to_string())
+}
+
+/// A download-progress snapshot for a torrent, for the watch page's status panel.
+///
+/// `None` means there is no session or no such torrent yet, which the panel
+/// renders as "not started" rather than as an error.
+#[tauri::command]
+pub async fn get_torrent_stats(
+    state: State<'_, PlayerState>,
+    torrent_id: usize,
+) -> Result<Option<TorrentProgress>, String> {
+    Ok(state.torrent_progress(torrent_id))
 }
 
 /// Open a URL in an external player, returning the player that was launched.

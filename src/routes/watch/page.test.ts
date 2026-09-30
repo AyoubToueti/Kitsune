@@ -7,6 +7,7 @@ import type {
   ProbeOutcome,
   Release,
   TorrentHandle,
+  TorrentProgress,
 } from "$lib/types";
 
 // Aliased to src/test/app-state-stub.ts in vitest.config.js.
@@ -34,6 +35,8 @@ const addTorrentMock = vi.hoisted(() => vi.fn());
 const addMagnetMock = vi.hoisted(() => vi.fn());
 const removeTorrentMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
+const getTorrentStatsMock = vi.hoisted(() => vi.fn());
+const openInPlayerMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/player", async () => {
   const actual =
     await vi.importActual<typeof import("$lib/api/player")>("$lib/api/player");
@@ -46,6 +49,12 @@ vi.mock("$lib/api/player", async () => {
     // Tauri runtime behind it.
     removeTorrent: removeTorrentMock,
     getStreamUrl: getStreamUrlMock,
+    // The status panel polls this; mocked so a test can drive the download
+    // progress that decides when the player launches.
+    getTorrentStats: getTorrentStatsMock,
+    // Auto-launch reaches this once the threshold is met. Mocked so tests can
+    // assert the player was opened without spawning a real process.
+    openInPlayer: openInPlayerMock,
     // The sidebar button fetches these; stub them so the page renders.
     getPlayer: vi.fn().mockResolvedValue("mpv"),
     suggestedPlayers: vi.fn().mockResolvedValue(["mpv"]),
@@ -122,6 +131,31 @@ function handle(): TorrentHandle {
   };
 }
 
+/**
+ * A progress snapshot with every field set, overridable per test.
+ *
+ * `fileProgress` defaults to nothing downloaded, which keeps the auto-launch
+ * from firing in tests that only care about the URL being resolved.
+ */
+function progress(overrides: Partial<TorrentProgress> = {}): TorrentProgress {
+  return {
+    state: "live",
+    progressBytes: 0,
+    totalBytes: 2_800_000_000,
+    fileProgress: [0, 0],
+    finished: false,
+    error: null,
+    downloadMbps: 5,
+    uploadMbps: 0,
+    etaSeconds: 100,
+    peersLive: 3,
+    peersConnecting: 0,
+    peersQueued: 0,
+    peersSeen: 10,
+    ...overrides,
+  };
+}
+
 function release(overrides: Partial<Release> = {}): Release {
   return {
     title: "[Group] Show - 01 [1080p]",
@@ -162,6 +196,19 @@ beforeEach(() => {
   getStreamUrlMock
     .mockReset()
     .mockResolvedValue("http://127.0.0.1:3030/torrents/5/stream/0");
+  // Default: a finished snapshot, so the readiness threshold is met at once
+  // and the player auto-launches. Tests that need to observe the waiting state
+  // override this with a partial snapshot.
+  getTorrentStatsMock
+    .mockReset()
+    .mockResolvedValue(
+      progress({
+        progressBytes: 2_800_000_000,
+        fileProgress: [1_400_000_000, 1_400_000_000],
+        finished: true,
+      }),
+    );
+  openInPlayerMock.mockReset().mockResolvedValue("mpv");
   // Default: no releases, so tests that do not care are unaffected.
   searchReleasesMock.mockReset().mockResolvedValue([]);
   // Probing resolves with nothing and reports no progress by default. It
@@ -581,6 +628,100 @@ describe("watch page", () => {
         undefined,
       ),
     );
+  });
+
+  it("shows the download panel once a torrent is loaded", async () => {
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+
+    // The status panel replaces the old in-app video element.
+    expect(await screen.findByTestId("stream-status")).toBeInTheDocument();
+  });
+
+  it("auto-launches the external player once the file is ready", async () => {
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+
+    // The default snapshot is already finished, so the first poll trips the
+    // threshold. Passing no player name makes the backend use the stored
+    // preference.
+    await waitFor(() =>
+      expect(openInPlayerMock).toHaveBeenCalledWith(
+        "http://127.0.0.1:3030/torrents/5/stream/0",
+        undefined,
+        5,
+      ),
+    );
+  });
+
+  it("does not launch the player before the threshold is met", async () => {
+    // Nothing downloaded: the file fraction stays at 0, below READY_FRACTION.
+    getTorrentStatsMock.mockResolvedValue(
+      progress({ fileProgress: [0, 0], progressBytes: 0 }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+
+    // The stream URL must resolve first, then confirm no launch happened.
+    await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
+    expect(openInPlayerMock).not.toHaveBeenCalled();
+  });
+
+  it("launches only once even as the poll keeps firing", async () => {
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+
+    await waitFor(() => expect(openInPlayerMock).toHaveBeenCalled());
+    // Let several poll intervals elapse; the guard must hold.
+    await new Promise((r) => setTimeout(r, 700));
+    expect(openInPlayerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("records progress only once the player actually launches", async () => {
+    // Not ready, so no launch and therefore no progress write.
+    getTorrentStatsMock.mockResolvedValue(
+      progress({ fileProgress: [0, 0], progressBytes: 0 }),
+    );
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+
+    await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
+    expect(setListEntryMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a failure to open the player", async () => {
+    openInPlayerMock.mockRejectedValue("mpv is not installed");
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const files = await screen.findByTestId("torrent-files");
+    await fireEvent.click(within(files).getAllByRole("button")[0]);
+
+    expect(await screen.findByText(/mpv is not installed/i)).toBeInTheDocument();
   });
 
   it("offers the relations sidebar", async () => {

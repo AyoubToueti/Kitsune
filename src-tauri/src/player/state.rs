@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use tokio::sync::OnceCell;
 
-use crate::torrent::{api_for, EngineConfig, HttpBridge, TorrentEngine};
+use crate::torrent::{api_for, EngineConfig, HttpBridge, TorrentEngine, TorrentProgress};
 
 use super::launch::{resolve_player, spawn_player};
 
@@ -330,6 +330,20 @@ impl PlayerState {
         Ok(session.bridge.url_for(torrent_id, file_idx))
     }
 
+    /// A download-progress snapshot for `torrent_id`, for the watch page.
+    ///
+    /// Reads the session cell rather than going through [`Self::session`],
+    /// because that uses `get_or_try_init` and would START a torrent session
+    /// merely to answer a progress poll. Polling happens before playback, on a
+    /// page where nothing may have been added yet, so starting a session here
+    /// would bind sockets and join the DHT for a question about nothing.
+    ///
+    /// `None` means either "no session" or "no such torrent"; both are simply
+    /// "nothing to report yet" and are not errors.
+    pub fn torrent_progress(&self, torrent_id: usize) -> Option<TorrentProgress> {
+        self.inner.session.get()?.engine.progress(torrent_id)
+    }
+
     /// Open a URL in an external player, holding `torrent_id` while it runs.
     ///
     /// `player` overrides the stored preference for this one call; passing
@@ -486,6 +500,22 @@ mod tests {
         assert!(
             state.inner.session.get().is_none(),
             "removal must not start a session"
+        );
+    }
+
+    /// Polling progress must not start a session to answer about nothing.
+    ///
+    /// The watch page polls before playback, when nothing may have been added
+    /// yet. Routing through `Self::session` would bind sockets and join the
+    /// DHT for that question; this pins that the guard reads the cell instead.
+    #[test]
+    fn torrent_progress_before_any_session_is_none_without_starting_one() {
+        let state = PlayerState::new();
+
+        assert!(state.torrent_progress(7).is_none());
+        assert!(
+            state.inner.session.get().is_none(),
+            "polling progress must not start a session"
         );
     }
 

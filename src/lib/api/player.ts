@@ -7,7 +7,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-import type { TorrentHandle } from "$lib/types";
+import type { TorrentHandle, TorrentProgress } from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const PLAYER_COMMANDS = {
@@ -15,6 +15,7 @@ export const PLAYER_COMMANDS = {
   addMagnet: "add_magnet",
   removeTorrent: "remove_torrent",
   streamUrl: "get_stream_url",
+  torrentStats: "get_torrent_stats",
   openInPlayer: "open_in_player",
   getPlayer: "get_player",
   setPlayer: "set_player",
@@ -61,6 +62,22 @@ export async function getStreamUrl(
   fileIdx: number,
 ): Promise<string> {
   return invoke<string>(PLAYER_COMMANDS.streamUrl, { torrentId, fileIdx });
+}
+
+/**
+ * A download-progress snapshot for a torrent, for the status panel.
+ *
+ * Resolves to `null` when there is no session or no such torrent yet, which
+ * the panel renders as "not started" rather than as an error. Deliberately not
+ * cached: this is a live reading, and a stale one would show progress that has
+ * already moved on.
+ */
+export async function getTorrentStats(
+  torrentId: number,
+): Promise<TorrentProgress | null> {
+  return invoke<TorrentProgress | null>(PLAYER_COMMANDS.torrentStats, {
+    torrentId,
+  });
 }
 
 /**

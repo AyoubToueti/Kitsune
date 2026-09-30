@@ -10,6 +10,107 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session};
+use serde::Serialize;
+
+/// A download-progress snapshot for one torrent, as the watch page polls it.
+///
+/// Built from librqbit's own `TorrentStats` by [`summarize`], which is pure so
+/// the mapping is unit tested without a session. The live-only fields (speed,
+/// peers, ETA) read as zero/`None` while the torrent is not running, so the
+/// caller always gets a complete snapshot instead of an `Option` to unwrap.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TorrentProgress {
+    /// `"initializing"`, `"live"`, `"paused"` or `"error"`.
+    pub state: String,
+    /// Bytes of the whole torrent downloaded so far.
+    pub progress_bytes: u64,
+    /// Size of the whole torrent.
+    pub total_bytes: u64,
+    /// Bytes downloaded for each file, indexed by the file idx used in the
+    /// stream URL. Lets the frontend show the chosen episode's own progress.
+    pub file_progress: Vec<u64>,
+    /// True once every selected piece has been downloaded.
+    pub finished: bool,
+    /// The torrent's failure message, when it is in the error state.
+    pub error: Option<String>,
+    /// Current download rate in MiB/s. Zero when not live.
+    pub download_mbps: f64,
+    /// Current upload rate in MiB/s. Zero when not live.
+    pub upload_mbps: f64,
+    /// Estimated seconds until the torrent completes, when it can be derived.
+    pub eta_seconds: Option<u64>,
+    /// Peers currently transferring pieces.
+    pub peers_live: u32,
+    /// Peers we are handshaking with.
+    pub peers_connecting: u32,
+    /// Peers waiting for a free slot.
+    pub peers_queued: u32,
+    /// Peers known but not yet connected.
+    pub peers_seen: u32,
+}
+
+/// Map librqbit's `TorrentStats` onto the frontend-facing [`TorrentProgress`].
+///
+/// Pure, so the whole mapping is testable without starting a session. The only
+/// piece computed rather than copied is the ETA: librqbit's own
+/// `time_remaining` hides its seconds field, so the estimate is derived from
+/// the remaining bytes and the live download rate.
+pub fn summarize(stats: &librqbit::TorrentStats) -> TorrentProgress {
+    use librqbit::TorrentStatsState;
+
+    let state = match &stats.state {
+        TorrentStatsState::Initializing { .. } => "initializing",
+        TorrentStatsState::Live => "live",
+        TorrentStatsState::Paused => "paused",
+        TorrentStatsState::Error => "error",
+    }
+    .to_string();
+
+    // Live-only fields default to zero, so a paused or errored torrent still
+    // reports a complete snapshot rather than forcing the caller to handle a
+    // half-populated one.
+    let mut download_mbps = 0.0;
+    let mut upload_mbps = 0.0;
+    let mut eta_seconds = None;
+    let mut peers_live = 0;
+    let mut peers_connecting = 0;
+    let mut peers_queued = 0;
+    let mut peers_seen = 0;
+
+    if let Some(live) = &stats.live {
+        download_mbps = live.download_speed.mbps;
+        upload_mbps = live.upload_speed.mbps;
+
+        let peers = &live.snapshot.peer_stats;
+        peers_live = peers.live;
+        peers_connecting = peers.connecting;
+        peers_queued = peers.queued;
+        peers_seen = peers.seen;
+
+        let remaining = stats.total_bytes.saturating_sub(stats.progress_bytes);
+        let bytes_per_second = live.download_speed.as_bytes();
+        if bytes_per_second > 0 && remaining > 0 {
+            eta_seconds = Some(remaining / bytes_per_second);
+        }
+    }
+
+    TorrentProgress {
+        state,
+        progress_bytes: stats.progress_bytes,
+        total_bytes: stats.total_bytes,
+        file_progress: stats.file_progress.clone(),
+        finished: stats.finished,
+        error: stats.error.clone(),
+        download_mbps,
+        upload_mbps,
+        eta_seconds,
+        peers_live,
+        peers_connecting,
+        peers_queued,
+        peers_seen,
+    }
+}
 
 /// Configuration for a streaming session.
 #[derive(Debug, Clone)]
@@ -147,6 +248,17 @@ impl TorrentEngine {
         files
     }
 
+    /// A download-progress snapshot for `id`, or `None` if it is not managed.
+    ///
+    /// The watch page polls this while waiting for enough of an episode to be
+    /// downloaded before the player can start. A missing id reports `None`
+    /// rather than an error: the torrent may already have been removed, and a
+    /// removed torrent is not a failure to report.
+    pub fn progress(&self, id: usize) -> Option<TorrentProgress> {
+        let handle = self.session.get(id.into())?;
+        Some(summarize(&handle.stats()))
+    }
+
     /// The underlying session, for building the HTTP `Api` facade.
     pub fn session(&self) -> Arc<Session> {
         self.session.clone()
@@ -190,6 +302,101 @@ impl TorrentEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a `TorrentStats` with no live section.
+    ///
+    /// librqbit does not re-export `LiveStats`, so a unit test cannot populate
+    /// `live`; the live fields (speed, peers, ETA) are therefore exercised by
+    /// the ignored integration test against a real session, and the defaults
+    /// are pinned here.
+    fn stats(
+        state: librqbit::TorrentStatsState,
+        progress_bytes: u64,
+        total_bytes: u64,
+    ) -> librqbit::TorrentStats {
+        librqbit::TorrentStats {
+            state,
+            file_progress: vec![],
+            error: None,
+            progress_bytes,
+            uploaded_bytes: 0,
+            total_bytes,
+            finished: false,
+            live: None,
+        }
+    }
+
+    #[test]
+    fn summarize_maps_the_live_state_name() {
+        let out = summarize(&stats(librqbit::TorrentStatsState::Live, 0, 100));
+        assert_eq!(out.state, "live");
+    }
+
+    #[test]
+    fn summarize_maps_a_paused_state() {
+        let out = summarize(&stats(librqbit::TorrentStatsState::Paused, 0, 100));
+        assert_eq!(out.state, "paused");
+    }
+
+    #[test]
+    fn summarize_maps_an_initializing_state_regardless_of_paused_flag() {
+        let out = summarize(&stats(
+            librqbit::TorrentStatsState::Initializing { paused: true },
+            0,
+            100,
+        ));
+        assert_eq!(out.state, "initializing");
+    }
+
+    #[test]
+    fn summarize_maps_an_error_state() {
+        let out = summarize(&stats(librqbit::TorrentStatsState::Error, 0, 100));
+        assert_eq!(out.state, "error");
+    }
+
+    #[test]
+    fn summarize_copies_the_byte_counts_and_progress() {
+        let mut s = stats(librqbit::TorrentStatsState::Live, 30, 100);
+        s.file_progress = vec![10, 20];
+
+        let out = summarize(&s);
+
+        assert_eq!(out.progress_bytes, 30);
+        assert_eq!(out.total_bytes, 100);
+        assert_eq!(out.file_progress, vec![10, 20]);
+    }
+
+    #[test]
+    fn summarize_carries_the_error_message() {
+        let mut s = stats(librqbit::TorrentStatsState::Error, 0, 100);
+        s.error = Some("tracker unreachable".into());
+
+        assert_eq!(summarize(&s).error.as_deref(), Some("tracker unreachable"));
+    }
+
+    /// With no live section every live-only field must read as zero/None, so
+    /// the frontend can render a snapshot without special-casing a missing
+    /// section.
+    #[test]
+    fn summarize_defaults_live_fields_when_not_live() {
+        let out = summarize(&stats(librqbit::TorrentStatsState::Paused, 0, 100));
+
+        assert_eq!(out.download_mbps, 0.0);
+        assert_eq!(out.upload_mbps, 0.0);
+        assert_eq!(out.eta_seconds, None);
+        assert_eq!(out.peers_live, 0);
+        assert_eq!(out.peers_connecting, 0);
+        assert_eq!(out.peers_queued, 0);
+        assert_eq!(out.peers_seen, 0);
+    }
+
+    #[test]
+    fn summarize_reports_finished() {
+        let mut s = stats(librqbit::TorrentStatsState::Live, 100, 100);
+        s.finished = true;
+
+        assert!(summarize(&s).finished);
+    }
 
     #[test]
     fn playback_options_enable_overwrite() {

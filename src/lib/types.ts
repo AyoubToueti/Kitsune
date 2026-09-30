@@ -340,6 +340,37 @@ export interface TorrentHandle {
 }
 
 /**
+ * A download-progress snapshot for one torrent.
+ *
+ * Mirrors the Rust `TorrentProgress`. `fileProgress` is indexed by the same
+ * `idx` used in a stream URL, so the chosen episode's own progress can be read
+ * out of it. The live-only fields (`downloadMbps`, peers, `etaSeconds`) are
+ * zero/`null` while the torrent is not running, so the panel never has to
+ * special-case a missing section.
+ */
+export interface TorrentProgress {
+  /** `"initializing"`, `"live"`, `"paused"` or `"error"`. */
+  state: string;
+  progressBytes: number;
+  totalBytes: number;
+  /** Bytes downloaded per file, indexed by the stream URL's `idx`. */
+  fileProgress: number[];
+  finished: boolean;
+  /** The torrent's failure message, when `state` is `"error"`. */
+  error: string | null;
+  /** Download rate in MiB/s. */
+  downloadMbps: number;
+  /** Upload rate in MiB/s. */
+  uploadMbps: number;
+  /** Estimated seconds until completion, when it can be derived. */
+  etaSeconds: number | null;
+  peersLive: number;
+  peersConnecting: number;
+  peersQueued: number;
+  peersSeen: number;
+}
+
+/**
  * Vertical resolution a release is encoded at.
  *
  * Mirrors the Rust `Resolution`. `"unknown"` is the absence of a claim, not a

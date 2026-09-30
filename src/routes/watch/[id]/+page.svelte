@@ -10,6 +10,8 @@
     addMagnet,
     addTorrent,
     getStreamUrl,
+    getTorrentStats,
+    openInPlayer,
     removeTorrent,
   } from "$lib/api/player";
   import {
@@ -44,12 +46,13 @@
     type Resolution,
     type TorrentFile,
     type TorrentHandle,
+    type TorrentProgress,
   } from "$lib/types";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import ExternalPlayerButton from "$lib/components/ExternalPlayerButton.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
   import ResolutionFilter from "$lib/components/ResolutionFilter.svelte";
-  import VideoPlayer from "$lib/components/VideoPlayer.svelte";
+  import StreamStatus from "$lib/components/StreamStatus.svelte";
 
   const id = $derived(Number(page.params.id));
 
@@ -139,6 +142,40 @@
     };
   });
   let streamUrl = $state<string | undefined>(undefined);
+
+  // --- waiting for playback ------------------------------------------------
+  //
+  // The in-app <video> was removed: on Linux it is a WebKitGTK GStreamer
+  // pipeline, one per element and unbounded by default, which is what made
+  // playback consume all available memory. Playback now goes through an
+  // external player, and this page shows what the torrent is doing while it
+  // waits for enough of the episode to be playable.
+
+  /**
+   * How much of the chosen file must be downloaded before launching a player.
+   *
+   * A HEURISTIC, not a guarantee. mpv can usually start once the container
+   * header and first cluster are present -- a few MB, which arrive first
+   * because librqbit downloads sequentially -- but it may still stall if it
+   * needs the file tail (an MKV's `Cues`) for duration or seeking. There is no
+   * byte count that is knowably "enough"; this fraction is the trade-off
+   * between starting sooner and stalling less.
+   */
+  const READY_FRACTION = 0.05;
+
+  /** How often the status panel is refreshed while waiting. */
+  const POLL_INTERVAL_MS = 500;
+
+  /** The latest snapshot, or `null` before the first poll has answered. */
+  let torrentProgress = $state<TorrentProgress | null>(null);
+  /** The fraction of the chosen file downloaded so far, 0..1. */
+  let fileFraction = $state(0);
+  /** The fraction of the whole torrent downloaded so far, 0..1. */
+  let torrentFraction = $state(0);
+  /** True while a launch is being requested, so it fires only once. */
+  let launching = $state(false);
+  /** True once the player has been opened for the current selection. */
+  let launched = $state(false);
 
   // --- the indexer search --------------------------------------------------
 
@@ -609,6 +646,16 @@
 
     chosen = file;
     torrentError = null;
+
+    // A new file is a new wait: clear the previous file's numbers so the panel
+    // does not briefly show the last episode's progress as if it were this
+    // one's.
+    torrentProgress = null;
+    fileFraction = 0;
+    torrentFraction = 0;
+    launched = false;
+    launching = false;
+
     try {
       streamUrl = await getStreamUrl(torrentId, file.idx);
     } catch (err) {
@@ -617,16 +664,71 @@
       return;
     }
 
-    // Only once the stream actually resolved, so a release that failed to open
-    // is not marked watched. The episode NUMBER is recorded, not the list
-    // index: `wantedEpisode` is already derived through `episodeNumberFor`, and
-    // sending the index would be off by one on every entry.
-    //
-    // Recorded even without a number: playing a release with no episode
-    // selected still means the reader is watching this work, and skipping the
-    // write left it off their list entirely. The recorder passes `undefined`
-    // through, which marks the work Current without disturbing a stored
-    // progress value.
+    // The progress is NOT recorded here. Nothing has played yet -- the reader
+    // is still waiting for bytes -- so marking the episode watched would be a
+    // lie. It is written by `launch` once a player is actually opened.
+  }
+
+  /**
+   * Refresh the status panel from the backend.
+   *
+   * A failure is swallowed rather than surfaced: a dropped poll is transient
+   * and the next tick will answer, while flashing an error for every blip
+   * would make a working download look broken.
+   */
+  async function pollProgress(): Promise<void> {
+    if (torrentId === null) return;
+
+    let snapshot: TorrentProgress | null;
+    try {
+      snapshot = await getTorrentStats(torrentId);
+    } catch {
+      return;
+    }
+    if (snapshot === null) return;
+
+    torrentProgress = snapshot;
+    torrentFraction =
+      snapshot.totalBytes > 0
+        ? snapshot.progressBytes / snapshot.totalBytes
+        : 0;
+    fileFraction =
+      chosen && chosen.lengthBytes > 0
+        ? (snapshot.fileProgress[chosen.idx] ?? 0) / chosen.lengthBytes
+        : 0;
+  }
+
+  /**
+   * Open the external player, once enough of the file is present.
+   *
+   * Guarded so it fires exactly once per selection: the poll runs several times
+   * a second, and every tick past the threshold would otherwise launch another
+   * player. The progress writes move here rather than to `play` because this is
+   * the moment playback actually begins.
+   */
+  async function launch(): Promise<void> {
+    if (launched || launching) return;
+    if (streamUrl === undefined || torrentId === null) return;
+
+    launching = true;
+    try {
+      // No player argument: the backend uses the reader's stored preference,
+      // falling back to its default when none was ever chosen.
+      await openInPlayer(streamUrl, undefined, torrentId);
+    } catch (err) {
+      torrentError = errorMessage(err);
+      launching = false;
+      return;
+    }
+
+    launched = true;
+    launching = false;
+
+    // Only now that playback has started. The episode NUMBER is recorded, not
+    // the list index: `wantedEpisode` is already derived through
+    // `episodeNumberFor`, and sending the index would be off by one on every
+    // entry. Recorded even without a number: watching a release with no episode
+    // selected still means the reader is watching this work.
     progress.record(id, wantedEpisode);
 
     // Separately, remember this as the work the reader last OPENED. The resume
@@ -638,6 +740,37 @@
       // back to the list when it is missing.
     });
   }
+
+  /**
+   * Poll the torrent while a file is selected and the player has not opened.
+   *
+   * Keyed on `chosen` and `streamUrl`, so a new selection restarts the wait and
+   * the cleanup clears the old timer. It stops as soon as `launched` is set,
+   * because there is nothing left to wait for and polling a playing torrent
+   * every half second would be pure noise.
+   */
+  $effect(() => {
+    const file = chosen;
+    const url = streamUrl;
+    if (file === null || url === undefined) return;
+
+    // Read once so the effect re-runs when it flips, tearing down the timer.
+    void launched;
+    if (launched) return;
+
+    // Poll, then check readiness. The first poll runs immediately rather than
+    // waiting a full interval, so an already-downloaded file launches at once
+    // instead of after an arbitrary delay.
+    const tick = () =>
+      pollProgress().then(() => {
+        if (fileFraction >= READY_FRACTION) void launch();
+      });
+
+    void tick();
+    const timer = setInterval(() => void tick(), POLL_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  });
 
   /**
    * Move a found release: add its magnet, then play the right file inside it.
@@ -822,10 +955,11 @@
         {/if}
       </h1>
 
-      <VideoPlayer
-        src={streamUrl}
-        title={title ?? "Video player"}
-        poster={anime.bannerImage}
+      <StreamStatus
+        progress={torrentProgress}
+        {fileFraction}
+        {torrentFraction}
+        empty={streamUrl === undefined}
       />
 
       <div class="mt-3 flex flex-wrap items-center gap-2">
