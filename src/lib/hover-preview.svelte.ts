@@ -5,7 +5,7 @@
 // closing so the pointer can cross the gap, a position recomputed as the page
 // moves, and a timer that does not outlive the component.
 
-import { positionPreview, PREVIEW_SIZE, type Placement } from "./hover";
+import { isOffscreen, positionPreview, PREVIEW_SIZE, type Placement } from "./hover";
 
 /**
  * How long the preview survives after the pointer leaves.
@@ -77,6 +77,26 @@ export function createHoverPreview(getAnchor: () => HTMLElement | null) {
   }
 
   function onViewportChange() {
+    const anchor = getAnchor();
+    if (!anchor) return;
+
+    // Scrolling can carry the card clean off screen while the preview -- which
+    // follows it -- slides under a stationary pointer. The pointer never left
+    // the preview, so the hover that normally keeps it open is still live and
+    // the preview would hang there over nothing. Once the card is gone the
+    // preview has nothing to anchor to, so it goes too.
+    const offscreen = isOffscreen(anchor.getBoundingClientRect(), {
+      width: window.innerWidth,
+      height: window.innerHeight,
+    });
+
+    if (offscreen) {
+      cancelClose();
+      open = false;
+      detach();
+      return;
+    }
+
     reposition();
   }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  isOffscreen,
   positionPreview,
   CARET_MARGIN,
   PREVIEW_SIZE,
@@ -149,5 +150,44 @@ describe("positionPreview", () => {
     expect(Number.isFinite(x)).toBe(true);
     expect(Number.isFinite(y)).toBe(true);
     expect(Number.isFinite(caretX)).toBe(true);
+  });
+});
+
+describe("isOffscreen", () => {
+  it("is false while any part of the card is in view", () => {
+    // Straddling the top edge: still visible, so the preview stays anchored.
+    expect(isOffscreen(card(100, -100), VIEWPORT)).toBe(false);
+  });
+
+  it("is true once the card has scrolled above the viewport", () => {
+    // bottom <= 0: the card is entirely above the top.
+    expect(isOffscreen(card(100, -240), VIEWPORT)).toBe(true);
+  });
+
+  it("is true once the card has scrolled below the viewport", () => {
+    // top >= viewport height: the card is entirely below the fold.
+    expect(isOffscreen(card(100, VIEWPORT.height + 10), VIEWPORT)).toBe(true);
+  });
+
+  it("is true when the card is scrolled off to the left", () => {
+    expect(isOffscreen(card(-200, 500), VIEWPORT)).toBe(true);
+  });
+
+  it("is true when the card is scrolled off to the right", () => {
+    expect(isOffscreen(card(VIEWPORT.width + 10, 500), VIEWPORT)).toBe(true);
+  });
+
+  it("treats a zero-sized rect as gone", () => {
+    // A detached element measures 0x0 at the origin; treating that as visible
+    // would strand the preview at the top-left corner.
+    expect(
+      isOffscreen({ left: 0, top: 0, right: 0, bottom: 0 }, VIEWPORT),
+    ).toBe(true);
+  });
+
+  it("is false for a card touching the top edge", () => {
+    // bottom === 0 is the boundary; a sliver still on screen keeps it open.
+    expect(isOffscreen(card(100, -240), VIEWPORT)).toBe(true);
+    expect(isOffscreen(card(100, -239), VIEWPORT)).toBe(false);
   });
 });

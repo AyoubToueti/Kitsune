@@ -108,3 +108,26 @@ export function positionPreview(
 
   return { x, y, side, caretX };
 }
+
+/**
+ * Whether an anchor has scrolled completely out of the viewport.
+ *
+ * A preview follows its card as the page moves, so scrolling can carry the card
+ * off screen while the preview -- sliding under a stationary pointer -- keeps
+ * the hover alive. Once the card is gone there is nothing left to anchor to, so
+ * the caller closes the preview.
+ *
+ * A zero-sized rect counts as gone too: an element that has been detached from
+ * the DOM measures 0x0 at the origin, and treating that as still-visible would
+ * strand the preview at the top-left corner.
+ */
+export function isOffscreen(rect: Rect, viewport: Size): boolean {
+  if (rect.right <= rect.left || rect.bottom <= rect.top) return true;
+
+  return (
+    rect.bottom <= 0 ||
+    rect.top >= viewport.height ||
+    rect.right <= 0 ||
+    rect.left >= viewport.width
+  );
+}
