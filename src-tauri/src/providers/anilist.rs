@@ -384,7 +384,7 @@ impl AnimeProvider for AniListProvider {
         // Sort is always set and its literal comes from an enum, never from
         // free text, so it is safe to inline rather than send as a variable.
         filter.push_str(", sort: ");
-        filter.push_str(sort_literal(query.sort));
+        filter.push_str(sort_literal(query.sort, query.reversed));
 
         // `pageInfo` is requested here rather than in `list_query` because this
         // is the only query that paginates; the rest ignore the field.
@@ -1056,17 +1056,34 @@ fn season_literal(season: SeasonFilter) -> &'static str {
     }
 }
 
-/// AniList's literal for a sort option.
-fn sort_literal(sort: SortOption) -> &'static str {
-    match sort {
-        SortOption::Popularity => "POPULARITY_DESC",
-        SortOption::Score => "SCORE_DESC",
-        SortOption::Newest => "START_DATE_DESC",
-        SortOption::TitleAz => "TITLE_ROMAJI",
-        SortOption::Trending => "TRENDING_DESC",
-        SortOption::Favorites => "FAVOURITES_DESC",
-        SortOption::DateAdded => "ID_DESC",
-        SortOption::SearchMatch => "SEARCH_MATCH",
+/// AniList's literal for a sort option and direction.
+///
+/// Each option has a natural direction -- score and popularity are
+/// highest-first, title is A-Z -- and `reversed` asks for the other one. Two
+/// spellings per sort rather than an `asc`/`desc` the caller picks, because
+/// "ascending" means a different field order for a numeric sort than for a
+/// title, and the natural direction is what the plain menu label promises.
+///
+/// `SEARCH_MATCH` is the exception: relevance has no reverse, so the flag is
+/// ignored. The frontend disables the toggle for that sort anyway.
+fn sort_literal(sort: SortOption, reversed: bool) -> &'static str {
+    match (sort, reversed) {
+        (SortOption::Popularity, false) => "POPULARITY_DESC",
+        (SortOption::Popularity, true) => "POPULARITY",
+        (SortOption::Score, false) => "SCORE_DESC",
+        (SortOption::Score, true) => "SCORE",
+        (SortOption::Newest, false) => "START_DATE_DESC",
+        (SortOption::Newest, true) => "START_DATE",
+        // Title is naturally ascending, so the reverse is the DESC spelling.
+        (SortOption::TitleAz, false) => "TITLE_ROMAJI",
+        (SortOption::TitleAz, true) => "TITLE_ROMAJI_DESC",
+        (SortOption::Trending, false) => "TRENDING_DESC",
+        (SortOption::Trending, true) => "TRENDING",
+        (SortOption::Favorites, false) => "FAVOURITES_DESC",
+        (SortOption::Favorites, true) => "FAVOURITES",
+        (SortOption::DateAdded, false) => "ID_DESC",
+        (SortOption::DateAdded, true) => "ID",
+        (SortOption::SearchMatch, _) => "SEARCH_MATCH",
     }
 }
 
@@ -1595,6 +1612,7 @@ mod tests {
             sort: SortOption::Score,
             tags: Vec::new(),
             excluded_tags: Vec::new(),
+            reversed: false,
         };
 
         assert!(provider.browse(query, 1, 24).await.is_ok());
@@ -1920,6 +1938,61 @@ mod tests {
                 "{sort:?} should send {expected}"
             );
         }
+    }
+
+    /// Reversing a sort sends the opposite AniList literal. The natural
+    /// direction is what the plain label promises, so `reversed` must actually
+    /// flip it rather than repeat the same literal.
+    #[tokio::test]
+    async fn reversed_sort_sends_the_opposite_literal() {
+        let cases = [
+            (SortOption::Popularity, "sort: POPULARITY"),
+            (SortOption::Score, "sort: SCORE"),
+            (SortOption::Newest, "sort: START_DATE"),
+            (SortOption::TitleAz, "sort: TITLE_ROMAJI_DESC"),
+            (SortOption::Trending, "sort: TRENDING"),
+            (SortOption::Favorites, "sort: FAVOURITES"),
+            (SortOption::DateAdded, "sort: ID"),
+        ];
+
+        for (sort, expected) in cases {
+            let (_server, provider) = provider_expecting(expected).await;
+
+            assert!(
+                provider
+                    .browse(
+                        BrowseQuery {
+                            sort,
+                            reversed: true,
+                            ..BrowseQuery::default()
+                        },
+                        1,
+                        24,
+                    )
+                    .await
+                    .is_ok(),
+                "{sort:?} reversed should send {expected}"
+            );
+        }
+    }
+
+    /// Relevance has no reverse, so the flag must not change the literal.
+    #[tokio::test]
+    async fn reversing_search_match_is_a_no_op() {
+        let (_server, provider) = provider_expecting("sort: SEARCH_MATCH").await;
+
+        assert!(provider
+            .browse(
+                BrowseQuery {
+                    sort: SortOption::SearchMatch,
+                    reversed: true,
+                    ..BrowseQuery::default()
+                },
+                1,
+                24,
+            )
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

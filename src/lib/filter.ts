@@ -259,6 +259,11 @@ export function parseBrowseQuery(params: URLSearchParams): BrowseQuery {
   const score = intInRange(params.get("score"), 0, 100);
   if (score !== undefined) query.minScore = score;
 
+  // Presence of `order=reverse` flips the sort. The value is fixed rather than
+  // free text so the parameter reads as a flag, and a hand-edited `order=asc`
+  // is simply ignored (natural direction) rather than half-understood.
+  if (params.get("order") === "reverse") query.reversed = true;
+
   return query;
 }
 
@@ -298,6 +303,31 @@ export function sortHref(
 ): string {
   const next = new URLSearchParams(params);
   next.set("sort", sort);
+  next.delete("page");
+  // A new sort starts at its natural direction. Carrying `order=reverse` over
+  // from a different field would reverse something the reader never reversed.
+  next.delete("order");
+
+  const query = next.toString();
+  return query === "" ? base : `${base}?${query}`;
+}
+
+/**
+ * A link to the same view with the sort direction flipped.
+ *
+ * Toggling, not setting: reversing twice returns to the natural direction, so
+ * the parameter is dropped rather than written as an explicit "forward". The
+ * page number is dropped for the same reason as in {@link sortHref} -- page 5
+ * of a re-ordered list is not a meaningful place to land.
+ */
+export function reverseHref(params: URLSearchParams, base = "/filter"): string {
+  const next = new URLSearchParams(params);
+
+  if (next.get("order") === "reverse") {
+    next.delete("order");
+  } else {
+    next.set("order", "reverse");
+  }
   next.delete("page");
 
   const query = next.toString();

@@ -129,6 +129,49 @@ describe("FilterBar", () => {
       expect(screen.queryByLabelText("Search")).toBeNull();
     });
 
+    it("offers a reverse toggle beside the sort button", () => {
+      renderBar();
+
+      expect(screen.getByTestId("reverse-order")).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+    });
+
+    it("points the toggle at order=reverse", () => {
+      renderBar();
+
+      expect(screen.getByTestId("reverse-order")).toHaveAttribute(
+        "href",
+        "/filter?order=reverse",
+      );
+    });
+
+    it("reads as pressed when the view is reversed", () => {
+      renderBar({ current: { sort: "score", reversed: true } });
+
+      expect(screen.getByTestId("reverse-order")).toHaveAttribute(
+        "aria-pressed",
+        "true",
+      );
+    });
+
+    it("disables the toggle for a relevance sort", () => {
+      // Best match has no reverse, so the control would do nothing.
+      renderBar({ current: { sort: "searchMatch" } });
+
+      expect(screen.getByTestId("reverse-order")).toHaveAttribute(
+        "aria-disabled",
+        "true",
+      );
+    });
+
+    it("hides the reverse toggle when the sort is hidden", () => {
+      renderBar({ showSort: false });
+
+      expect(screen.queryByTestId("reverse-order")).toBeNull();
+    });
+
     /// The Select lists are absolutely-positioned children that extend past
     /// the dropdown box. An `overflow-hidden` wrapper (added to round the
     /// corners) clipped them, so the open list was trimmed and unclickable.

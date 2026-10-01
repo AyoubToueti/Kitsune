@@ -7,6 +7,8 @@ import {
   groupTagsByCategory,
   listHref,
   parseBrowseQuery,
+  reverseHref,
+  sortHref,
   yearOptions,
   LIST_QUERIES,
   FORMAT_VALUES,
@@ -179,6 +181,73 @@ describe("parseBrowseQuery", () => {
       minScore: 70,
       sort: "score",
     });
+  });
+
+  it("marks the sort reversed for order=reverse", () => {
+    expect(parse("order=reverse").reversed).toBe(true);
+  });
+
+  it("leaves the sort natural without the order parameter", () => {
+    expect(parse("sort=score").reversed).toBeUndefined();
+  });
+
+  it("ignores an order value it does not understand", () => {
+    // Only `reverse` flips the sort; a hand-edited value is dropped rather
+    // than half-understood.
+    expect(parse("order=asc").reversed).toBeUndefined();
+  });
+});
+
+describe("reverseHref", () => {
+  it("adds order=reverse to a natural view", () => {
+    const params = new URLSearchParams("sort=score");
+
+    expect(reverseHref(params)).toBe("/filter?sort=score&order=reverse");
+  });
+
+  it("removes order when already reversed, so it toggles", () => {
+    const params = new URLSearchParams("sort=score&order=reverse");
+
+    expect(reverseHref(params)).toBe("/filter?sort=score");
+  });
+
+  it("drops the page number", () => {
+    // Page 3 of a re-ordered list is not a meaningful place to land.
+    const params = new URLSearchParams("sort=score&page=3");
+
+    expect(reverseHref(params)).toBe("/filter?sort=score&order=reverse");
+  });
+
+  it("does not mutate the parameters it is given", () => {
+    const params = new URLSearchParams("sort=score");
+
+    reverseHref(params);
+
+    expect(params.get("order")).toBeNull();
+  });
+});
+
+describe("sortHref", () => {
+  it("sets the sort and drops the page", () => {
+    const params = new URLSearchParams("format=tv&page=3");
+
+    expect(sortHref(params, "score")).toBe("/filter?format=tv&sort=score");
+  });
+
+  it("clears a reversal when the sort changes", () => {
+    // Carrying order=reverse to a new field would reverse something the reader
+    // never reversed.
+    const params = new URLSearchParams("sort=titleAz&order=reverse");
+
+    expect(sortHref(params, "score")).toBe("/filter?sort=score");
+  });
+
+  it("does not mutate the parameters it is given", () => {
+    const params = new URLSearchParams("format=tv");
+
+    sortHref(params, "score");
+
+    expect(params.get("sort")).toBeNull();
   });
 });
 

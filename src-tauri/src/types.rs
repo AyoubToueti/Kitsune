@@ -241,6 +241,14 @@ pub struct BrowseQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_score: Option<u8>,
     pub sort: SortOption,
+    /// Reverse the sort's natural direction.
+    ///
+    /// A bool rather than `asc`/`desc`, because the natural direction differs
+    /// per sort -- score is highest-first, title is A-Z -- so naming a
+    /// direction would need a per-sort default. `false` (the default) is the
+    /// natural order.
+    #[serde(default)]
+    pub reversed: bool,
 }
 
 /// A work's title in the several forms providers offer.
