@@ -4,12 +4,21 @@
 //! [`PlayerState`] so it can be exercised without a Tauri app.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use super::launch::SUGGESTED_PLAYERS;
 use super::state::{PlayerState, TorrentHandle};
 use crate::torrent::TorrentProgress;
+
+/// Event emitted when an external player the app launched exits.
+///
+/// The payload is the torrent id, so the frontend can tell whether the exit
+/// belongs to the episode it is showing. Kept in sync with
+/// [`crate::player`]'s frontend wrapper (`PLAYER_EXIT_EVENT` in
+/// `src/lib/api/player.ts`).
+pub const PLAYER_EXIT_EVENT: &str = "player-exit";
 
 /// Add a `.torrent` file, returning its id and the files inside it.
 #[tauri::command]
@@ -84,15 +93,32 @@ pub async fn get_torrent_stats(
 /// removal of that torrent is deferred, so leaving the watch page does not cut
 /// off a player that is still reading it. Omitted for a URL with no torrent
 /// behind it.
+///
+/// When the player exits, a [`PLAYER_EXIT_EVENT`] is emitted with the torrent
+/// id so the frontend can stop waiting and release the torrent -- otherwise a
+/// page left open would keep downloading behind a "playing" panel.
 #[tauri::command]
 pub async fn open_in_player(
+    app: AppHandle,
     state: State<'_, PlayerState>,
     url: String,
     player: Option<String>,
     torrent_id: Option<usize>,
 ) -> Result<String, String> {
+    // The emitter is moved into the background wait task, so it must be `'static`
+    // and cheap to clone. `AppHandle` is both.
+    let on_exit: Option<Arc<dyn Fn(usize) + Send + Sync>> =
+        torrent_id.map(|_| {
+            let app = app.clone();
+            Arc::new(move |id: usize| {
+                if let Err(err) = app.emit(PLAYER_EXIT_EVENT, id) {
+                    tracing::warn!("failed to emit {PLAYER_EXIT_EVENT} for torrent {id}: {err:#}");
+                }
+            }) as Arc<dyn Fn(usize) + Send + Sync>
+        });
+
     state
-        .open_in_player(&url, player.as_deref(), torrent_id)
+        .open_in_player(&url, player.as_deref(), torrent_id, on_exit)
         .await
         .map_err(|err| err.to_string())
 }

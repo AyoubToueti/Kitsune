@@ -13,6 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
 use tokio::sync::OnceCell;
 
+use crate::settings::SettingsStore;
 use crate::torrent::{api_for, EngineConfig, HttpBridge, TorrentEngine, TorrentProgress};
 
 use super::launch::{resolve_player, spawn_player};
@@ -167,6 +168,12 @@ struct Inner {
     /// A plain mutex for the same reason: every operation on it is synchronous
     /// and finishes before the caller awaits.
     holds: Mutex<Holds>,
+    /// The reader's preferences, when the app supplied a store.
+    ///
+    /// `None` in tests and for a bare [`PlayerState::new`]: everything then
+    /// falls back to the built-in defaults, which keeps the existing suite
+    /// hermetic and free of disk access.
+    settings: Option<Arc<SettingsStore>>,
 }
 
 impl PlayerState {
@@ -176,6 +183,25 @@ impl PlayerState {
                 session: OnceCell::new(),
                 player: Mutex::new(resolve_player(None)),
                 holds: Mutex::new(Holds::default()),
+                settings: None,
+            }),
+        }
+    }
+
+    /// A state that reads the reader's preferences from `store`.
+    ///
+    /// The chosen player is seeded from the store so the very first launch --
+    /// before the settings page has been opened -- already uses the reader's
+    /// choice. The download directory and extra args are read live on each
+    /// use, so changing them takes effect without a restart.
+    pub fn with_settings(store: Arc<SettingsStore>) -> Self {
+        let player = resolve_player(Some(&store.read().player));
+        Self {
+            inner: Arc::new(Inner {
+                session: OnceCell::new(),
+                player: Mutex::new(player),
+                holds: Mutex::new(Holds::default()),
+                settings: Some(store),
             }),
         }
     }
@@ -194,9 +220,51 @@ impl PlayerState {
         *self.inner.player.lock().expect("player mutex poisoned") = resolve_player(Some(name));
     }
 
+    /// The external player to launch, read live from settings when a store is
+    /// present.
+    ///
+    /// Deliberately reads the store rather than the in-memory `player` mutex:
+    /// that mutex is seeded ONCE at startup, so a choice made in the settings
+    /// page never reached the launch path and only took effect after a restart.
+    /// The store is the single source of truth; the mutex remains only as the
+    /// fallback for a `PlayerState` built without a store (tests).
+    fn resolved_player(&self) -> String {
+        match self.inner.settings.as_ref() {
+            Some(store) => resolve_player(Some(&store.read().player)),
+            None => self.player(),
+        }
+    }
+
+    /// Extra arguments for the player, from settings when a store is present.
+    fn player_args(&self) -> Vec<String> {
+        self.inner
+            .settings
+            .as_ref()
+            .map(|store| store.read().player_args)
+            .unwrap_or_default()
+    }
+
+    /// Where downloaded pieces are written.
+    ///
+    /// The reader's explicit choice wins; otherwise `KITSUNE_DOWNLOAD_DIR`,
+    /// otherwise the OS temp directory. Read on each session start, so a change
+    /// in settings applies to the next torrent.
+    fn resolved_download_dir(&self) -> PathBuf {
+        if let Some(dir) = self
+            .inner
+            .settings
+            .as_ref()
+            .and_then(|store| store.read().download_dir)
+            .filter(|dir| !dir.trim().is_empty())
+        {
+            return PathBuf::from(dir);
+        }
+        download_dir()
+    }
+
     /// Start the torrent engine and stream bridge, once.
-    async fn start_session() -> Result<Session> {
-        let engine = TorrentEngine::start(EngineConfig::new(download_dir()))
+    async fn start_session(download_dir: PathBuf) -> Result<Session> {
+        let engine = TorrentEngine::start(EngineConfig::new(download_dir))
             .await
             .context("failed to start the torrent session")?;
 
@@ -211,7 +279,11 @@ impl PlayerState {
 
     /// The session, starting it if this is the first call.
     async fn session(&self) -> Result<&Session> {
-        self.inner.session.get_or_try_init(Self::start_session).await
+        let download_dir = self.resolved_download_dir();
+        self.inner
+            .session
+            .get_or_try_init(|| Self::start_session(download_dir))
+            .await
     }
 
     /// Add a `.torrent` file and wait for the files it contains.
@@ -353,15 +425,24 @@ impl PlayerState {
     /// command runs on the main thread, where `tokio::spawn` panics. The hold
     /// is taken BEFORE the spawn, so a removal racing the launch cannot slip in
     /// between.
+    ///
+    /// `on_exit` is called with the torrent id once the player process exits.
+    /// It is how the frontend learns playback ended -- so it can stop showing
+    /// "playing" and release the torrent. Kept as a plain closure rather than
+    /// an `AppHandle` so this module stays free of Tauri and the policy can be
+    /// driven in tests.
     pub async fn open_in_player(
         &self,
         url: &str,
         player: Option<&str>,
         torrent_id: Option<usize>,
+        on_exit: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     ) -> Result<String> {
         let name = match player {
             Some(chosen) => resolve_player(Some(chosen)),
-            None => self.player(),
+            // No override for this call: use the reader's stored choice, read
+            // live so a change in settings applies to the very next launch.
+            None => self.resolved_player(),
         };
 
         if let Some(id) = torrent_id {
@@ -372,7 +453,7 @@ impl PlayerState {
                 .hold(id);
         }
 
-        let child = match spawn_player(&name, url) {
+        let child = match spawn_player(&name, &self.player_args(), url) {
             Ok(child) => child,
             Err(err) => {
                 // The hold must not outlive a launch that never happened, or
@@ -388,6 +469,15 @@ impl PlayerState {
             let state = self.clone();
             tokio::spawn(async move {
                 wait_for_exit(child).await;
+
+                // Tell the frontend playback ended BEFORE releasing the hold, so
+                // it can stop polling and show the release list again. Fired for
+                // every exit, including one where the page is still open and no
+                // removal was ever requested.
+                if let Some(callback) = on_exit {
+                    callback(id);
+                }
+
                 if let Err(err) = state.release_torrent(id).await {
                     // The page is gone by now, so there is no UI to show this
                     // to. A failure leaves the torrent running, which is the

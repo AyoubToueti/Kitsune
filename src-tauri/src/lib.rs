@@ -3,6 +3,7 @@ pub mod commands;
 pub mod indexer;
 pub mod player;
 pub mod providers;
+pub mod settings;
 pub mod torrent;
 pub mod types;
 
@@ -24,6 +25,10 @@ pub fn run() {
     // one would have its own token state and its own connection pool.
     let anilist = std::sync::Arc::new(providers::AniListProvider::new());
     let provider: commands::SharedProvider = anilist.clone();
+
+    // One settings store for the process, shared by the player state and the
+    // settings commands.
+    let settings = std::sync::Arc::new(settings::SettingsStore::new());
 
         // Jikan is managed separately: it is not an `AnimeProvider`, it only fills
         // in episode lists for works AniList already described.
@@ -52,7 +57,12 @@ pub fn run() {
             .manage(provider)
             .manage(anilist)
             .manage(episodes)
-            .manage(player::PlayerState::new())
+            // One settings store, shared between the player state (which reads
+            // the player and download dir) and the settings commands (which
+            // write it), so both agree about the reader's choices. Built once
+            // and cloned, so there is a single instance behind both handles.
+            .manage(settings.clone())
+            .manage(player::PlayerState::with_settings(settings))
             // One registry for the process: each indexer holds its own pooled
             // `reqwest::Client`, so rebuilding one per search would waste
             // connections and re-resolve DNS.
@@ -164,6 +174,9 @@ pub fn run() {
                 // Where the reader last was, kept locally.
                 auth::list::record_last_played,
                 auth::list::last_played,
+                // The reader's preferences.
+                settings::get_settings,
+                settings::set_settings,
             ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

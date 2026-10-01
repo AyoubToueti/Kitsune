@@ -11,6 +11,7 @@ use tauri::State;
 
 use super::probe_rank::ProbeOutcome;
 use super::{search, Indexer, ReleaseRequest};
+use crate::settings::SharedSettings;
 use crate::types::{Release, ReleasePreference};
 
 /// The indexer the app searches with.
@@ -57,6 +58,7 @@ impl Default for IndexerRegistry {
 #[tauri::command]
 pub async fn search_releases(
     registry: State<'_, IndexerRegistry>,
+    settings: State<'_, SharedSettings>,
     titles: Vec<String>,
     episode: Option<u32>,
     absolute_episode: Option<u32>,
@@ -68,7 +70,16 @@ pub async fn search_releases(
         episode,
         absolute_episode,
     };
-    let preference = preference.unwrap_or_default();
+    // An explicit preference wins (a caller can override for one search);
+    // otherwise use the reader's stored taste, so the settings page steers
+    // ranking without every search having to send it.
+    let preference = preference.unwrap_or_else(|| {
+        let stored = settings.read();
+        ReleasePreference {
+            preferred_resolutions: stored.preferred_resolutions,
+            min_seeders: stored.min_seeders,
+        }
+    });
     Ok(search_all(&indexers, &request, &preference).await)
 }
 
