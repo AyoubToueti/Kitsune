@@ -130,12 +130,15 @@ describe("FilterPanel", () => {
         },
       });
 
-      expect(control("Type")).toHaveValue("tv");
-      expect(control("Status")).toHaveValue("finished");
-      expect(control("Season")).toHaveValue("fall");
-      expect(control("Year")).toHaveValue("2024");
-      expect(control("Score")).toHaveValue("70");
-      expect(new FormData(form() as HTMLFormElement).get("sort")).toBe("score");
+      // The selects are custom now, so their value lives in the hidden field
+      // (what the form actually submits) rather than on a native element.
+      const data = new FormData(form() as HTMLFormElement);
+      expect(data.get("format")).toBe("tv");
+      expect(data.get("status")).toBe("finished");
+      expect(data.get("season")).toBe("fall");
+      expect(data.get("year")).toBe("2024");
+      expect(data.get("score")).toBe("70");
+      expect(data.get("sort")).toBe("score");
     });
 
     it("shows the search term", () => {
@@ -152,8 +155,11 @@ describe("FilterPanel", () => {
       expect(screen.queryByRole("option", { name: /best match/i })).toBeNull();
     });
 
-    it("offers every format", () => {
+    it("offers every format", async () => {
       renderPanel();
+
+      // The list only renders once the dropdown is opened.
+      await fireEvent.click(screen.getByRole("combobox", { name: "Type" }));
 
       for (const label of ["TV", "Movie", "OVA", "ONA", "Special", "Music"]) {
         expect(screen.getByRole("option", { name: label })).toBeInTheDocument();

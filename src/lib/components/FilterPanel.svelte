@@ -12,6 +12,38 @@
     yearOptions,
   } from "$lib/filter";
   import type { BrowseQuery, MediaTag } from "$lib/types";
+  import Select, { type SelectOption } from "./Select.svelte";
+
+  /**
+   * The select choices, as `{ value, label }` lists.
+   *
+   * Built here rather than inline so the template stays about layout. Each
+   * starts with an "any" entry whose value is the empty string, which is what
+   * the backend reads as "no filter".
+   */
+  const formatChoices: SelectOption[] = [
+    { value: "", label: "All" },
+    ...FORMAT_VALUES.map((value) => ({ value, label: FORMAT_LABELS[value] })),
+  ];
+  const statusChoices: SelectOption[] = [
+    { value: "", label: "All" },
+    ...STATUS_VALUES.map((value) => ({ value, label: STATUS_LABELS[value] })),
+  ];
+  const scoreChoices: SelectOption[] = [
+    { value: "", label: "All" },
+    ...SCORE_OPTIONS.map((value) => ({
+      value: String(value),
+      label: `${value}+`,
+    })),
+  ];
+  const seasonChoices: SelectOption[] = [
+    { value: "", label: "All" },
+    ...SEASON_VALUES.map((value) => ({ value, label: SEASON_LABELS[value] })),
+  ];
+  const yearChoices: SelectOption[] = [
+    { value: "", label: "Any" },
+    ...yearOptions().map((year) => ({ value: String(year), label: String(year) })),
+  ];
 
   let {
     genres,
@@ -154,9 +186,16 @@
 
   const hasCatalogue = $derived(genres.length > 0 || tagGroups.length > 0);
 
-  /** Shared styling for the select and search controls. */
+  /**
+   * Shared styling for the search box and the five selects.
+   *
+   * Pill-shaped, matching the navbar's search box, so the filter row reads as
+   * part of the app rather than a bare HTML form. `focus-visible` rather than
+   * `focus`, so clicking a select does not flash a ring the way a keyboard
+   * focus should.
+   */
   const selectClass =
-    "rounded-lg border border-border-subtle bg-surface-hover px-3 py-1.5 text-sm text-ink focus:ring-2 focus:ring-accent focus:outline-none";
+    "rounded-full border border-border-subtle bg-surface-hover px-4 py-2 text-sm text-ink placeholder:text-ink-faint transition-colors hover:border-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent";
 
   /** Shared styling for a genre chip, which stays a plain checkbox. */
   const genreChipClass =
@@ -190,12 +229,9 @@
      and the catalogue toggle need script, but the submission itself does not:
      the hidden inputs are real form fields, so the URL is still the whole
      truth and every control re-seeds from it on the next load. -->
-<form
-  action={base}
-  method="GET"
-  data-testid="filter-form"
-  class="rounded-xl border border-border-subtle p-4"
->
+<!-- The surface (border, radius, background) belongs to the dropdown wrapper in
+     FilterBar, so the panel itself only supplies its padding. -->
+<form action={base} method="GET" data-testid="filter-form" class="p-4">
   <h2 class="mb-3 text-sm font-semibold tracking-tight text-accent">Filter</h2>
 
   <div class="flex flex-wrap items-end gap-3">
@@ -213,65 +249,55 @@
       </label>
     {/if}
 
-    <label class="flex flex-col gap-1 text-xs text-ink-faint">
-      Type
-      <select name="format" class={selectClass}>
-        <option value="">All</option>
-        {#each FORMAT_VALUES as value (value)}
-          <option value={value} selected={current.format === value}>
-            {FORMAT_LABELS[value]}
-          </option>
-        {/each}
-      </select>
-    </label>
+    <div class="flex flex-col gap-1 text-xs text-ink-muted">
+      <span>Type</span>
+      <Select
+        name="format"
+        label="Type"
+        value={current.format ?? ""}
+        options={formatChoices}
+      />
+    </div>
 
-    <label class="flex flex-col gap-1 text-xs text-ink-faint">
-      Status
-      <select name="status" class={selectClass}>
-        <option value="">All</option>
-        {#each STATUS_VALUES as value (value)}
-          <option value={value} selected={current.status === value}>
-            {STATUS_LABELS[value]}
-          </option>
-        {/each}
-      </select>
-    </label>
+    <div class="flex flex-col gap-1 text-xs text-ink-muted">
+      <span>Status</span>
+      <Select
+        name="status"
+        label="Status"
+        value={current.status ?? ""}
+        options={statusChoices}
+      />
+    </div>
 
-    <label class="flex flex-col gap-1 text-xs text-ink-faint">
-      Score
-      <select name="score" class={selectClass}>
-        <option value="">All</option>
-        {#each SCORE_OPTIONS as value (value)}
-          <option value={value} selected={current.minScore === value}>
-            {value}+
-          </option>
-        {/each}
-      </select>
-    </label>
+    <div class="flex flex-col gap-1 text-xs text-ink-muted">
+      <span>Score</span>
+      <Select
+        name="score"
+        label="Score"
+        value={current.minScore != null ? String(current.minScore) : ""}
+        options={scoreChoices}
+      />
+    </div>
 
-    <label class="flex flex-col gap-1 text-xs text-ink-faint">
-      Season
-      <select name="season" class={selectClass}>
-        <option value="">All</option>
-        {#each SEASON_VALUES as value (value)}
-          <option value={value} selected={current.season === value}>
-            {SEASON_LABELS[value]}
-          </option>
-        {/each}
-      </select>
-    </label>
+    <div class="flex flex-col gap-1 text-xs text-ink-muted">
+      <span>Season</span>
+      <Select
+        name="season"
+        label="Season"
+        value={current.season ?? ""}
+        options={seasonChoices}
+      />
+    </div>
 
-    <label class="flex flex-col gap-1 text-xs text-ink-faint">
-      Year
-      <select name="year" class={selectClass}>
-        <option value="">Any</option>
-        {#each years as year (year)}
-          <option value={year} selected={current.seasonYear === year}>
-            {year}
-          </option>
-        {/each}
-      </select>
-    </label>
+    <div class="flex flex-col gap-1 text-xs text-ink-muted">
+      <span>Year</span>
+      <Select
+        name="year"
+        label="Year"
+        value={current.seasonYear != null ? String(current.seasonYear) : ""}
+        options={yearChoices}
+      />
+    </div>
 
   </div>
 

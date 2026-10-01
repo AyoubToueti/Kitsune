@@ -20,6 +20,12 @@ vi.mock("$lib/api/player", async () => {
 
 import ExternalPlayerButton from "./ExternalPlayerButton.svelte";
 
+/** The launch button, distinguished from the dropdown's own button. */
+const launchButton = () =>
+  screen.getByRole("button", { name: /open in external player/i });
+/** The themed dropdown trigger. */
+const picker = () => screen.getByRole("combobox", { name: "External player" });
+
 beforeEach(() => {
   openInPlayerMock.mockReset().mockResolvedValue("mpv");
   getPlayerMock.mockReset().mockResolvedValue("mpv");
@@ -31,21 +37,20 @@ describe("ExternalPlayerButton", () => {
   it("is disabled without a url", () => {
     render(ExternalPlayerButton, { props: {} });
 
-    expect(screen.getByRole("button")).toBeDisabled();
+    expect(launchButton()).toBeDisabled();
   });
 
   it("is enabled once a url is given", () => {
     render(ExternalPlayerButton, { props: { url: "http://127.0.0.1:3030/x" } });
 
-    expect(screen.getByRole("button")).toBeEnabled();
+    expect(launchButton()).toBeEnabled();
   });
 
   it("opens the url in the current player", async () => {
     render(ExternalPlayerButton, { props: { url: "http://127.0.0.1:3030/x" } });
-    // Let the preference fetch settle before clicking.
-    await screen.findByRole("button");
+    await screen.findByRole("button", { name: /open/i });
 
-    await fireEvent.click(screen.getByRole("button"));
+    await fireEvent.click(launchButton());
 
     // `undefined` rather than absent: no torrent means nothing to hold.
     expect(openInPlayerMock).toHaveBeenCalledWith(
@@ -59,12 +64,10 @@ describe("ExternalPlayerButton", () => {
     render(ExternalPlayerButton, {
       props: { url: "http://127.0.0.1:3030/x", torrentId: 5 },
     });
-    await screen.findByRole("button");
+    await screen.findByRole("button", { name: /open/i });
 
-    await fireEvent.click(screen.getByRole("button"));
+    await fireEvent.click(launchButton());
 
-    // Without this the watch page's teardown would remove the torrent and stop
-    // the player mid-episode.
     expect(openInPlayerMock).toHaveBeenCalledWith(
       "http://127.0.0.1:3030/x",
       "mpv",
@@ -75,25 +78,25 @@ describe("ExternalPlayerButton", () => {
   it("offers the suggested players", async () => {
     render(ExternalPlayerButton, { props: { url: "http://x" } });
 
-    expect(await screen.findByRole("option", { name: "vlc" })).toBeInTheDocument();
+    await fireEvent.click(picker());
+
+    expect(screen.getByRole("option", { name: "vlc" })).toBeInTheDocument();
   });
 
-  it("uses the stored preference", async () => {
+  it("shows the stored preference", async () => {
     getPlayerMock.mockResolvedValue("vlc");
     render(ExternalPlayerButton, { props: { url: "http://127.0.0.1:3030/x" } });
 
-    // The select reflects the stored choice once it has loaded.
-    await screen.findByRole("option", { name: "vlc" });
-    const select = screen.getByLabelText(/external player/i) as HTMLSelectElement;
-    expect(select.value).toBe("vlc");
+    // The trigger reflects the stored choice once it has loaded.
+    expect(await screen.findByText("vlc")).toBeInTheDocument();
   });
 
   it("remembers a changed choice", async () => {
     render(ExternalPlayerButton, { props: { url: "http://x" } });
-    await screen.findByRole("option", { name: "vlc" });
+    await screen.findByText("mpv");
 
-    const select = screen.getByLabelText(/external player/i);
-    await fireEvent.change(select, { target: { value: "vlc" } });
+    await fireEvent.click(picker());
+    await fireEvent.click(screen.getByRole("option", { name: "vlc" }));
 
     expect(setPlayerMock).toHaveBeenCalledWith("vlc");
   });
@@ -101,9 +104,9 @@ describe("ExternalPlayerButton", () => {
   it("surfaces a launch failure", async () => {
     openInPlayerMock.mockRejectedValue("failed to launch `mpv`");
     render(ExternalPlayerButton, { props: { url: "http://x" } });
-    await screen.findByRole("button");
+    await screen.findByRole("button", { name: /open/i });
 
-    await fireEvent.click(screen.getByRole("button"));
+    await fireEvent.click(launchButton());
 
     expect(await screen.findByText(/failed to launch/i)).toBeInTheDocument();
   });
@@ -113,9 +116,11 @@ describe("ExternalPlayerButton", () => {
     suggestedPlayersMock.mockResolvedValue(["mpv", "vlc"]);
 
     render(ExternalPlayerButton, { props: { url: "http://x" } });
+    await screen.findByText("my-player");
 
-    // Without this option the select would fall back to the first suggestion
-    // and silently change the user's choice.
-    expect(await screen.findByRole("option", { name: "my-player" })).toBeInTheDocument();
+    // Without this option the picker would fall back to a suggestion and
+    // silently change the user's choice.
+    await fireEvent.click(picker());
+    expect(screen.getByRole("option", { name: "my-player" })).toBeInTheDocument();
   });
 });

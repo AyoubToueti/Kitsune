@@ -1,6 +1,7 @@
 <script lang="ts">
   import { errorMessage } from "$lib/api/anime";
   import { getPlayer, openInPlayer, setPlayer, suggestedPlayers } from "$lib/api/player";
+  import Select, { type SelectOption } from "./Select.svelte";
 
   let {
     url,
@@ -24,6 +25,20 @@
   let options = $state<string[]>([]);
   let launching = $state(false);
   let error = $state<string | null>(null);
+
+  /**
+   * The dropdown's choices, as `{ value, label }`.
+   *
+   * A stored player that is not in the suggestion list is appended: without
+   * it, the control would show the first suggestion and silently change the
+   * user's choice.
+   */
+  const choices = $derived<SelectOption[]>(
+    options.includes(player)
+      ? options.map((name) => ({ value: name, label: name }))
+      : [...options.map((name) => ({ value: name, label: name })),
+         { value: player, label: player }],
+  );
 
   // Fetched once: neither the list nor the stored choice changes while the
   // page is open, except through this component, which updates the local copy.
@@ -59,11 +74,9 @@
     }
   }
 
-  async function choose(event: Event): Promise<void> {
-    const select = event.currentTarget as HTMLSelectElement;
-    player = select.value;
-    // Remembered so the next visit opens the same player.
-    await setPlayer(player).catch(() => {
+  /** Remember the choice so the next visit opens the same player. */
+  async function remember(name: string): Promise<void> {
+    await setPlayer(name).catch(() => {
       // A failed save is not worth blocking playback over; the choice still
       // applies to this session.
     });
@@ -80,22 +93,14 @@
     {launching ? "Opening…" : label}
   </button>
 
-  <label class="sr-only" for="player-choice">External player</label>
-  <select
-    id="player-choice"
+  <!-- Themed dropdown, replacing the native `<select>` whose popup the browser
+       draws and CSS cannot restyle. -->
+  <Select
+    label="External player"
     bind:value={player}
-    onchange={choose}
-    class="rounded-lg border border-border-subtle bg-surface-hover px-2 py-2 text-sm text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-  >
-    {#each options as option (option)}
-      <option value={option}>{option}</option>
-    {/each}
-    <!-- A stored player that is not in the suggestion list still needs to
-         appear, or opening the page would silently reset the choice. -->
-    {#if !options.includes(player)}
-      <option value={player}>{player}</option>
-    {/if}
-  </select>
+    options={choices}
+    onchange={remember}
+  />
 </div>
 
 {#if error}

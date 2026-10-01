@@ -55,8 +55,13 @@
   function onWindowClick(event: MouseEvent) {
     if (open === null || container === null) return;
 
-    const target = event.target as Node | null;
-    if (target !== null && !container.contains(target)) {
+    // `composedPath()` rather than `event.target`: a click inside a dropdown
+    // can remove the node it landed on before this window handler runs (the
+    // Select closes its list on the same click), and a detached target is no
+    // longer `container.contains(...)`. The composed path is captured at
+    // dispatch, so it still includes the ancestors the click passed through.
+    const path = event.composedPath();
+    if (!path.includes(container)) {
       open = null;
     }
   }
@@ -126,7 +131,13 @@
       data-testid="filter-dropdown"
       class="absolute left-0 top-full z-30 mt-2 w-max max-w-full"
     >
-      <div class="rounded-xl bg-surface shadow-xl">
+      <!-- No `overflow-hidden` here: the Select lists are absolutely
+           positioned children that extend past this box, and clipping them
+           would hide (and make unclickable) the open dropdown. The panel's own
+           padding keeps content clear of the rounded corners. -->
+      <div
+        class="rounded-xl border border-border-subtle bg-surface-raised shadow-xl"
+      >
         <FilterPanel {genres} {tags} {current} {base} {showSearch} {extraParams} />
       </div>
     </div>
@@ -139,7 +150,9 @@
       data-testid="sort-dropdown"
       class="absolute right-0 top-full z-30 mt-2 w-44"
     >
-      <ul class="rounded-xl bg-surface py-2 shadow-xl">
+      <ul
+        class="overflow-hidden rounded-xl border border-border-subtle bg-surface-raised py-2 shadow-xl"
+      >
         {#each SORT_MENU_VALUES as value (value)}
           <!-- Links, not buttons: the sort lives in the URL, so choosing one is
                navigation. The back button undoes it and the result is

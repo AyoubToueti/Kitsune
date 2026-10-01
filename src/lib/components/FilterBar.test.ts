@@ -129,6 +129,63 @@ describe("FilterBar", () => {
       expect(screen.queryByLabelText("Search")).toBeNull();
     });
 
+    /// The Select lists are absolutely-positioned children that extend past
+    /// the dropdown box. An `overflow-hidden` wrapper (added to round the
+    /// corners) clipped them, so the open list was trimmed and unclickable.
+    it("does not clip the panel's dropdowns", async () => {
+      renderBar();
+      await fireEvent.click(filtersButton());
+
+      const panel = screen.getByTestId("filter-form");
+      expect(panel.parentElement?.className).not.toMatch(/overflow-hidden/);
+    });
+
+    /// End-to-end through the custom Select: open the filter dropdown, open a
+    /// select inside it, and choose. This is the path that was broken.
+    it("lets a select inside the dropdown open and choose", async () => {
+      renderBar();
+      await fireEvent.click(filtersButton());
+
+      await fireEvent.click(screen.getByRole("combobox", { name: "Type" }));
+      expect(screen.getByRole("listbox", { name: "Type" })).toBeInTheDocument();
+
+      await fireEvent.click(screen.getByRole("option", { name: "TV" }));
+
+      // The choice landed in the field the form submits.
+      const data = new FormData(
+        screen.getByTestId("filter-form") as HTMLFormElement,
+      );
+      expect(data.get("format")).toBe("tv");
+
+      expect(screen.getByTestId("filter-dropdown")).toBeInTheDocument();
+    });
+
+    /// In a real browser, choosing an option detaches the option from the DOM
+    /// during the click, before the window handler runs. The handler then sees
+    /// a detached `event.target`, which is no longer inside the container, and
+    /// closed the whole panel. jsdom flushes the Svelte update after the event,
+    /// so this has to remove the node mid-bubble to reproduce the timing.
+    /// `composedPath()` is captured at dispatch, so it still contains the
+    /// container; `event.target` does not.
+    it("stays open when the clicked option detaches mid-click", async () => {
+      renderBar();
+      await fireEvent.click(filtersButton());
+
+      const panel = screen.getByTestId("filter-dropdown");
+      panel.addEventListener("click", (event) => {
+        // Only an option click detaches: the combobox click that opens the list
+        // must be left alone. Bubble phase on the panel runs before the window
+        // handler, which is the timing the browser uses too.
+        const target = event.target as Element | null;
+        if (target?.getAttribute("role") === "option") target.remove();
+      });
+
+      await fireEvent.click(screen.getByRole("combobox", { name: "Type" }));
+      await fireEvent.click(screen.getByRole("option", { name: "TV" }));
+
+      expect(screen.getByTestId("filter-dropdown")).toBeInTheDocument();
+    });
+
     it("carries extra parameters into the form", async () => {
       renderBar({ extraParams: { q: "naruto" } });
       await fireEvent.click(filtersButton());
