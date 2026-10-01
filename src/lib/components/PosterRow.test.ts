@@ -35,7 +35,8 @@ describe("PosterRow", () => {
       },
     });
 
-    expect(screen.getAllByRole("link")).toHaveLength(3);
+    // One card each; a card renders two links, so count the cards.
+    expect(screen.getAllByTestId("anime-card")).toHaveLength(3);
     expect(screen.getByText("B")).toBeInTheDocument();
   });
 

@@ -23,8 +23,10 @@ function preview(): HTMLElement | null {
 }
 
 const link = () => screen.getByRole("link", { name: "One Piece" });
-/** The artwork, which is what the pointer trigger is attached to. */
+/** The artwork, asserted for its own sake; it is no longer the trigger. */
 const poster = () => screen.getByTestId("poster");
+/** The top-left circle, which is what opens the preview. */
+const trigger = () => screen.getByTestId("info-trigger");
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -63,7 +65,8 @@ describe("AnimeCard", () => {
   it("shows the score when there is one", () => {
     render(AnimeCard, { props: { anime: anime({ averageScore: 88 }) } });
 
-    expect(screen.getByText("88")).toBeInTheDocument();
+    // The badge carries a star glyph, so match on the number alone.
+    expect(screen.getByText(/88/)).toBeInTheDocument();
   });
 
   it("shows a placeholder when there is no cover", () => {
@@ -84,19 +87,26 @@ describe("AnimeCard", () => {
     expect(container.querySelector("img")).toHaveAttribute("alt", "");
   });
 
-  it("blurs the poster and shows a play affordance on hover", () => {
+  it("zooms the poster on hover", () => {
     const { container } = render(AnimeCard, {
       props: { anime: anime({ coverImage: "https://example.test/c.jpg" }) },
     });
 
-    // The blur and the overlay are pure CSS, so the classes driving them are
-    // what can be asserted.
+    // The zoom is pure CSS, so the class driving it is what can be asserted.
     expect(container.querySelector("img")?.className).toMatch(
-      /group-hover:blur/,
+      /group-hover:scale-105/,
     );
-    expect(screen.getByTestId("play-overlay").className).toMatch(
-      /group-hover:opacity-100/,
-    );
+  });
+
+  it("renders the info trigger in the hover quick bar", () => {
+    render(AnimeCard, { props: { anime: anime() } });
+
+    const button = screen.getByTestId("info-trigger");
+    // The trigger lives in the quick bar that slides up on hover, so it is a
+    // sibling of the Watch link there.
+    expect(button.className).not.toMatch(/opacity-0/);
+    expect(button.parentElement?.className).toMatch(/translate-y-full/);
+    expect(button.parentElement?.className).toMatch(/group-hover:translate-y-0/);
   });
 
   // --- hover preview ------------------------------------------------------
@@ -110,7 +120,7 @@ describe("AnimeCard", () => {
   it("shows a preview on hover", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     expect(preview()).toBeInTheDocument();
   });
@@ -118,7 +128,7 @@ describe("AnimeCard", () => {
   it("animates in rather than appearing instantly", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     // The element is created on open, so the animation class is what makes it
       // ease in. Without it the panel would blink into place. Asserted on the
@@ -127,21 +137,20 @@ describe("AnimeCard", () => {
       expect(preview()!.className).toMatch(/animate-preview-in-(bottom|top)/);
   });
 
-  it("opens on keyboard focus, not only on hover", async () => {
+  it("opens on keyboard focus of the trigger, not only on hover", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
     // A pointer-only preview would be unreachable by keyboard.
-    await fireEvent.focusIn(link());
+    await fireEvent.focusIn(trigger());
 
     expect(preview()).toBeInTheDocument();
   });
 
-  it("does not open when the pointer is over the title, only the artwork", async () => {
+  it("does not open when the pointer is over the poster", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    // The trigger is on the poster, so entering the anchor without reaching the
-    // artwork must leave the preview closed.
-    await fireEvent.mouseEnter(link());
+    // The poster is no longer the trigger; only the top-left circle is.
+    await fireEvent.mouseEnter(poster());
 
     expect(preview()).toBeNull();
   });
@@ -149,11 +158,11 @@ describe("AnimeCard", () => {
   it("keeps the preview open while the pointer is over it", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
     const panel = preview()!;
 
     // Leaving the card for the preview: the close is scheduled, then cancelled.
-    await fireEvent.mouseLeave(poster());
+    await fireEvent.mouseLeave(trigger());
     await fireEvent.mouseEnter(panel);
 
     // Still open after the grace period would have elapsed.
@@ -164,9 +173,9 @@ describe("AnimeCard", () => {
   it("closes once the pointer leaves the preview too", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
     const panel = preview()!;
-    await fireEvent.mouseLeave(poster());
+    await fireEvent.mouseLeave(trigger());
     await fireEvent.mouseEnter(panel);
 
     await fireEvent.mouseLeave(panel);
@@ -174,11 +183,27 @@ describe("AnimeCard", () => {
     await waitFor(() => expect(preview()).toBeNull());
   });
 
+  it("stays open when the panel opens under a stationary pointer", async () => {
+    render(AnimeCard, { props: { anime: anime() } });
+
+    await fireEvent.mouseEnter(trigger());
+    const panel = preview()!;
+
+    // The panel can appear under the pointer, so the browser fires the panel's
+    // enter BEFORE the trigger's leave: cancel-then-schedule. That stray timer
+    // used to close the panel out from under a pointer that never left it.
+    await fireEvent.mouseEnter(panel);
+    await fireEvent.mouseLeave(trigger());
+
+    await new Promise((r) => setTimeout(r, 220));
+    expect(preview()).toBeInTheDocument();
+  });
+
   it("closes after leaving the card", async () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    await fireEvent.mouseEnter(poster());
-    await fireEvent.mouseLeave(poster());
+    await fireEvent.mouseEnter(trigger());
+    await fireEvent.mouseLeave(trigger());
 
     await waitFor(() => expect(preview()).toBeNull());
   });
@@ -203,7 +228,7 @@ describe("AnimeCard", () => {
     );
 
     render(AnimeCard, { props: { anime: anime() } });
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     const panel = preview()!;
     const before = panel.style.top;
@@ -233,7 +258,7 @@ describe("AnimeCard", () => {
     );
 
     render(AnimeCard, { props: { anime: anime() } });
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     const panel = preview()!;
     // Left edge at the card's horizontal centre (100 + 160/2).
@@ -277,7 +302,7 @@ describe("AnimeCard", () => {
     );
 
     render(AnimeCard, { props: { anime: anime() } });
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     // Card centre Y (500 + 240/2 = 620) minus the panel's real height (200),
     // so its bottom edge meets the card's centre.
@@ -293,7 +318,7 @@ describe("AnimeCard", () => {
       },
     });
 
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     const panel = preview()!;
     expect(panel).toHaveTextContent("1100 eps");
@@ -309,7 +334,7 @@ describe("AnimeCard", () => {
       props: { anime: anime({ genres: ["Slice of Life"] }) },
     });
 
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     expect(screen.getByRole("link", { name: "Slice of Life" })).toHaveAttribute(
       "href",
@@ -320,7 +345,7 @@ describe("AnimeCard", () => {
   it("strips HTML from the preview's synopsis", async () => {
     render(AnimeCard, { props: { anime: anime({ description: "a<br>b" }) } });
 
-    await fireEvent.mouseEnter(poster());
+    await fireEvent.mouseEnter(trigger());
 
     expect(preview()).toHaveTextContent("a b");
   });

@@ -44,7 +44,11 @@ describe("Recommendations", () => {
       props: { recommendations: [recommendation(16498, "Fullmetal Alchemist")] },
     });
 
-    expect(screen.getByRole("link")).toHaveAttribute("href", "/anime/16498");
+    // A card renders two links to the same work (poster + Watch); both must
+    // point at the detail route.
+    for (const link of screen.getAllByRole("link")) {
+      expect(link).toHaveAttribute("href", "/anime/16498");
+    }
   });
 
   it("renders nothing when the list is empty", () => {

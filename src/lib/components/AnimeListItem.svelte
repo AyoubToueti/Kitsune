@@ -94,7 +94,7 @@
     {anime}
     placement={hover.placement}
     measure={hover.measure}
-    onenter={hover.cancelClose}
-    onleave={hover.scheduleClose}
+    onenter={hover.enterPreview}
+    onleave={hover.leavePreview}
   />
 {/if}

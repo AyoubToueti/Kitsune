@@ -101,7 +101,8 @@ describe("ContinueWatching", () => {
     render(ContinueWatching);
 
     const resume = await screen.findByTestId("resume");
-    expect(resume).toHaveAttribute("href", "/watch/1?ep=2");
+    // Points at the detail page now, which opens the modal on arrival.
+    expect(resume).toHaveAttribute("href", "/anime/1?ep=2");
   });
 
   it("starts from the beginning when nothing has been watched", async () => {
@@ -112,7 +113,7 @@ describe("ContinueWatching", () => {
     // Never clamped to -1: an unstarted work resumes at the first episode.
     expect(await screen.findByTestId("resume")).toHaveAttribute(
       "href",
-      "/watch/1?ep=0",
+      "/anime/1?ep=0",
     );
   });
 

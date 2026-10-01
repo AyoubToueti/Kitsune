@@ -32,6 +32,18 @@ export function createHoverPreview(getAnchor: () => HTMLElement | null) {
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   /**
+   * Whether the pointer is currently over the preview panel.
+   *
+   * Guards `scheduleClose`, because the panel can open UNDER a stationary
+   * pointer. When that happens the browser fires the panel's `mouseenter`
+   * before the trigger's `mouseleave`, so the order is cancel-then-schedule --
+   * and that stray timer would close the panel a moment later, out from under
+   * a pointer that never left it. Ignoring a close while the pointer is over
+   * the panel makes the outcome independent of event order.
+   */
+  let overPreview = false;
+
+  /**
    * The rendered preview, once it exists.
    *
    * Kept so the panel can be measured rather than assumed. `PREVIEW_SIZE` is
@@ -127,11 +139,29 @@ export function createHoverPreview(getAnchor: () => HTMLElement | null) {
   /** Hide, after a grace period so the pointer can reach the preview. */
   function scheduleClose() {
     cancelClose();
+
+    // The pointer is on the panel: it must not close under it. See the
+    // `overPreview` note -- this is the cancel-then-schedule race.
+    if (overPreview) return;
+
     timer = setTimeout(() => {
       open = false;
+      overPreview = false;
       timer = null;
       detach();
     }, CLOSE_DELAY_MS);
+  }
+
+  /** The pointer entered the panel: keep it open, cancelling any close. */
+  function enterPreview() {
+    overPreview = true;
+    cancelClose();
+  }
+
+  /** The pointer left the panel: allow it to close as usual. */
+  function leavePreview() {
+    overPreview = false;
+    scheduleClose();
   }
 
   /**
@@ -155,6 +185,7 @@ export function createHoverPreview(getAnchor: () => HTMLElement | null) {
   // Teardown only: nothing may outlive the component.
   $effect(() => () => {
     cancelClose();
+    overPreview = false;
     detach();
   });
 
@@ -169,5 +200,7 @@ export function createHoverPreview(getAnchor: () => HTMLElement | null) {
     show,
     scheduleClose,
     cancelClose,
+    enterPreview,
+    leavePreview,
   };
 }

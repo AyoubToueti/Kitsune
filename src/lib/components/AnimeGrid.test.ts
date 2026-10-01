@@ -22,7 +22,9 @@ describe("AnimeGrid", () => {
       props: { anime: [anime(1, "A"), anime(2, "B"), anime(3, "C")] },
     });
 
-    expect(screen.getAllByRole("link")).toHaveLength(3);
+    // One card each; a card renders two links (poster + Watch), so links are
+    // the wrong thing to count.
+    expect(screen.getAllByTestId("anime-card")).toHaveLength(3);
   });
 
   it("shows each title", () => {

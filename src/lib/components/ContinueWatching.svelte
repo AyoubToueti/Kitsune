@@ -3,11 +3,10 @@
 
   import { errorMessage } from "$lib/api/anime";
   import { getContinueWatching, onListChanged } from "$lib/api/auth";
-  import { resumeIndex } from "$lib/resume";
   import type { ContinueWatchingItem } from "$lib/types";
   import type { UnlistenFn } from "@tauri-apps/api/event";
-  import AnimeCard from "./AnimeCard.svelte";
   import AnimeGridSkeleton from "./AnimeGridSkeleton.svelte";
+  import ContinueWatchingCard from "./ContinueWatchingCard.svelte";
 
   /** Six columns at the widest, so two rows. */
   const LIMIT = 12;
@@ -98,23 +97,7 @@
     {:else}
       <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
         {#each items as entry (entry.anime.id)}
-          <div class="relative">
-            <AnimeCard anime={entry.anime} />
-            <!-- A sibling of the card's link, not a child: nesting an anchor
-                 inside an anchor is invalid HTML. Positioned over the card's
-                 bottom-right corner, which is the "resume" affordance. -->
-            <a
-              href={`/watch/${entry.anime.id}?ep=${resumeIndex(entry.progress)}`}
-              data-testid="resume"
-              aria-label={`Resume ${entry.anime.title.romaji ?? "this work"}`}
-              title={entry.progress > 0
-                ? `Resume at episode ${entry.progress}`
-                : "Start watching"}
-              class="absolute right-1 bottom-1 flex h-8 w-8 items-center justify-center rounded-full bg-accent text-sm text-white shadow-lg transition-transform hover:scale-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              <span aria-hidden="true">▶</span>
-            </a>
-          </div>
+          <ContinueWatchingCard {entry} />
         {/each}
       </div>
     {/if}
