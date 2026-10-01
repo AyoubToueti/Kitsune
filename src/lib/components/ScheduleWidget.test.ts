@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
+import { flushSync } from "svelte";
 
 import { SCHEDULE_FUTURE_DAYS, SCHEDULE_PAST_DAYS } from "$lib/schedule";
 import type { Anime, ScheduledEpisode } from "$lib/types";
@@ -202,5 +203,138 @@ describe("ScheduleWidget", () => {
     // short date is what keeps the tabs distinguishable.
     const labels = tabs().map((tab) => tab.textContent?.trim() ?? "");
     expect(new Set(labels).size).toBeGreaterThan(20);
+  });
+});
+
+/** The strip the arrows drive. */
+function strip(): HTMLElement {
+  return screen.getByTestId("day-strip");
+}
+
+function prev(): HTMLButtonElement {
+  return screen.getByTestId("schedule-prev") as HTMLButtonElement;
+}
+
+function next(): HTMLButtonElement {
+  return screen.getByTestId("schedule-next") as HTMLButtonElement;
+}
+
+/**
+ * Give the strip the scroll geometry jsdom never lays out.
+ *
+ * Without this `clientWidth` and `scrollWidth` are both 0, so the strip reads
+ * as fitting and both arrows stay disabled.
+ */
+function setWidths(clientWidth: number, scrollWidth: number): void {
+  const el = strip();
+  Object.defineProperty(el, "clientWidth", { value: clientWidth, configurable: true });
+  Object.defineProperty(el, "scrollWidth", { value: scrollWidth, configurable: true });
+  // The component re-reads on resize, which is the cheapest way to trigger it.
+  // Flushed, because the handler writes `$state` and the assertions that follow
+  // read the DOM.
+  window.dispatchEvent(new Event("resize"));
+  flushSync();
+}
+
+/** Fire the strip's scroll listener and flush the arrow state it updates. */
+function emitScroll(): void {
+  strip().dispatchEvent(new Event("scroll"));
+  flushSync();
+}
+
+describe("ScheduleWidget day-strip arrows", () => {
+  it("renders both arrows", () => {
+    render(ScheduleWidget);
+
+    expect(prev()).toBeInTheDocument();
+    expect(next()).toBeInTheDocument();
+  });
+
+  it("disables both arrows when the strip fits", () => {
+    render(ScheduleWidget);
+
+    // No geometry to overflow means there is nowhere to go in either direction.
+    setWidths(400, 400);
+
+    expect(prev()).toBeDisabled();
+    expect(next()).toBeDisabled();
+  });
+
+  it("enables only the right arrow at the start of an overflowing strip", () => {
+    render(ScheduleWidget);
+
+    setWidths(400, 1000);
+
+    expect(prev()).toBeDisabled();
+    expect(next()).toBeEnabled();
+  });
+
+  it("disables the right arrow once the end is reached", () => {
+    render(ScheduleWidget);
+
+    setWidths(400, 1000);
+    // Scrolled to the very end: nothing further to the right.
+    strip().scrollLeft = 600;
+    emitScroll();
+
+    expect(next()).toBeDisabled();
+    expect(prev()).toBeEnabled();
+  });
+
+  it("eases the strip when the right arrow is clicked, rather than jumping", async () => {
+    render(ScheduleWidget);
+    setWidths(400, 1000);
+
+    await fireEvent.click(next());
+
+    // The glide starts synchronously, which the strip marks with a class so
+    // scroll snapping can stand down for its duration. Asserting the glide
+    // *began* is deterministic; the landing point is covered by the
+    // `createStripDrag` release-glide tests, which own that arithmetic.
+    expect(strip().className).toContain("strip-settling");
+  });
+
+  it("eases back when the left arrow is clicked", async () => {
+    render(ScheduleWidget);
+    setWidths(400, 1000);
+    strip().scrollLeft = 400;
+    emitScroll();
+
+    await fireEvent.click(prev());
+
+    expect(strip().className).toContain("strip-settling");
+  });
+
+  it("gives every tab the same width that fills the strip exactly", () => {
+    render(ScheduleWidget);
+    setWidths(400, 1000);
+
+    const widths = tabs().map((tab) =>
+      Number.parseFloat((tab as HTMLElement).style.width),
+    );
+    // One width for all, and a whole number of them spans the visible width.
+    // At 400px the breakpoint table yields 4 tabs: 4 * 94 + 3 * 8 === 400, so
+    // no half tab can show.
+    expect(new Set(widths).size).toBe(1);
+    expect(widths[0] * 4 + 8 * 3).toBeCloseTo(400, 5);
+  });
+
+  it("does not scroll when the arrow is disabled", async () => {
+    render(ScheduleWidget);
+    setWidths(400, 400);
+
+    await fireEvent.click(next());
+
+    expect(strip().scrollLeft).toBe(0);
+  });
+
+  it("suppresses text selection while a drag is in progress", async () => {
+    render(ScheduleWidget);
+    setWidths(400, 1000);
+
+    await fireEvent.pointerDown(strip(), { clientX: 200, button: 0, pointerId: 1 });
+
+    // Dragging must not select the tab labels as the pointer sweeps over them.
+    expect(strip().className).toContain("select-none");
   });
 });

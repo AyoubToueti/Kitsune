@@ -3,8 +3,20 @@
 
   import { errorMessage, getSchedule } from "$lib/api/anime";
   import { buildDayStrip, formatTime } from "$lib/schedule";
+  import {
+    breakpointCardWidth,
+    canScrollLeft,
+    canScrollRight,
+  } from "$lib/scroll-strip";
+  import { createStripDrag } from "$lib/strip-drag.svelte";
   import { displayTitle, type ScheduledEpisode } from "$lib/types";
   import Skeleton from "./Skeleton.svelte";
+
+  /** The strip's `gap-2`, in pixels. Used to divide the width into cards. */
+  const GAP_PX = 8;
+
+  /** The narrowest a day tab may be, matching the old `min-w-18`. */
+  const MIN_CARD_WIDTH = 72;
 
   /**
    * Per-day cap.
@@ -31,6 +43,63 @@
   let error = $state<string | null>(null);
   let strip = $state<HTMLElement | null>(null);
 
+  // Drag-to-scroll. The strip hides its scrollbar, so dragging is the main way
+  // to move it by hand; the arrows beside it are the precise way. The stride
+  // getter is a closure, so it may read `cardWidth` before that is assigned --
+  // it is only called once a gesture ends.
+  const drag = createStripDrag(() => strip, {
+    getStride: () => (cardWidth ?? MIN_CARD_WIDTH) + GAP_PX,
+  });
+
+  /**
+   * Whether an arrow has anywhere to go.
+   *
+   * `false` until the strip is measured on mount, so neither arrow flashes as
+   * enabled on a strip that has not scrolled yet. Kept as plain state rather
+   * than derived because `scrollLeft` and `clientWidth` are not reactive.
+   */
+  let atStart = $state(true);
+  let atEnd = $state(true);
+
+  /**
+   * The exact width each day tab is given.
+   *
+   * Set to fill the strip with a whole number of tabs, so no half tab is ever
+   * visible. `null` until measured -- the fallback `MIN_CARD_WIDTH` keeps the
+   * tabs rendering before layout (SSR, jsdom).
+   */
+  let cardWidth = $state<number | null>(null);
+
+  /**
+   * Re-read the strip's geometry: resize the tabs, then update both arrows.
+   *
+   * Called on mount, on resize, and after every scroll and arrow press. Writes
+   * only from the element's own measurements, never scrolls, so the three
+   * callers cannot fight each other.
+   */
+  function syncArrows() {
+    if (!strip) return;
+
+    cardWidth = breakpointCardWidth(strip.clientWidth, MIN_CARD_WIDTH, GAP_PX);
+
+    atStart = !canScrollLeft(strip.scrollLeft);
+    atEnd = !canScrollRight(strip.scrollLeft, strip.clientWidth, strip.scrollWidth);
+  }
+
+  /** Move the strip by whole tabs, as an arrow press would. */
+  function scrollStep(direction: 1 | -1) {
+    if (!strip) return;
+    // One tab plus the gap, so whole tabs land at the edges. Routed through the
+    // drag composable's glide, so a press eases exactly like a drag release.
+    const stride = (cardWidth ?? MIN_CARD_WIDTH) + GAP_PX;
+    const maxScroll = strip.scrollWidth - strip.clientWidth;
+    const target = Math.min(
+      Math.max(strip.scrollLeft + stride * direction, 0),
+      Math.max(0, maxScroll),
+    );
+    drag.glideTo(target);
+  }
+
   const loading = $derived(loadingKey === selectedKey);
 
   const selected = $derived(
@@ -49,6 +118,15 @@
   // Defaults to today, set on mount so the full strip renders first.
   onMount(() => {
     selectedKey = window_.days[window_.todayIndex].key;
+
+    // The strip is bound by now, so its geometry can be read. `resize` covers
+    // the arrows going stale when the window -- and so the visible width --
+    // changes; `scroll` covers a wheel or touch scroll the arrows did not
+    // cause. Both only re-read, never scroll, so they cannot fight each other.
+    syncArrows();
+    window.addEventListener("resize", syncArrows);
+
+    return () => window.removeEventListener("resize", syncArrows);
   });
 
   $effect(() => {
@@ -108,27 +186,69 @@
     Estimated schedule
   </h2>
 
-  <!-- Every day in range gets a tab whether or not anything airs, so the strip
-       keeps a stable width instead of shifting as responses arrive. -->
-  <div
-    bind:this={strip}
-    data-testid="day-strip"
-    class="mb-3 flex gap-2 overflow-x-auto pb-1"
-  >
-    {#each window_.days as day (day.key)}
-      <button
-        type="button"
-        onclick={() => (selectedKey = day.key)}
-        aria-pressed={day.key === selectedKey}
-        class="flex min-w-18 shrink-0 flex-col items-center rounded-lg px-3 py-1.5 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {day.key ===
-        selectedKey
-          ? 'bg-accent text-white'
-          : 'bg-surface-hover text-ink-muted hover:text-ink'}"
-      >
-        <span class="font-medium">{day.weekday}</span>
-        <span class="text-[10px] opacity-80">{day.shortDate}</span>
-      </button>
-    {/each}
+  <!-- Wrapper: the arrows sit over the strip's edges, which needs a positioned
+       ancestor. -->
+  <div class="relative mb-3">
+    <!-- Every day in range gets a tab whether or not anything airs, so the
+         strip keeps a stable width instead of shifting as responses arrive. -->
+    <!-- `no-scrollbar`: the arrows and dragging are the intended ways to move
+         it, and a scrollbar under a row of day tabs is noise. `role` exists
+         only because the pointer handler requires one; keyboard users get the
+         same scrolling from the arrow buttons below. -->
+    <div
+      bind:this={strip}
+      data-testid="day-strip"
+      role="presentation"
+      class="no-scrollbar snap-strip flex gap-2 overflow-x-auto pb-1 {drag.dragging
+        ? 'strip-dragging select-none cursor-grabbing'
+        : drag.settling
+          ? 'strip-settling'
+          : ''}"
+      onpointerdown={drag.onpointerdown}
+      onclickcapture={drag.onclickcapture}
+      ondragstart={drag.ondragstart}
+      onscroll={syncArrows}
+    >
+      {#each window_.days as day (day.key)}
+        <button
+          type="button"
+          onclick={() => (selectedKey = day.key)}
+          aria-pressed={day.key === selectedKey}
+          style="width: {cardWidth ?? MIN_CARD_WIDTH}px;"
+          class="flex shrink-0 cursor-pointer flex-col items-center overflow-hidden rounded-lg px-1 py-1.5 text-xs transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {day.key ===
+          selectedKey
+            ? 'bg-accent text-white'
+            : 'bg-surface-hover text-ink-muted hover:text-ink'}"
+        >
+          <span class="font-medium">{day.weekday}</span>
+          <span class="text-[10px] opacity-80">{day.shortDate}</span>
+        </button>
+      {/each}
+    </div>
+
+    <!-- Arrows over the strip's edges. Disabled at each end, so they read as
+         "nothing further this way" rather than silently doing nothing. -->
+    <button
+      type="button"
+      data-testid="schedule-prev"
+      aria-label="Scroll to earlier days"
+      disabled={atStart}
+      onclick={() => scrollStep(-1)}
+      class="absolute top-1/2 left-0 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-border-subtle bg-surface-raised text-lg text-ink shadow-lg transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:opacity-30"
+    >
+      <span aria-hidden="true">‹</span>
+    </button>
+
+    <button
+      type="button"
+      data-testid="schedule-next"
+      aria-label="Scroll to later days"
+      disabled={atEnd}
+      onclick={() => scrollStep(1)}
+      class="absolute top-1/2 right-0 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full border border-border-subtle bg-surface-raised text-lg text-ink shadow-lg transition-colors hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-default disabled:opacity-30"
+    >
+      <span aria-hidden="true">›</span>
+    </button>
   </div>
 
   <!-- Error is checked before the not-yet-loaded branch, because a failed day
