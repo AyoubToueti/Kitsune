@@ -294,6 +294,15 @@ export interface BrowseQuery {
   /** Minimum average score on the provider's own scale (AniList: 0-100). */
   minScore?: number;
   sort: SortOption;
+  /**
+   * Reverse the sort's natural direction.
+   *
+   * A boolean rather than `asc`/`desc`, because the natural direction differs
+   * per sort -- score is highest-first, title is A-Z -- so "ascending" would
+   * need a per-sort default table to mean anything. This says only "the
+   * opposite of what this sort normally does". Absent means natural.
+   */
+  reversed?: boolean;
 }
 
 /**
@@ -464,6 +473,32 @@ export interface ReleasePreference {
   preferredResolutions?: Resolution[];
   /** Releases below this many seeders are dropped when better ones exist. */
   minSeeders?: number;
+}
+
+/**
+ * The reader's stored preferences.
+ *
+ * Mirrors the Rust `Settings` exactly: the backend writes the whole object and
+ * the frontend reads the whole object, so there is no partial-update surface.
+ */
+export interface Settings {
+  /** The external player binary, e.g. `mpv` or `flatpak`. */
+  player: string;
+  /**
+   * Extra arguments passed before the stream URL, e.g. `["run",
+   * "io.mpv.Mpv"]`. Each element is one argv entry; nothing is shell-parsed.
+   */
+  playerArgs: string[];
+  /** Download directory, or `null` for the default temp directory. */
+  downloadDir: string | null;
+  /** Resolutions to prefer, in order. */
+  preferredResolutions: Resolution[];
+  /** Releases below this many seeders are dropped when better ones exist. */
+  minSeeders: number;
+  /** Fraction of the file to buffer before launching the player, 0..1. */
+  readyFraction: number;
+  /** `"light"`, `"dark"` or `"system"`. */
+  theme: string;
 }
 
 /**

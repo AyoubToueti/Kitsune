@@ -23,6 +23,11 @@ export default defineConfig({
       "$app/navigation": fileURLToPath(
         new URL("./src/test/app-navigation-stub.ts", import.meta.url),
       ),
+      // Same reasoning: `$app/environment` is virtual too, and the theme module
+      // reads `browser` from it.
+      "$app/environment": fileURLToPath(
+        new URL("./src/test/app-environment-stub.ts", import.meta.url),
+      ),
     },
   },
   test: {

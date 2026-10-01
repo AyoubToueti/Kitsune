@@ -13,3 +13,19 @@ import "@testing-library/jest-dom/vitest";
 // replaces these with its own mock when its module loads.
 HTMLMediaElement.prototype.load = () => {};
 HTMLMediaElement.prototype.pause = () => {};
+
+// jsdom implements no `window.matchMedia`, and the theme module reads it to
+// resolve the "system" appearance. A minimal stub that always reports "dark"
+// (matching the app's default) keeps that code path from throwing in tests.
+if (typeof window.matchMedia !== "function") {
+  window.matchMedia = (query) => ({
+    matches: query.includes("dark"),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  });
+}

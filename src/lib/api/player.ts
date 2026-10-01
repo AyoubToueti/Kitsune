@@ -6,8 +6,19 @@
 // which is the last place it belongs.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { TorrentHandle, TorrentProgress } from "$lib/types";
+
+/**
+ * Event the backend emits when an external player it launched exits.
+ *
+ * The payload is the torrent id the player was reading, so the frontend can
+ * tell whether the exit belongs to the episode it is currently showing.
+ * Without this the app has no way to learn that the reader closed the player,
+ * and the torrent would keep downloading behind a panel that says "playing".
+ */
+export const PLAYER_EXIT_EVENT = "player-exit";
 
 /** Command names, centralised so a rename cannot drift. */
 export const PLAYER_COMMANDS = {
@@ -116,4 +127,23 @@ export async function setPlayer(name: string): Promise<void> {
 /** Players the UI offers, in preference order. */
 export async function suggestedPlayers(): Promise<string[]> {
   return invoke<string[]>(PLAYER_COMMANDS.suggestedPlayers);
+}
+
+/**
+ * Subscribe to external-player exits, calling back with the torrent id.
+ *
+ * `listen` resolves with an unlisten function rather than returning one, so the
+ * caller cannot forget to await it and leak the listener. The callback is
+ * wrapped so a malformed payload is dropped rather than thrown into Tauri's
+ * event loop, and an id that is not a number is ignored -- applying it to
+ * torrent 0 by accident would stop the wrong download.
+ */
+export async function onPlayerExit(
+  handler: (torrentId: number) => void,
+): Promise<UnlistenFn> {
+  return listen<number>(PLAYER_EXIT_EVENT, (event) => {
+    const id = event.payload;
+    if (typeof id !== "number") return;
+    handler(id);
+  });
 }
