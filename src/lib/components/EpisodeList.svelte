@@ -163,7 +163,7 @@
          stretching the page, so a long season stays compact. -->
     <div
       data-testid="episode-scroller"
-      class="max-h-[24rem] overflow-y-auto pr-1"
+      class="max-h-96 overflow-y-auto pr-1"
     >
       <ul
         bind:this={listEl}
@@ -200,7 +200,7 @@
               <!-- A bottom gradient so the caption stays readable over any frame. -->
               <span
                 aria-hidden="true"
-                class="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/85 to-transparent"
+                class="absolute inset-x-0 bottom-0 h-2/3 bg-linear-to-t from-black/85 to-transparent"
               ></span>
 
               <span
@@ -208,6 +208,17 @@
               >
                 {label(ep)}
               </span>
+
+              <!-- The episode number, always shown: it is the load-bearing
+                   part of the card -- the caption alone may be a name with no
+                   number in it. Top-left, so it never collides with the FILLER
+                   flag top-right. -->
+              <span
+                class="absolute top-1 left-1 rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-bold text-white backdrop-blur-sm"
+              >
+                EP {episodeNumber(ep) ?? index + 1}
+              </span>
+
               {#if ep.filler}
                 <span
                   class="absolute top-1 right-1 rounded bg-danger/85 px-1.5 py-0.5 text-[10px] font-semibold text-white"

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { TorrentProgress } from "$lib/types";
+  import { healthLabel, streamWarning } from "$lib/stream-health";
 
   /**
    * The watch page's download panel.
@@ -10,11 +11,11 @@
    * in an external player, and this panel reports what the torrent is doing
    * while the reader waits for enough of it to be playable.
    *
-   * The two bars answer different questions. "This episode" is the chosen
-   * file, which is what the reader is waiting on; "Whole torrent" is every
-   * file, which is what the torrent is actually doing. They differ whenever a
+   * The headline answers the reader's question -- "can I watch yet?" -- with
+   * the chosen file's progress, since that is what playback waits on. The
+   * whole-torrent figure is kept as a quiet aside: the two differ whenever a
    * release ships subtitles, artwork or a batch of episodes alongside the one
-   * being watched.
+   * being watched, but the file's own progress is the one that matters.
    */
 
   let {
@@ -22,6 +23,10 @@
     fileFraction = 0,
     torrentFraction = 0,
     empty = false,
+    title = "Buffering…",
+    speedHistory = [],
+    staleSeconds = 0,
+    playedFraction = 0,
   }: {
     /** Latest snapshot, or `null` before the first poll has answered. */
     progress?: TorrentProgress | null;
@@ -31,7 +36,53 @@
     torrentFraction?: number;
     /** True when no torrent has been loaded yet. */
     empty?: boolean;
+    /**
+     * The headline for the loaded state.
+     *
+     * Defaults to "Buffering…" rather than "Downloading…": the app is only
+     * fetching enough of the file to hand to the external player, not
+     * downloading the whole episode, so "buffering" is the honest word.
+     */
+    title?: string;
+    /** Recent download-speed samples (MiB/s), newest last, for the sparkline. */
+    speedHistory?: number[];
+    /** Seconds since the byte count last changed, for the stall warning. */
+    staleSeconds?: number;
+    /**
+     * How far into the chosen file the player has got, 0..1.
+     *
+     * Drawn as the "played" marker over the buffered bar, so the reader sees
+     * the margin ahead of the playhead. `0` when nothing is playing yet.
+     */
+    playedFraction?: number;
   } = $props();
+
+  /** The single notice worth showing, or `null`. */
+  const warning = $derived(
+    streamWarning(progress, staleSeconds, fileFraction),
+  );
+  /** The one-word health state beside the numbers. */
+  const health = $derived(healthLabel(progress));
+
+  /**
+   * Whether the chosen episode is fully buffered.
+   *
+   * Drives a different layout: once complete, the swarm numbers (peers, live
+   * speed, ETA) are all zero or meaningless -- the torrent is idle -- so the
+   * card shows the finished facts instead of a row of dashes.
+   */
+  const complete = $derived(warning?.level === "ok");
+
+  /** How many pixels a sparkline bar gets for a sample, given the max. */
+  function sparkHeight(sample: number, max: number): string {
+    if (max <= 0) return "2px";
+    return `${Math.max(2, Math.round((sample / max) * 30))}px`;
+  }
+
+  /** The tallest sample in the history, so the sparkline self-scales. */
+  const sparkMax = $derived(
+    speedHistory.reduce((max, value) => Math.max(max, value), 0),
+  );
 
   /** A byte count in binary units, e.g. "1.4 GB". */
   function formatBytes(bytes: number): string {
@@ -93,80 +144,150 @@
     <p class="text-sm text-ink-muted">Load a torrent to start watching.</p>
   </div>
 {:else}
+  <!-- A compact card rather than a fixed video box: playback is external, so
+       the empty `aspect-video` frame was just dead space. It hugs its content
+       and leads with what the reader is waiting for. -->
   <div
-    class="flex aspect-video w-full flex-col justify-center gap-4 rounded-xl border border-border-subtle bg-surface-hover p-5"
+    class="flex w-full flex-col gap-3 rounded-xl border border-border-subtle bg-surface-hover p-4"
     data-testid="stream-status"
   >
-    <!-- This episode: the file the reader is actually waiting on. -->
+    <!-- Headline: a status dot, what is happening, and the percentage. A
+         finished download stops pulsing (nothing is happening) and turns
+         green. -->
+    <div class="flex items-center gap-2.5">
+      <span
+        aria-hidden="true"
+        class="size-2 shrink-0 rounded-full {complete
+          ? 'bg-health-green'
+          : 'bg-accent motion-safe:animate-pulse'}"
+      ></span>
+      <span class="text-sm font-semibold {complete ? 'text-health-green' : 'text-ink'}"
+        >{complete ? "Fully buffered" : title}</span
+      >
+      <span
+        class="ml-auto text-sm font-bold {complete
+          ? 'text-health-green'
+          : 'text-accent-hover'}"
+        data-testid="file-percent">{percent(fileFraction)}%</span
+      >
+    </div>
+
+    <!-- The chosen file's bar, the thing the reader is actually waiting on. -->
     <div>
-      <div class="mb-1 flex items-center justify-between text-xs">
-        <span class="font-medium text-ink">This episode</span>
-        <span class="text-ink-muted" data-testid="file-percent"
-          >{percent(fileFraction)}%</span
-        >
-      </div>
-      <div class="h-2 w-full overflow-hidden rounded-full bg-border-subtle">
+      <div class="relative h-1.5 w-full overflow-hidden rounded-full bg-border-subtle">
         <div
           class="h-full rounded-full bg-accent transition-[width] duration-300"
           style="width: {percent(fileFraction)}%"
           data-testid="file-bar"
         ></div>
+        <!-- The playhead: how far into the buffered file the player has got.
+             Only drawn once there is a played position to show. -->
+        {#if playedFraction > 0}
+          <div
+            class="absolute inset-y-0 w-0.5 bg-ink"
+            style="left: {percent(playedFraction)}%"
+            data-testid="played-marker"
+            aria-hidden="true"
+          ></div>
+        {/if}
+      </div>
+      {#if progress}
+        <div class="mt-1.5 flex items-center justify-between text-[11px]">
+          <span class="text-ink-faint" data-testid="bytes">
+            {formatBytes(progress.progressBytes)} / {formatBytes(
+              progress.totalBytes,
+            )}
+          </span>
+          <!-- The whole-torrent figure is kept for tests and context, but it
+               sits quietly beside the byte count rather than owning a bar. -->
+          <span class="text-ink-faint" data-testid="torrent-percent"
+            >whole torrent {percent(torrentFraction)}%</span
+          >
+        </div>
+      {/if}
+      <!-- The whole-torrent bar is retained (hidden) so the existing tests and
+           the watch page keep one element to measure; it is no longer drawn. -->
+      <div class="hidden" aria-hidden="true">
+        <div data-testid="torrent-bar" style="width: {percent(torrentFraction)}%"></div>
       </div>
     </div>
-
-    <!-- Whole torrent: everything the release ships, not just the episode. -->
-    <div>
-      <div class="mb-1 flex items-center justify-between text-xs">
-        <span class="font-medium text-ink-muted">Whole torrent</span>
-        <span class="text-ink-faint" data-testid="torrent-percent"
-          >{percent(torrentFraction)}%</span
-        >
-      </div>
-      <div class="h-1.5 w-full overflow-hidden rounded-full bg-border-subtle">
-        <div
-          class="h-full rounded-full bg-ink-faint transition-[width] duration-300"
-          style="width: {percent(torrentFraction)}%"
-          data-testid="torrent-bar"
-        ></div>
-      </div>
-    </div>
-
-    {#if progress?.error}
-      <p class="text-xs text-danger" role="status">
-        {progress.error}
-      </p>
-    {/if}
 
     <!-- The live line: connection, speed and ETA, the things a stalled
-         download needs to be diagnosable at a glance. -->
-    <dl class="grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
-      <div>
-        <dt class="text-ink-faint">Status</dt>
+         download needs to be diagnosable at a glance. Hidden once the file is
+         complete, when every one of these reads as a dash. -->
+    {#if !complete}
+    <dl class="flex flex-wrap gap-x-5 gap-y-1 text-[11px]">
+      <div class="flex items-center gap-1.5">
+        <dt class="text-ink-faint">Peers</dt>
         <dd class="text-ink-muted" data-testid="connection">{connection}</dd>
       </div>
-      <div>
+      <div class="flex items-center gap-1.5">
         <dt class="text-ink-faint">Down</dt>
         <dd class="text-ink-muted" data-testid="down-speed"
           >{formatSpeed(progress?.downloadMbps ?? 0)}</dd
         >
       </div>
-      <div>
+      <div class="flex items-center gap-1.5">
         <dt class="text-ink-faint">Up</dt>
         <dd class="text-ink-muted" data-testid="up-speed"
           >{formatSpeed(progress?.uploadMbps ?? 0)}</dd
         >
       </div>
-      <div>
+      <div class="flex items-center gap-1.5">
         <dt class="text-ink-faint">ETA</dt>
         <dd class="text-ink-muted" data-testid="eta"
           >{formatEta(progress?.etaSeconds ?? null)}</dd
         >
       </div>
+      <div class="flex items-center gap-1.5">
+        <dt class="text-ink-faint">Health</dt>
+        <dd
+          class="font-medium {health === 'Healthy'
+            ? 'text-health-green'
+            : health === 'Error' || health === 'Slow'
+              ? 'text-health-yellow'
+              : 'text-ink-muted'}"
+          data-testid="health">{health}</dd
+        >
+      </div>
     </dl>
 
-    {#if progress}
-      <p class="text-xs text-ink-faint" data-testid="bytes">
-        {formatBytes(progress.progressBytes)} / {formatBytes(progress.totalBytes)}
+    <!-- Sparkline: the last several speeds. A flat line reads as "stalled"
+         without the reader having to interpret any single number. -->
+    {#if speedHistory.length > 1}
+      <div
+        class="flex h-8 items-end gap-0.5"
+        data-testid="speed-spark"
+        aria-hidden="true"
+        title="Download speed, most recent last"
+      >
+        {#each speedHistory as sample, i (i)}
+          <span
+            class="flex-1 rounded-t-sm {sample <= 0 ? 'bg-ink-faint/50' : 'bg-accent/80'}"
+            style="height: {sparkHeight(sample, sparkMax)}"
+          ></span>
+        {/each}
+      </div>
+    {/if}
+    {/if}
+
+    <!-- The one notice worth showing, if any, in a sentence. -->
+    {#if warning}
+      <p
+        class="flex items-start gap-2 rounded-lg border px-3 py-2 text-xs leading-relaxed {warning.level ===
+        'error'
+          ? 'border-danger/35 bg-danger/10 text-danger'
+          : warning.level === 'warn'
+            ? 'border-health-yellow/35 bg-health-yellow/10 text-health-yellow'
+            : warning.level === 'ok'
+              ? 'border-health-green/35 bg-health-green/10 text-health-green'
+              : 'border-accent/30 bg-accent/10 text-accent-hover'}"
+        role="status"
+        data-testid="stream-warning"
+        data-level={warning.level}
+      >
+        <span aria-hidden="true">{warning.icon}</span>
+        <span>{warning.message}</span>
       </p>
     {/if}
   </div>

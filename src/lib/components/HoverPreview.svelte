@@ -51,7 +51,7 @@
   data-testid="hover-preview"
   data-side={placement.side}
   style="left: {placement.x}px; top: {placement.y}px;"
-      class="motion-reduce:animate-none fixed z-50 w-72 rounded-lg border border-border-subtle bg-surface-raised p-3 shadow-xl {placement.side === 'bottom' ? 'animate-preview-in-bottom' : 'animate-preview-in-top'}"
+      class="motion-reduce:animate-none fixed z-9 w-72 rounded-lg border border-border-subtle bg-surface-raised p-3 shadow-xl {placement.side === 'bottom' ? 'animate-preview-in-bottom' : 'animate-preview-in-top'}"
   onmouseenter={onenter}
   onmouseleave={onleave}
 >

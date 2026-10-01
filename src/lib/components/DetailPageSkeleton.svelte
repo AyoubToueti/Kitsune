@@ -45,7 +45,7 @@
       <Skeleton class="mb-3 h-6 w-32" />
       {#each Array(3) as _, i (i)}
         <div class="mb-2 flex gap-3">
-          <Skeleton class="aspect-[2/3] w-12 shrink-0" />
+          <Skeleton class="aspect-2/3 w-12 shrink-0" />
           <div class="min-w-0 flex-1">
             <Skeleton class="h-4 w-3/4" />
             <Skeleton class="mt-1.5 h-3 w-20" />

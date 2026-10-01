@@ -10,6 +10,7 @@
     onListChanged,
   } from "$lib/api/auth";
   import { resumeIndex } from "$lib/resume";
+  import { isActive } from "$lib/now-playing.svelte";
   import { displayTitle, type Anime } from "$lib/types";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -34,10 +35,30 @@
    * the disc would sit over the player. Also hidden while the answer is unknown
    * so a signed-out reader never sees it appear and vanish.
    */
-  const visible = $derived(!loading && item !== null && !onWatchPage(page.url.pathname));
+  const visible = $derived(
+    !loading &&
+      item !== null &&
+      !onWatchPage(page.url.pathname) &&
+      !onOwnDetailPage(page.url.pathname, item.anime.id) &&
+      // While something is playing, the NowPlayingDisc owns this corner, so
+      // this one steps aside rather than stacking on top of it.
+      !isActive(),
+  );
 
   function onWatchPage(pathname: string): boolean {
     return pathname.startsWith("/watch/");
+  }
+
+  /**
+   * Whether the disc would only duplicate the page it is on.
+   *
+   * On a work's own detail page the resume affordance already exists as its
+   * episode grid, so the disc would sit over the thing it points at. Hidden for
+   * that one id; still shown on any OTHER anime's page.
+   */
+  function onOwnDetailPage(pathname: string, animeId: number): boolean {
+    const match = /^\/anime\/(\d+)/.exec(pathname);
+    return match !== null && Number(match[1]) === animeId;
   }
 
   const title = $derived(item ? (displayTitle(item.anime.title) ?? "Untitled") : "");
@@ -134,7 +155,7 @@
        link, so the panel is aria-hidden: the accessible name already says the
        work and the episode. -->
   <a
-    href={`/watch/${item.anime.id}?ep=${resumeIndex(item.episode ?? 0)}`}
+    href={`/anime/${item.anime.id}?ep=${resumeIndex(item.episode ?? 0)}`}
     data-testid="resume-disc"
     aria-label={`Resume ${title}${item.episode ? ` at episode ${item.episode}` : ""}`}
     class="group fixed right-6 bottom-6 z-40 flex items-center justify-end focus:outline-none"

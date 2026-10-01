@@ -1,5 +1,34 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/svelte";
+
+// NavBar renders the settings drawer, whose mount subscribes to auth events and
+// loads settings. Mocked so the drawer does not reach the real Tauri commands
+// (`listen` needs a runtime the unit suite does not have).
+vi.mock("$lib/api/auth", () => ({
+  onAuthChanged: vi.fn(async () => () => {}),
+  authStatus: vi.fn(async () => false),
+  beginLogin: vi.fn(async () => "https://anilist.co/oauth"),
+  logout: vi.fn(async () => {}),
+}));
+vi.mock("$lib/api/settings", () => ({
+  getSettings: vi.fn(async () => ({
+    player: "mpv",
+    playerArgs: [],
+    downloadDir: null,
+    preferredResolutions: ["1080p"],
+    minSeeders: 0,
+    readyFraction: 0.05,
+    theme: "system",
+  })),
+  setSettings: vi.fn(async (s: unknown) => s),
+  // The drawer subscribes on mount; a never-firing stub is enough.
+  onSettingsChanged: vi.fn(async () => () => {}),
+}));
+vi.mock("$lib/api/player", () => ({
+  suggestedPlayers: vi.fn(async () => ["mpv"]),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
 
 import NavBar from "./NavBar.svelte";
 import SearchBox from "./SearchBox.svelte";

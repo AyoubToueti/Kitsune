@@ -16,7 +16,7 @@
     : 'w-40 shrink-0'}"
 >
   <!-- Artwork Skeleton -->
-  <div class="relative aspect-[2/3] w-full bg-surface-hover">
+  <div class="relative aspect-2/3 w-full bg-surface-hover">
     <Skeleton class="h-full w-full rounded-none" />
   </div>
 
@@ -24,7 +24,7 @@
   <div class="flex flex-1 flex-col justify-between p-2.5">
     <div class="space-y-1.5">
       <Skeleton class="h-3.5 w-full rounded" />
-      <Skeleton class="h-3.5 w-2/3 rounded" />
+      <!-- <Skeleton class="h-3.5 w-2/3 rounded" /> -->
     </div>
   </div>
 </div>

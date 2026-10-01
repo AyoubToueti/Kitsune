@@ -36,6 +36,97 @@ describe("StreamStatus", () => {
     expect(screen.queryByTestId("stream-status")).not.toBeInTheDocument();
   });
 
+  it("leads with a buffering headline, not a download one", () => {
+    render(StreamStatus, { props: { progress: progress() } });
+
+    // The app only buffers enough to hand to the player; "downloading" would
+    // overstate what is happening.
+    expect(screen.getByText(/buffering/i)).toBeInTheDocument();
+    expect(screen.queryByText(/downloading/i)).not.toBeInTheDocument();
+  });
+
+  it("shows a stall warning when bytes stop arriving", () => {
+    render(StreamStatus, {
+      props: { progress: progress(), staleSeconds: 30 },
+    });
+
+    const warning = screen.getByTestId("stream-warning");
+    expect(warning).toHaveTextContent(/stalled/i);
+    expect(warning).toHaveAttribute("data-level", "error");
+  });
+
+  it("shows no warning for a healthy download", () => {
+    render(StreamStatus, { props: { progress: progress() } });
+    expect(screen.queryByTestId("stream-warning")).toBeNull();
+  });
+
+  it("draws a sparkline once there is more than one sample", () => {
+    render(StreamStatus, {
+      props: { progress: progress(), speedHistory: [1, 2, 3, 2, 0] },
+    });
+
+    expect(screen.getByTestId("speed-spark")).toBeInTheDocument();
+  });
+
+  it("does not draw a sparkline for a single sample", () => {
+    render(StreamStatus, {
+      props: { progress: progress(), speedHistory: [1] },
+    });
+
+    expect(screen.queryByTestId("speed-spark")).toBeNull();
+  });
+
+  it("marks the playhead when a played fraction is given", () => {
+    render(StreamStatus, {
+      props: { progress: progress(), fileFraction: 0.5, playedFraction: 0.2 },
+    });
+
+    expect(screen.getByTestId("played-marker")).toBeInTheDocument();
+  });
+
+  it("shows a health word derived from the peers and speed", () => {
+    // Slow needs both few peers and a slow connection.
+    render(StreamStatus, {
+      props: { progress: progress({ peersLive: 2, downloadMbps: 0.2 }) },
+    });
+    expect(screen.getByTestId("health")).toHaveTextContent(/slow/i);
+  });
+
+  it("shows a green notice when the episode is fully buffered", () => {
+    render(StreamStatus, {
+      props: {
+        progress: progress(),
+        fileFraction: 1,
+        // A full file would otherwise trip the stall check.
+        staleSeconds: 999,
+      },
+    });
+
+    const notice = screen.getByTestId("stream-warning");
+    expect(notice).toHaveAttribute("data-level", "ok");
+    expect(notice).toHaveTextContent(/fully buffered/i);
+  });
+
+  it("hides the swarm stats once the episode is fully buffered", () => {
+    render(StreamStatus, {
+      props: { progress: progress(), fileFraction: 1, staleSeconds: 999 },
+    });
+
+    // The torrent is idle once complete, so peers/speed/ETA/health would all
+    // read as a dash. They are hidden rather than shown as noise.
+    expect(screen.queryByTestId("connection")).toBeNull();
+    expect(screen.queryByTestId("down-speed")).toBeNull();
+    expect(screen.queryByTestId("eta")).toBeNull();
+    expect(screen.queryByTestId("health")).toBeNull();
+  });
+
+  it("keeps the swarm stats while still buffering", () => {
+    render(StreamStatus, { props: { progress: progress(), fileFraction: 0.4 } });
+
+    expect(screen.getByTestId("connection")).toBeInTheDocument();
+    expect(screen.getByTestId("health")).toBeInTheDocument();
+  });
+
   it("renders both progress bars when a torrent is loaded", () => {
     render(StreamStatus, {
       props: {

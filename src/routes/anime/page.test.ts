@@ -16,7 +16,30 @@ vi.mock("$lib/api/anime", async () => {
   return { ...actual, getAnime: getAnimeMock, getEpisodes: getEpisodesMock };
 });
 
+// The watch modal is always mounted, so its session subscribes to player
+// events on every render. Mocked so `onPlayerExit` does not reach the real
+// `listen`, which needs a Tauri runtime the unit suite does not have.
+vi.mock("$lib/api/player", () => ({
+  onPlayerExit: vi.fn(async () => () => {}),
+  removeTorrent: vi.fn(async () => {}),
+}));
+
+// The now-playing store reads settings at load and on start.
+vi.mock("$lib/api/settings", () => ({
+  getSettings: vi.fn(async () => ({
+    player: "mpv",
+    playerArgs: [],
+    downloadDir: null,
+    preferredResolutions: ["1080p"],
+    minSeeders: 0,
+    readyFraction: 0.05,
+    theme: "system",
+  })),
+  setSettings: vi.fn(),
+}));
+
 import Page from "./[id]/+page.svelte";
+import { requestOpen, startPlaying } from "$lib/now-playing.svelte";
 
 function anime(overrides: Partial<Anime> = {}): Anime {
   return {
@@ -327,9 +350,9 @@ describe("detail page", () => {
     ).not.toBeInTheDocument();
   });
 
-  // --- watch page wiring ---------------------------------------------------
+  // --- watch modal wiring --------------------------------------------------
 
-  it("navigates to the watch page when an episode is clicked", async () => {
+  it("opens the watch modal when an episode is clicked", async () => {
     getAnimeMock.mockResolvedValue(withCatalogue(2));
 
     render(Page);
@@ -338,12 +361,12 @@ describe("detail page", () => {
     const list = screen.getByTestId("episode-list");
     await fireEvent.click(within(list).getAllByRole("button")[1]);
 
-    // The episode index travels in the query string so the watch page opens
-    // on the entry the reader picked rather than the top of the list.
-    expect(navigations).toEqual(["/watch/21?ep=1"]);
+    // The modal opens in place; the reader is not navigated away.
+    expect(await screen.findByTestId("modal-dialog")).toBeInTheDocument();
+    expect(navigations).toHaveLength(0);
   });
 
-  it("does not open AniList's licensed link from the grid", async () => {
+  it("does not navigate or open AniList's licensed link from the grid", async () => {
     getAnimeMock.mockResolvedValue(withCatalogue(1));
 
     render(Page);
@@ -352,7 +375,51 @@ describe("detail page", () => {
     const list = screen.getByTestId("episode-list");
     await fireEvent.click(within(list).getAllByRole("button")[0]);
 
-    // The click must be a navigation now, not an external open.
-    expect(navigations).toHaveLength(1);
+    // The click opens the in-app modal, not a navigation and not an external
+    // open of the provider's licensed link.
+    expect(await screen.findByTestId("modal-dialog")).toBeInTheDocument();
+    expect(navigations).toHaveLength(0);
+  });
+
+  it("opens the modal for the ?ep= episode on load", async () => {
+    // A resume link points here with the 0-based index; the modal must open
+    // without a click.
+    (appState as { url: URL }).url = new URL("http://localhost/anime/21?ep=1");
+    getAnimeMock.mockResolvedValue(withCatalogue(3));
+
+    render(Page);
+
+    expect(await screen.findByTestId("modal-dialog")).toBeInTheDocument();
+  });
+
+  it("ignores a ?ep= index past the end of the list", async () => {
+    (appState as { url: URL }).url = new URL("http://localhost/anime/21?ep=99");
+    getAnimeMock.mockResolvedValue(withCatalogue(2));
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    // Out of range is treated as "no request", not a phantom selection.
+    expect(screen.queryByTestId("modal-dialog")).toBeNull();
+  });
+
+  it("opens the modal when the now-playing disc asks", async () => {
+    // The URL carries NO `?ep=`: the disc must open the modal from a bare page,
+    // which the query-param path cannot do because nothing changes.
+    getAnimeMock.mockResolvedValue(withCatalogue(3));
+
+    render(Page);
+    await screen.findByRole("heading", { name: "One Piece" });
+
+    // The reader is watching episode index 1 of this work elsewhere.
+    const playing = [
+      { number: 1, title: "Episode 1" },
+      { number: 2, title: "Episode 2" },
+      { number: 3, title: "Episode 3" },
+    ];
+    startPlaying(anime({ id: 21 }), 1, playing);
+    requestOpen();
+
+    expect(await screen.findByTestId("modal-dialog")).toBeInTheDocument();
   });
 });

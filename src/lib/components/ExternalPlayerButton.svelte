@@ -1,7 +1,6 @@
 <script lang="ts">
   import { errorMessage } from "$lib/api/anime";
-  import { getPlayer, openInPlayer, setPlayer, suggestedPlayers } from "$lib/api/player";
-  import Select, { type SelectOption } from "./Select.svelte";
+  import { openInPlayer } from "$lib/api/player";
 
   let {
     url,
@@ -21,42 +20,8 @@
     torrentId?: number;
   } = $props();
 
-  let player = $state("mpv");
-  let options = $state<string[]>([]);
   let launching = $state(false);
   let error = $state<string | null>(null);
-
-  /**
-   * The dropdown's choices, as `{ value, label }`.
-   *
-   * A stored player that is not in the suggestion list is appended: without
-   * it, the control would show the first suggestion and silently change the
-   * user's choice.
-   */
-  const choices = $derived<SelectOption[]>(
-    options.includes(player)
-      ? options.map((name) => ({ value: name, label: name }))
-      : [...options.map((name) => ({ value: name, label: name })),
-         { value: player, label: player }],
-  );
-
-  // Fetched once: neither the list nor the stored choice changes while the
-  // page is open, except through this component, which updates the local copy.
-  getPlayer()
-    .then((name) => {
-      player = name;
-    })
-    .catch(() => {
-      // A missing preference is not an error: the backend default applies.
-    });
-
-  suggestedPlayers()
-    .then((found) => {
-      options = found;
-    })
-    .catch(() => {
-      options = [];
-    });
 
   async function launch(): Promise<void> {
     if (!url || launching) return;
@@ -64,22 +29,16 @@
     launching = true;
     error = null;
     try {
-      // Pass the chosen player explicitly so a change here takes effect on
-      // this call rather than only after a save.
-      await openInPlayer(url, player, torrentId);
+      // No player argument: the backend uses the reader's stored choice, read
+      // live. The picker lives in the settings drawer, so the choice is made in
+      // exactly one place and a change there applies to this launch without a
+      // reload.
+      await openInPlayer(url, undefined, torrentId);
     } catch (err) {
       error = errorMessage(err);
     } finally {
       launching = false;
     }
-  }
-
-  /** Remember the choice so the next visit opens the same player. */
-  async function remember(name: string): Promise<void> {
-    await setPlayer(name).catch(() => {
-      // A failed save is not worth blocking playback over; the choice still
-      // applies to this session.
-    });
   }
 </script>
 
@@ -92,15 +51,6 @@
   >
     {launching ? "Opening…" : label}
   </button>
-
-  <!-- Themed dropdown, replacing the native `<select>` whose popup the browser
-       draws and CSS cannot restyle. -->
-  <Select
-    label="External player"
-    bind:value={player}
-    options={choices}
-    onchange={remember}
-  />
 </div>
 
 {#if error}

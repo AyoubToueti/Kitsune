@@ -164,7 +164,7 @@
           : 'bg-surface-hover text-ink hover:text-accent'}"
       >
         {label}
-        {#if signedIn === true && !loading && countFor(value) > 0}
+        {#if signedIn === true && !loading && countFor(value) >= 0}
           <span class="ml-1 text-xs opacity-70">{countFor(value)}</span>
         {/if}
       </button>

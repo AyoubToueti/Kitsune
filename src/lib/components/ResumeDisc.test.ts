@@ -91,9 +91,10 @@ describe("ResumeDisc", () => {
     render(ResumeDisc);
 
     // progress 3 is a 1-based number; ?ep= is a 0-based index, so episode 3.
+    // The link points at the detail page, which opens the modal on arrival.
     expect(await screen.findByTestId("resume-disc")).toHaveAttribute(
       "href",
-      "/watch/21?ep=2",
+      "/anime/21?ep=2",
     );
   });
 
@@ -104,7 +105,7 @@ describe("ResumeDisc", () => {
 
     expect(await screen.findByTestId("resume-disc")).toHaveAttribute(
       "href",
-      "/watch/21?ep=0",
+      "/anime/21?ep=0",
     );
   });
 
@@ -154,7 +155,7 @@ describe("ResumeDisc", () => {
     render(ResumeDisc);
 
     const disc = await screen.findByTestId("resume-disc");
-    expect(disc).toHaveAttribute("href", "/watch/99?ep=5");
+    expect(disc).toHaveAttribute("href", "/anime/99?ep=5");
     expect(disc).toHaveTextContent("Smoking Behind the Supermarket");
     // The list was never consulted, because a record existed.
     expect(getContinueWatchingMock).not.toHaveBeenCalled();
@@ -171,7 +172,7 @@ describe("ResumeDisc", () => {
 
     expect(await screen.findByTestId("resume-disc")).toHaveAttribute(
       "href",
-      "/watch/21?ep=2",
+      "/anime/21?ep=2",
     );
   });
 
@@ -208,5 +209,30 @@ describe("ResumeDisc", () => {
 
     await waitFor(() => expect(getContinueWatchingMock).toHaveBeenCalled());
     expect(screen.queryByTestId("resume-disc")).toBeNull();
+  });
+
+  /// On a work's own detail page the episode grid already resumes it, so the
+  /// disc would only sit over the thing it points at.
+  it("hides itself on its own detail page", async () => {
+    setPath("/anime/21");
+    getContinueWatchingMock.mockResolvedValue([item(3)]);
+
+    render(ResumeDisc);
+
+    await waitFor(() => expect(getContinueWatchingMock).toHaveBeenCalled());
+    expect(screen.queryByTestId("resume-disc")).toBeNull();
+  });
+
+  /// ...but a DIFFERENT work's detail page still offers the resume disc.
+  it("still shows on another anime's detail page", async () => {
+    setPath("/anime/99");
+    getContinueWatchingMock.mockResolvedValue([item(3)]);
+
+    render(ResumeDisc);
+
+    expect(await screen.findByTestId("resume-disc")).toHaveAttribute(
+      "href",
+      "/anime/21?ep=2",
+    );
   });
 });

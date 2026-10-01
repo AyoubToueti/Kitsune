@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { goto } from "$app/navigation";
   import { page } from "$app/state";
 
   import { errorMessage, getAnime, getEpisodes } from "$lib/api/anime";
@@ -10,7 +9,13 @@
   import Synopsis from "$lib/components/Synopsis.svelte";
   import { episodesFor } from "$lib/episodes";
   import { genreHref } from "$lib/filter";
+  import {
+    consumeOpenRequest,
+    nowPlaying,
+    openRequested,
+  } from "$lib/now-playing.svelte";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
+  import EpisodeWatchModal from "$lib/components/EpisodeWatchModal.svelte";
   import ListStatusMenu from "$lib/components/ListStatusMenu.svelte";
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
@@ -114,7 +119,15 @@
   );
 
   /**
-   * Open the watch page for an episode.
+   * The episode whose watch modal is open, by list index, or `undefined`.
+   *
+   * Opening the modal instead of navigating means the reader keeps the page
+   * they were browsing while they pick a release and start playback.
+   */
+  let modalEpisode = $state<number | undefined>(undefined);
+
+  /**
+   * Open the watch modal for an episode.
    *
    * A named function rather than an inline arrow: the template narrows `anime`
    * to non-null, but that narrowing does not survive into a callback, so the
@@ -122,8 +135,44 @@
    */
   function watchEpisode(index: number): void {
     if (!anime) return;
-    void goto(`/watch/${anime.id}?ep=${index}`);
+    modalEpisode = index;
   }
+
+  /**
+   * The episode index requested by `?ep=`, when present and sane.
+   *
+   * Resume links (the Continue Watching row and the floating disc) point here
+   * with the SAME 0-based index the watch page uses, so a click lands on the
+   * detail page with the modal already open on the right episode. A nonsense
+   * value is treated as "no request" rather than clamped to an arbitrary one.
+   */
+  const requestedEpisode = $derived.by(() => {
+    const raw = page.url.searchParams.get("ep");
+    if (raw === null) return undefined;
+    const value = Number(raw);
+    return Number.isInteger(value) && value >= 0 ? value : undefined;
+  });
+
+  // Open the modal for a requested episode once the list is known, so an
+  // out-of-range value is ignored rather than shown as a phantom selection.
+  $effect(() => {
+    const wanted = requestedEpisode;
+    if (wanted === undefined || wanted >= episodes.length) return;
+    modalEpisode = wanted;
+  });
+
+  // Open the modal when the now-playing disc asks. Separate from the `?ep=`
+  // effect above because a request must work even when the URL does not change
+  // -- a click from this very page, where `?ep=` is already set. The request is
+  // only consumed once this page's work matches and the list is known, so one
+  // that arrives before load is not lost.
+  $effect(() => {
+    openRequested();
+    const playing = nowPlaying();
+    if (!anime || !playing || playing.anime.id !== anime.id) return;
+    if (!consumeOpenRequest()) return;
+    modalEpisode = playing.episodeIndex;
+  });
 </script>
 
 {#if loading}
@@ -153,7 +202,7 @@
         />
       {/if}
       <div
-        class="absolute inset-0 bg-gradient-to-r from-surface via-surface/85 to-surface/40"
+        class="absolute inset-0 bg-linear-to-r from-surface via-surface/85 to-surface/40"
       ></div>
     </div>
 
@@ -236,6 +285,17 @@
     </aside>
   </div>
 
+
+  <!-- The in-place watch modal. Clicking an episode opens it rather than
+       navigating away, so the reader keeps their place on the page while they
+       pick a release and start playback. -->
+  <EpisodeWatchModal
+    open={modalEpisode !== undefined}
+    {anime}
+    {episodes}
+    episodeIndex={modalEpisode}
+    onClose={() => (modalEpisode = undefined)}
+  />
   <!-- Where to watch -->
   <!-- <div class="mt-8">
     <StreamingLinks episodes={anime.streamingEpisodes} />
