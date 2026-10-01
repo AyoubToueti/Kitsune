@@ -75,7 +75,32 @@
   }
 }
 
-/* Base look. Kept minimal: component styling lives in the components. */
+/* Light theme: the same token names, re-pointed. Because every utility
+   compiles to `var(--color-...)`, overriding the variables here re-skins the
+   whole app without touching a component. `data-theme` is set on <html> by
+   `theme.svelte.ts`, from the reader's choice or the OS preference. The dark
+   values above stay the default, so the app is styled before any script runs. */
+html[data-theme="light"] {
+  color-scheme: light;
+  --color-surface: #f5f6f9;
+  --color-surface-raised: #ffffff;
+  --color-surface-hover: #eceff4;
+  --color-border-subtle: #d9dee8;
+  --color-ink: #16181d;
+  --color-ink-muted: #545b6a;
+  --color-ink-faint: #8a92a3;
+  --color-accent: #6f4bff;
+  --color-accent-hover: #5c3ae0;
+  --color-score: #b7791f;
+  --color-danger: #d13438;
+  --color-health-green: #1a7f37;
+  --color-health-yellow: #9a6700;
+  --color-health-red: #8a92a3;
+}
+
+/* Base look. Kept minimal: component styling lives in the components.
+   `color-scheme` for the light theme is set on the token block above, which is
+   the more specific selector; only the default needs stating here. */
 html {
   color-scheme: dark;
 }
@@ -86,4 +111,49 @@ body {
   color: var(--color-ink);
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* A horizontal strip scrolled by its own arrows and by dragging, so its
+   scrollbar is noise. Both spellings are needed: `scrollbar-width` for
+   Firefox, the pseudo-element for WebKit/Blink. Hiding it does not stop the
+   element scrolling, so the wheel and touch gestures still work. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* A strip that scrolls in whole-card steps. `mandatory` makes the browser
+   rest on a card boundary after any wheel or trackpad scroll, so a card is
+   never left half cut off. Alignment is delegated to the children, so the
+   strip needs no extra markup. */
+@utility snap-strip {
+  scroll-snap-type: x mandatory;
+
+  & > * {
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
+  }
+}
+
+/* Snap must be OFF while a drag is running and while the release glide is
+   animating. A mandatory snap resolves instantly, which would both hard-snap
+   the moment the pointer is released and fight the rAF glide. Two classes on
+   the selector, so this beats the single-class `snap-strip` utility. */
+.snap-strip.strip-dragging,
+.snap-strip.strip-settling {
+  scroll-snap-type: none;
+}
+
+/* While a drag is running, every descendant shows the grabbing hand. The
+   children set their own cursor (`cursor-pointer` on cards, the UA pointer on
+   links), and a cursor does NOT inherit, so setting it on the strip alone would
+   still flip to a pointer as soon as the pointer crossed a card. The `*`
+   selector at this specificity beats a single utility class, so no
+   `!important` is needed. */
+.snap-strip.strip-dragging,
+.snap-strip.strip-dragging * {
+  cursor: grabbing;
 }
