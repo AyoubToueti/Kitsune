@@ -14,14 +14,20 @@
 import { untrack } from "svelte";
 
 import { errorMessage } from "./api/anime";
-import type { Anime, AnimePage } from "./types";
+import type { PageInfo } from "./types";
+
+/** One page of a paged endpoint: the items plus where they sit in the set. */
+export interface Paged<T> {
+  items: T[];
+  pageInfo: PageInfo;
+}
 
 /** How close to the bottom the sentinel triggers, in pixels. */
 const PRELOAD_MARGIN = 600;
 
-export interface InfiniteScroll {
+export interface InfiniteScroll<T> {
   /** Everything loaded so far, oldest first. */
-  readonly items: Anime[];
+  readonly items: T[];
   /** True until the FIRST page settles, so the page can show a spinner. */
   readonly loading: boolean;
   /** True while a later page is in flight, for a subtle footer spinner. */
@@ -53,16 +59,24 @@ export interface InfiniteScroll {
  *
  * `fetchPage` is 1-based, matching the provider.
  */
-export function createInfiniteScroll(
+export function createInfiniteScroll<T>(
   key: () => string,
-  fetchPage: (page: number) => Promise<AnimePage>,
-): InfiniteScroll {
-  let items = $state<Anime[]>([]);
+  fetchPage: (page: number) => Promise<Paged<T>>,
+): InfiniteScroll<T> {
+  let items = $state<T[]>([]);
   let loadedPage = $state(0);
-  let lastPage = $state(1);
   let loading = $state(true);
   let loadingMore = $state(false);
   let error = $state<string | null>(null);
+  /**
+   * Whether the last page said another exists.
+   *
+   * Taken from `pageInfo.hasNextPage`, NOT derived from `lastPage`: AniList
+   * reports `lastPage` inconsistently for some connections (the recommendations
+   * connection among them), so `loadedPage < lastPage` could be false on page 1
+   * and strand the list. The provider's own `hasNextPage` is authoritative.
+   */
+  let hasNextPage = $state(false);
 
   /** Guards against a second request starting while one is in flight. */
   let inFlight = false;
@@ -77,7 +91,7 @@ export function createInfiniteScroll(
    */
   let generation = 0;
 
-  const hasMore = $derived(loadedPage < lastPage);
+  const hasMore = $derived(hasNextPage);
 
   async function fetchNext(): Promise<void> {
     const target = loadedPage + 1;
@@ -102,7 +116,7 @@ export function createInfiniteScroll(
       // discarding them would make the list jump.
       items = [...items, ...page.items];
       loadedPage = page.pageInfo.currentPage;
-      lastPage = page.pageInfo.lastPage;
+      hasNextPage = page.pageInfo.hasNextPage;
     } catch (err) {
       if (mine !== generation) return;
       // The backend renders the cause, so surface it: a rate limit should not
@@ -165,7 +179,7 @@ export function createInfiniteScroll(
 
       items = [];
       loadedPage = 0;
-      lastPage = 1;
+      hasNextPage = false;
       error = null;
       loading = true;
       inFlight = false;

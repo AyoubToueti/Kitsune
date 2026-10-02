@@ -17,6 +17,7 @@ import type {
   LastPlayed,
   ListEntry,
   ListStatus,
+  RecommendationRating,
   UserListEntry,
 } from "$lib/types";
 
@@ -30,6 +31,7 @@ export const AUTH_COMMANDS = {
   continueWatching: "continue_watching",
   userList: "user_list",
   deleteListEntry: "delete_list_entry",
+  rateRecommendation: "rate_recommendation",
   recordLastPlayed: "record_last_played",
   lastPlayed: "last_played",
 } as const;
@@ -140,7 +142,29 @@ export async function setListEntry(
   });
 }
 
+/**Cast the reader's vote on a recommendation, returning the new tally.
+ *
+ * `mediaId` is the base work, `recommendedId` the recommended one: AniList keys
+ * a recommendation by that pair, not by a recommendation id. Passing
+ * `"noRating"` clears an existing vote.
+ *
+ * Needs a token; a signed-out call is rejected by the backend. The caller gates
+ * on sign-in, so this is not the sign-in path itself.
+ */
+export async function rateRecommendation(
+  mediaId: number,
+  recommendedId: number,
+  rating: RecommendationRating,
+): Promise<number> {
+  return invoke<number>(AUTH_COMMANDS.rateRecommendation, {
+    mediaId,
+    recommendedId,
+    rating,
+  });
+}
+
 /**
+ * 
  * The works the reader is currently watching, most recently touched first.
  *
  * Returns an empty list when signed out, so a caller can render it

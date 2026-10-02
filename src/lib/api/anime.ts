@@ -14,6 +14,7 @@ import type {
   EpisodeInfo,
   ListFilter,
   MediaTag,
+  RecommendationsPage,
   ScheduledEpisode,
 } from "$lib/types";
 
@@ -23,6 +24,7 @@ export const COMMANDS = {
   list: "get_list",
   browse: "get_browse",
   byId: "get_anime",
+  recommendations: "get_recommendations",
   genres: "get_genres",
   tags: "get_tags",
   schedule: "get_schedule",
@@ -60,6 +62,31 @@ export async function getTrending(limit?: number): Promise<Anime[]> {
 export async function getAnime(id: number): Promise<Anime | null> {
   return cached(`anime:${id}`, API_TTL.detail, () =>
     invoke<Anime | null>(COMMANDS.byId, { id }),
+  );
+}
+
+/**
+ * A page of community recommendations for a work, highest-rated first.
+ *
+ * Backs the "view more" view: the detail lookup only carries the first handful
+ * inline, so this pages through the whole set. `page` is 1-based; `perPage` is
+ * clamped by the backend.
+ */
+export async function getRecommendations(
+  id: number,
+  page?: number,
+  perPage?: number,
+): Promise<RecommendationsPage> {
+  // Keyed by the page so each page is cached separately as the reader scrolls.
+  return cached(
+    `recommendations:${id}:${page ?? 1}:${perPage ?? "default"}`,
+    API_TTL.detail,
+    () =>
+      invoke<RecommendationsPage>(COMMANDS.recommendations, {
+        id,
+        page,
+        perPage,
+      }),
   );
 }
 

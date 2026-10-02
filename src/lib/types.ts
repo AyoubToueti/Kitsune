@@ -120,12 +120,41 @@ export interface RelatedAnime {
   relationType: string;
 }
 
+/** The reader who posted a recommendation. */
+export interface RecommenderUser {
+  name: string;
+  avatar?: string;
+}
+
+/**
+ * How the signed-in reader voted on a recommendation.
+ *
+ * Distinct from the `rating` tally: this is the reader's OWN vote, which the
+ * UI highlights. Mirrors the Rust `RecommendationRating`.
+ */
+export type RecommendationRating = "noRating" | "rateUp" | "rateDown";
+
 /** A community recommendation for a work. */
 export interface RecommendedAnime {
   /** The recommended work, carried whole so a card renders without a lookup. */
   anime: Anime;
   /** Upvotes the recommendation received on the provider. */
   rating: number;
+  /**
+   * Who first posted the recommendation, when the provider reports it.
+   *
+   * Optional: an anonymous or deleted account leaves the credit off. There is
+   * no free-text "why" on a recommendation -- the votes and this name are the
+   * only context the provider offers.
+   */
+  user?: RecommenderUser;
+  /**
+   * The signed-in reader's own vote, when there is one.
+   *
+   * Absent for a signed-out reader and for one who has not voted, so the UI has
+   * nothing to highlight in either case.
+   */
+  userRating?: RecommendationRating;
 }
 
 /**
@@ -163,6 +192,17 @@ export interface PageInfo {
 /** One page of results, with the metadata needed to ask for another. */
 export interface AnimePage {
   items: Anime[];
+  pageInfo: PageInfo;
+}
+
+/**
+ * One page of recommendations, with the metadata needed to ask for another.
+ *
+ * Mirrors the Rust `RecommendationsPage`; the same paging shape as
+ * [`AnimePage`] but for recommendation entries rather than bare works.
+ */
+export interface RecommendationsPage {
+  items: RecommendedAnime[];
   pageInfo: PageInfo;
 }
 

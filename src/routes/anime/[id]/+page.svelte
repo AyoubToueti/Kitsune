@@ -254,7 +254,7 @@
 
   <!-- Recommendations Carousel Section -->
   <div class="mt-12 border-t border-border-subtle/60 pt-8">
-    <Recommendations recommendations={anime.recommendations ?? []} />
+    <Recommendations recommendations={anime.recommendations ?? []} workId={anime.id} />
   </div>
 
   <!-- In-place Episode Watch Modal -->

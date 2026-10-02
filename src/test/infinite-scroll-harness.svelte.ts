@@ -10,10 +10,10 @@
 import { flushSync } from "svelte";
 
 import { createInfiniteScroll, type InfiniteScroll } from "$lib/infinite-scroll.svelte";
-import type { AnimePage } from "$lib/types";
+import type { Anime, AnimePage } from "$lib/types";
 
 export interface Harness {
-  readonly scroll: InfiniteScroll;
+  readonly scroll: InfiniteScroll<Anime>;
   /** Swap the query key, as a new filter or search term would. */
   setKey(next: string): void;
   destroy(): void;
@@ -23,7 +23,7 @@ export function harness(
   fetchPage: (page: number) => Promise<AnimePage>,
 ): Harness {
   let key = $state("initial");
-  let scroll!: InfiniteScroll;
+  let scroll!: InfiniteScroll<Anime>;
 
   const destroy = $effect.root(() => {
     scroll = createInfiniteScroll(() => key, fetchPage);
