@@ -119,15 +119,12 @@ describe("AnimeCard", () => {
     expect(button.parentElement?.className).toMatch(/translate-y-3/);
     expect(button.parentElement?.className).toMatch(/group-hover:opacity-100/);
     expect(button.parentElement?.className).toMatch(/group-hover:translate-y-0/);
-    // The keyboard reveal is :has(:focus-visible), NOT :focus-within. A pointer
-    // click focuses a button but is not :focus-visible, so the bar no longer
-    // stays pinned open after clicking the trailer/info button.
-    expect(button.parentElement?.className).toMatch(
-      /has-\[:focus-visible\]:opacity-100/,
-    );
-    expect(button.parentElement?.className).toMatch(
-      /has-\[:focus-visible\]:translate-y-0/,
-    );
+    // The keyboard reveal is `:has(:focus-visible)` (Tailwind's shorthand
+    // `has-focus-visible:`), NOT `:focus-within`. A pointer click focuses a
+    // button but is not `:focus-visible`, so the bar no longer stays pinned
+    // open after clicking the trailer/info button.
+    expect(button.parentElement?.className).toMatch(/has-focus-visible:opacity-100/);
+    expect(button.parentElement?.className).toMatch(/has-focus-visible:translate-y-0/);
     expect(button.parentElement?.className).not.toMatch(/focus-within:/);
   });
 
