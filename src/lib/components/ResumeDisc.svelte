@@ -134,49 +134,48 @@
 </script>
 
 {#if visible && item}
-  <div
-    class="fixed right-6 bottom-6 z-40 flex items-center justify-end"
-  >
-    <!-- Floating Info Card (Uses reactive class toggles driven ONLY by disc interaction) -->
-    <div
-      aria-hidden="true"
-      data-testid="resume-disc-card"
-      class="pointer-events-none mr-3 w-60 origin-right transition-all duration-300 ease-out motion-reduce:transition-none
-        {isHovered ? 'translate-x-0 scale-100 opacity-100' : 'translate-x-2 scale-95 opacity-0'}"
-    >
+  <div class="fixed right-7 bottom-10 z-40">
+    {#if isHovered}
+      <!-- Floating Info Card (Positioned Absolutely to avoid pushing the disc) -->
       <div
-        class="rounded-2xl border border-border-subtle/80 bg-surface-raised/95 p-3.5 shadow-2xl backdrop-blur-md"
+        aria-hidden="true"
+        data-testid="resume-disc-card"
+        class="absolute right-full top-1/2 -translate-y-1/2 mr-3 w-60 origin-right transition-all duration-300 ease-out motion-reduce:transition-none"
       >
-        <div class="flex items-center justify-between gap-2">
-          <span class="flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-accent uppercase">
-            <span class="relative flex h-2 w-2">
-              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75"></span>
-              <span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span>
+        <div
+          class="rounded-2xl border border-border-subtle/80 bg-surface-raised/95 p-3.5 shadow-2xl backdrop-blur-md"
+        >
+          <div class="flex items-center justify-between gap-2">
+            <span class="flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-accent uppercase">
+              <span class="relative flex h-2 w-2">
+                <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75"></span>
+                <span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span>
+              </span>
+              Continue Watching
             </span>
-            Continue Watching
-          </span>
-        </div>
+          </div>
 
-        <p class="mt-1.5 line-clamp-1 text-xs font-bold text-ink">{title}</p>
-        <p class="mt-0.5 text-[11px] font-medium text-ink-muted">
-          {item.episode ? `Episode ${item.episode}` : "Not started"}
-        </p>
+          <p class="mt-1.5 line-clamp-1 text-xs font-bold text-ink">{title}</p>
+          <p class="mt-0.5 text-[11px] font-medium text-ink-muted">
+            {item.episode ? `Episode ${item.episode}` : "Not started"}
+          </p>
 
-        <!-- CTA Action Row -->
-        <div class="mt-2.5 flex items-center justify-between border-t border-border-subtle/50 pt-2 text-xs font-semibold text-accent">
-          <span>Play now</span>
-          <svg 
-            class="h-3.5 w-3.5 transition-transform {isHovered ? 'translate-x-0.5' : ''}" 
-            viewBox="0 0 24 24" 
-            fill="currentColor"
-          >
-            <path d="M8 5v14l11-7z" />
-          </svg>
+          <!-- CTA Action Row -->
+          <div class="mt-2.5 flex items-center justify-between border-t border-border-subtle/50 pt-2 text-xs font-semibold text-accent">
+            <span>Play now</span>
+            <svg 
+              class="h-3.5 w-3.5 transition-transform {isHovered ? 'translate-x-0.5' : ''}" 
+              viewBox="0 0 24 24" 
+              fill="currentColor"
+            >
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          </div>
         </div>
       </div>
-    </div>
+    {/if}
 
-    <!-- Vinyl Disc (The exclusive pointer event target) -->
+    <!-- Vinyl Disc Anchor -->
     <a
       href={`/anime/${item.anime.id}?ep=${resumeIndex(item.episode ?? 0)}`}
       data-testid="resume-disc"
@@ -206,14 +205,14 @@
         <!-- Concentric Vinyl Grooves Effect -->
         <span
           aria-hidden="true"
-          class="pointer-events-none absolute inset-0 rounded-full border border-white/5 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-transparent via-black/20 to-black/60"
+          class="pointer-events-none absolute inset-0 rounded-full border border-white/5 bg-[radial-gradient(ellipse_at_center,var(--tw-gradient-stops))] from-transparent via-black/20 to-black/60"
         ></span>
       </span>
 
       <!-- Gloss Reflection Overlay -->
       <span
         aria-hidden="true"
-        class="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-tr from-transparent via-white/15 to-transparent"
+        class="pointer-events-none absolute inset-0 rounded-full bg-linear-to-tr from-transparent via-white/15 to-transparent"
       ></span>
 
       <!-- Vinyl Center Hole & Label Hub -->
