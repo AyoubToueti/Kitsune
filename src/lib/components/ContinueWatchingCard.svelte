@@ -50,7 +50,7 @@
     class="relative aspect-2/3 w-full overflow-hidden bg-surface-hover"
   >
     <a
-      href={`/anime/${entry.anime.id}?ep=${resumeIndex(entry.progress)}`}
+      href={`/anime/${entry.anime.id}`}
       aria-label={`Resume ${title}`}
       draggable="false"
       class="block h-full w-full focus:outline-none"
