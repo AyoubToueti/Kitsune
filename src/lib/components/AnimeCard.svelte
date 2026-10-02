@@ -76,7 +76,9 @@
     </a>
 
     <!-- Top Metadata Badges -->
-    <div class="pointer-events-none absolute top-2 inset-x-2 flex items-center justify-between gap-1 z-10">
+    <div
+      class="pointer-events-none absolute top-2 inset-x-2 flex items-center justify-between gap-1 z-10"
+    >
       {#if anime.format}
         <span
           class="rounded-md border border-white/10 bg-black/40 px-1.5 py-0.5 text-[10px] font-bold text-white uppercase backdrop-blur-md shadow-sm"
@@ -91,14 +93,15 @@
         <span
           class="flex items-center gap-0.5 rounded-md border border-border-subtle/40 bg-surface/85 px-1.5 py-0.5 text-[10px] font-extrabold text-score backdrop-blur-md shadow-sm"
         >
-          <span class="text-amber-400">★</span> {anime.averageScore}
+          <span class="text-amber-400">★</span>
+          {anime.averageScore}
         </span>
       {/if}
     </div>
 
     <!-- Floating Quick Bar (Slides & Fades in cleanly) -->
     <div
-      class="absolute inset-x-2 bottom-2 z-20 flex translate-y-3 opacity-0 items-center gap-1.5 rounded-xl border border-white/10 bg-black/60 p-1.5 backdrop-blur-md shadow-lg transition-all duration-250 cubic-bezier(0.16,1,0.3,1) group-hover:translate-y-0 group-hover:opacity-100 focus-within:translate-y-0 focus-within:opacity-100"
+      class="absolute inset-x-2 bottom-2 z-20 flex translate-y-3 opacity-0 items-center gap-1.5 rounded-xl border border-white/10 bg-black/60 p-1.5 backdrop-blur-md shadow-lg transition-all duration-250 cubic-bezier(0.16,1,0.3,1) group-hover:translate-y-0 group-hover:opacity-100 has-focus-visible:translate-y-0 has-focus-visible:opacity-100"
     >
       <!-- Quick Watch Action. Resumes the last episode when there is progress,
            otherwise starts from the first. -->
@@ -107,7 +110,11 @@
         data-testid="watch-button"
         class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent py-1.5 text-xs font-bold text-white shadow-sm transition-all hover:bg-accent-hover hover:shadow-accent/40 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
-        <svg class="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24" aria-hidden="true">
+        <svg
+          class="h-3.5 w-3.5 fill-current"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
           <path d="M8 5v14l11-7z" />
         </svg>
         <span>{watched > 0 ? "Resume" : "Watch"}</span>
@@ -120,9 +127,13 @@
           data-testid="trailer-trigger"
           aria-label={`Play trailer for ${title}`}
           onclick={() => (trailerOpen = true)}
-          class="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/10 text-white transition-all hover:bg-white/25 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          class="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/10 text-white transition-all hover:bg-white/25 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent cursor-pointer"
         >
-          <svg class="h-3.5 w-3.5 stroke-current fill-none stroke-2" viewBox="0 0 24 24" aria-hidden="true">
+          <svg
+            class="h-3.5 w-3.5 stroke-current fill-none stroke-2"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
             <polygon points="10 8 16 12 10 16 10 8" />
           </svg>
         </button>
@@ -140,7 +151,11 @@
         onfocusin={hover.show}
         onfocusout={hover.scheduleClose}
       >
-        <svg class="h-3.5 w-3.5 stroke-current fill-none stroke-2" viewBox="0 0 24 24" aria-hidden="true">
+        <svg
+          class="h-3.5 w-3.5 stroke-current fill-none stroke-2"
+          viewBox="0 0 24 24"
+          aria-hidden="true"
+        >
           <circle cx="12" cy="12" r="9" />
           <path stroke-linecap="round" d="M12 8h.01M12 11v5" />
         </svg>
@@ -152,14 +167,15 @@
   <div class="flex flex-1 flex-col justify-between p-3">
     <p
       class="line-clamp-2 text-xs font-bold leading-tight text-ink transition-colors group-hover:text-accent"
-      title={title}
+      {title}
     >
       {title}
     </p>
 
     {#if anime.episodeCount}
       <p class="mt-1 text-[11px] font-medium text-ink-faint">
-        {anime.episodeCount} {anime.episodeCount === 1 ? 'ep' : 'eps'}
+        {anime.episodeCount}
+        {anime.episodeCount === 1 ? "ep" : "eps"}
       </p>
     {/if}
   </div>

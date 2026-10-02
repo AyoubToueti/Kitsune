@@ -96,7 +96,7 @@
 
     <!-- Floating Quick Bar (Slides & Fades in cleanly) -->
     <div
-      class="absolute inset-x-2 bottom-2 z-20 flex translate-y-3 opacity-0 items-center gap-1.5 rounded-xl border border-white/10 bg-black/60 p-1.5 backdrop-blur-md shadow-lg transition-all duration-250 cubic-bezier(0.16,1,0.3,1) group-hover:translate-y-0 group-hover:opacity-100 focus-within:translate-y-0 focus-within:opacity-100"
+      class="absolute inset-x-2 bottom-2 z-20 flex translate-y-3 opacity-0 items-center gap-1.5 rounded-xl border border-white/10 bg-black/60 p-1.5 backdrop-blur-md shadow-lg transition-all duration-250 cubic-bezier(0.16,1,0.3,1) group-hover:translate-y-0 group-hover:opacity-100 has-[:focus-visible]:translate-y-0 has-[:focus-visible]:opacity-100"
     >
       <!-- Resume / Watch Link -->
       <a
