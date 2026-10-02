@@ -146,6 +146,7 @@ pub fn run() {
                 commands::get_tags,
                 commands::get_schedule,
                 commands::get_anime,
+                commands::get_recommendations,
                 commands::get_episodes,
                 // Finding releases.
                 indexer::commands::search_releases,
@@ -171,6 +172,7 @@ pub fn run() {
                 auth::list::continue_watching,
                 auth::list::user_list,
                 auth::list::delete_list_entry,
+                auth::list::rate_recommendation,
                 // Where the reader last was, kept locally.
                 auth::list::record_last_played,
                 auth::list::last_played,

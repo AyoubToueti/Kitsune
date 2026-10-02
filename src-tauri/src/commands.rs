@@ -15,7 +15,8 @@ use tauri::State;
 
 use crate::providers::{AnimeProvider, JikanProvider, ProviderError};
 use crate::types::{
-    Anime, AnimePage, BrowseQuery, EpisodeInfo, ListFilter, MediaTag, ScheduledEpisode,
+    Anime, AnimePage, BrowseQuery, EpisodeInfo, ListFilter, MediaTag, RecommendationsPage,
+    ScheduledEpisode,
 };
 
 /// How many results to ask for when the caller does not say.
@@ -109,6 +110,16 @@ pub async fn anime_from(
     provider.by_id(id).await
 }
 
+/// A page of recommendations for one work, highest-rated first.
+pub async fn recommendations_from(
+    provider: &dyn AnimeProvider,
+    id: i64,
+    page: u32,
+    per_page: u32,
+) -> Result<RecommendationsPage, ProviderError> {
+    provider.recommendations(id, page, per_page).await
+}
+
 // --- Tauri command wrappers ----------------------------------------------
 
 #[tauri::command]
@@ -178,6 +189,25 @@ pub async fn get_anime(
     anime_from(provider.inner().as_ref(), id)
         .await
         .map_err(to_message)
+}
+
+#[tauri::command]
+pub async fn get_recommendations(
+    provider: State<'_, SharedProvider>,
+    id: i64,
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<RecommendationsPage, String> {
+    // `page` defaults to 1 (AniList rejects 0); `per_page` goes through the
+    // same resolver as every other list, so an unset value gets the default.
+    recommendations_from(
+        provider.inner().as_ref(),
+        id,
+        page.unwrap_or(1),
+        resolve_limit(per_page),
+    )
+    .await
+    .map_err(to_message)
 }
 /// Full episode metadata for a work, via its MyAnimeList id.
 ///

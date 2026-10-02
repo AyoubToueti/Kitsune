@@ -7,7 +7,8 @@
 use async_trait::async_trait;
 
 use crate::types::{
-    Anime, AnimePage, BrowseQuery, ListFilter, MediaTag, ProviderId, ScheduledEpisode,
+    Anime, AnimePage, BrowseQuery, ListFilter, MediaTag, ProviderId, RecommendationsPage,
+    ScheduledEpisode,
 };
 
 /// Why a provider call failed.
@@ -61,6 +62,18 @@ pub trait AnimeProvider: Send + Sync {
     /// Look up a single title. `Ok(None)` means "not found", which is not
     /// an error — callers may legitimately probe for ids that do not exist.
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError>;
+
+    /// A page of community recommendations for a work, highest-rated first.
+    ///
+    /// Separate from [`AnimeProvider::by_id`] because the detail lookup only
+    /// carries the first handful inline; this is what backs the "view more"
+    /// view, which pages through the whole set. `page` is 1-based.
+    async fn recommendations(
+        &self,
+        id: i64,
+        page: u32,
+        per_page: u32,
+    ) -> Result<RecommendationsPage, ProviderError>;
 
     /// The genre names this provider recognises.
     ///

@@ -425,6 +425,60 @@ pub struct RelatedAnime {
     pub relation_type: String,
 }
 
+/// A reader who suggested a recommendation.
+///
+/// Carried so the UI can credit the suggester. AniList has no free-text "why"
+/// field on a recommendation -- the reason is only the vote tally and who first
+/// posted it -- so this is the most context the provider offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommenderUser {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+}
+
+/// How the signed-in reader voted on a recommendation.
+///
+/// Distinct from the `rating` tally: this is the reader's OWN vote, which the
+/// UI highlights. AniList reports `NO_RATING` (or null) for a reader who has not
+/// voted, and null for a signed-out one; the two collapse to `None` here because
+/// neither should highlight anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RecommendationRating {
+    /// Not voted (AniList's `NO_RATING`).
+    NoRating,
+    /// Voted up.
+    RateUp,
+    /// Voted down.
+    RateDown,
+}
+
+impl RecommendationRating {
+    /// The value AniList's GraphQL expects.
+    pub fn literal(self) -> &'static str {
+        match self {
+            Self::NoRating => "NO_RATING",
+            Self::RateUp => "RATE_UP",
+            Self::RateDown => "RATE_DOWN",
+        }
+    }
+
+    /// Read a rating AniList reported back.
+    ///
+    /// `None` for anything unrecognised: AniList could add a variant, and
+    /// lighting up the wrong arrow would be worse than lighting up none.
+    pub fn from_literal(value: &str) -> Option<Self> {
+        match value {
+            "NO_RATING" => Some(Self::NoRating),
+            "RATE_UP" => Some(Self::RateUp),
+            "RATE_DOWN" => Some(Self::RateDown),
+            _ => None,
+        }
+    }
+}
+
 /// A community recommendation for a work.
 ///
 /// Carries the recommended work whole so a poster card renders without a second
@@ -438,6 +492,30 @@ pub struct RecommendedAnime {
     ///
     /// Signed because AniList returns -1 for a net-downvoted suggestion, not 0.
     pub rating: i32,
+    /// Who first posted the recommendation, when the provider reports it.
+    ///
+    /// Optional: an anonymous or deleted account leaves the credit off rather
+    /// than failing the decode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<RecommenderUser>,
+    /// The signed-in reader's own vote, when the provider reports one.
+    ///
+    /// Absent for a signed-out reader, and for a signed-in one who has not
+    /// voted, so the UI has nothing to highlight in either case.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_rating: Option<RecommendationRating>,
+}
+
+/// One page of recommendations, with the paging metadata needed to ask for
+/// another.
+///
+/// Mirrors [`AnimePage`]: the full-recommendations view scrolls, so it needs the
+/// same `has_next_page`/`last_page` signals to know when to stop.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecommendationsPage {
+    pub items: Vec<RecommendedAnime>,
+    pub page_info: PageInfo,
 }
 
 /// A promotional video for a work.

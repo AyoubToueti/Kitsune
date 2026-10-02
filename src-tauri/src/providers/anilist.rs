@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use super::traits::{AnimeProvider, ProviderError};
 use crate::types::{
     Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, ListStatus, MediaTag, PageInfo,
-    ProviderId, RecommendedAnime, RelatedAnime, ScheduledEpisode, SeasonFilter, SortOption,
-    StatusFilter, StreamingEpisode, Title, Trailer,
+    ProviderId, RecommendationRating, RecommendedAnime, RecommendationsPage, RecommenderUser,
+    RelatedAnime, ScheduledEpisode, SeasonFilter, SortOption, StatusFilter, StreamingEpisode,
+    Title, Trailer,
 };
 
 /// AniList's public GraphQL endpoint.
@@ -68,14 +69,15 @@ const MEDIA_FIELDS: &str = r#"
 /// object and a card renders a trailer button, so it travels with the media
 /// fields above.
 ///
-/// The fields inside `mediaRecommendation` are chosen to match what
-/// `HoverPreview.svelte` renders, because the detail page's Recommended row
-/// shows that panel on hover. They are NOT the whole of [`MEDIA_FIELDS`]:
-/// that includes `streamingEpisodes`, the licensed-link list, which would
-/// bloat the payload ten times over (one per recommendation) for data the
-/// panel never shows. A field the panel reads but this list omits renders as a
-/// blank line rather than as an error, which is how the panel came to be
-/// nearly empty before.
+/// The fields inside `mediaRecommendation` are chosen to match what the
+/// detail page's Recommended row renders: `HoverPreview.svelte` for the hover
+/// panel AND `AnimeCard` for the card itself, which shows a trailer button.
+/// They are NOT the whole of [`MEDIA_FIELDS`]: that includes
+/// `streamingEpisodes`, the licensed-link list, which would bloat the payload
+/// ten times over (one per recommendation) for data neither surface shows. A
+/// field a surface reads but this list omits renders as a blank line rather
+/// than as an error, which is how the panel came to be nearly empty before --
+/// and how the card's trailer button went missing.
 const MEDIA_DETAIL_FIELDS: &str = r#"
     relations {
       edges {
@@ -95,6 +97,8 @@ const MEDIA_DETAIL_FIELDS: &str = r#"
       edges {
         node {
           rating
+          userRating
+          user { name avatar { medium } }
           mediaRecommendation {
             id
             type
@@ -108,6 +112,7 @@ const MEDIA_DETAIL_FIELDS: &str = r#"
             averageScore
             status
             seasonYear
+            trailer { id site thumbnail }
           }
         }
       }
@@ -547,6 +552,80 @@ impl AnimeProvider for AniListProvider {
         let data: MediaData = self.query(&query, serde_json::json!({ "id": id })).await?;
         Ok(data.media.map(map_media))
     }
+
+    async fn recommendations(
+        &self,
+        id: i64,
+        page: u32,
+        per_page: u32,
+    ) -> Result<RecommendationsPage, ProviderError> {
+        // The nested `mediaRecommendation` set matches the inline detail
+        // lookup, so a card rendered here carries the same fields it does
+        // everywhere else -- including the trailer its play button needs.
+        let query = format!(
+            r#"
+            query ($id: Int, $page: Int, $perPage: Int) {{
+              Media(id: $id, type: ANIME) {{
+                recommendations(page: $page, perPage: $perPage, sort: RATING_DESC) {{
+                  pageInfo {{ total currentPage lastPage hasNextPage }}
+                  edges {{
+                    node {{
+                      rating
+                      userRating
+                      user {{ name avatar {{ medium }} }}
+                      mediaRecommendation {{
+                        id
+                        type
+                        title {{ romaji english native }}
+                        coverImage {{ large }}
+                        description
+                        episodes
+                        duration
+                        format
+                        genres
+                        averageScore
+                        status
+                        seasonYear
+                        trailer {{ id site thumbnail }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}
+            "#
+        );
+
+        let data: MediaRecommendationsData = self
+            .query(
+                &query,
+                serde_json::json!({
+                    "id": id,
+                    "page": page.max(1),
+                    "perPage": clamp_limit(per_page),
+                }),
+            )
+            .await?;
+
+        let connection = data
+            .media
+            .and_then(|media| media.recommendations)
+            .unwrap_or_default();
+
+        Ok(RecommendationsPage {
+            items: connection
+                .edges
+                .into_iter()
+                .filter_map(map_recommendation_edge)
+                .collect(),
+            page_info: PageInfo {
+                total: connection.page_info.total,
+                current_page: connection.page_info.current_page,
+                last_page: connection.page_info.last_page,
+                has_next_page: connection.page_info.has_next_page,
+            },
+        })
+    }
 }
 
 /// The reader's own list, which is not part of the [`AnimeProvider`] trait.
@@ -845,6 +924,52 @@ impl AniListProvider {
             )),
         }
     }
+
+    /// Cast the reader's vote on a recommendation, returning the new tally.
+    ///
+    /// AniList keys a recommendation by the (base work, recommended work) PAIR,
+    /// not by a recommendation id, so both media ids travel. `rating` is the
+    /// reader's own vote; passing `NoRating` clears an existing one.
+    ///
+    /// Requires a token. Without one AniList answers with a GraphQL error, which
+    /// surfaces here as a provider error rather than a silent success.
+    pub async fn rate_recommendation(
+        &self,
+        media_id: i64,
+        recommended_id: i64,
+        rating: RecommendationRating,
+    ) -> Result<i32, ProviderError> {
+        let mutation = r#"
+            mutation ($mediaId: Int, $mediaRecommendationId: Int, $rating: RecommendationRating) {
+              SaveRecommendation(
+                mediaId: $mediaId
+                mediaRecommendationId: $mediaRecommendationId
+                rating: $rating
+              ) {
+                rating
+              }
+            }
+        "#;
+
+        let data: RateRecommendationData = self
+            .mutate(
+                mutation,
+                serde_json::json!({
+                    "mediaId": media_id,
+                    "mediaRecommendationId": recommended_id,
+                    // AniList's own literal, not the serde form: the GraphQL
+                    // enum has no camelCase spelling.
+                    "rating": rating.literal(),
+                }),
+            )
+            .await?;
+
+        // A refused write answers with a null field, so a missing rating is a
+        // failure the status check would not have caught.
+        data.save
+            .map(|wire| wire.rating)
+            .ok_or_else(|| ProviderError::Remote("the vote was not recorded".into()))
+    }
 }
 
 /// One entry in the reader's own list, for the My List page.
@@ -888,6 +1013,19 @@ pub struct ListEntry {
 struct SaveEntryData {
     #[serde(rename = "SaveMediaListEntry", default)]
     save: Option<serde_json::Value>,
+}
+
+/// The envelope around the `SaveRecommendation` mutation.
+#[derive(Deserialize, Default)]
+struct RateRecommendationData {
+    #[serde(rename = "SaveRecommendation", default)]
+    save: Option<RateRecommendationWire>,
+}
+
+#[derive(Deserialize, Default)]
+struct RateRecommendationWire {
+    #[serde(default)]
+    rating: i32,
 }
 
 #[derive(Deserialize, Default)]
@@ -1205,6 +1343,22 @@ struct MediaData {
     media: Option<Media>,
 }
 
+/// The envelope around the paged `recommendations` query.
+///
+/// A work with no recommendations still returns a `Media` node, so the
+/// connection is defaulted rather than required.
+#[derive(Deserialize, Default)]
+struct MediaRecommendationsData {
+    #[serde(rename = "Media", default)]
+    media: Option<RecommendationsConnectionHolder>,
+}
+
+#[derive(Deserialize, Default)]
+struct RecommendationsConnectionHolder {
+    #[serde(default)]
+    recommendations: Option<RecommendationConnection>,
+}
+
 #[derive(Deserialize)]
 struct Media {
     #[serde(rename = "bannerImage", default)]
@@ -1286,6 +1440,10 @@ struct RelationNode {
 struct RecommendationConnection {
     #[serde(default)]
     edges: Vec<RecommendationEdge>,
+    /// Only requested by the paged `recommendations` query; the inline detail
+    /// lookup omits it, so it defaults.
+    #[serde(rename = "pageInfo", default)]
+    page_info: PageInfoWire,
 }
 
 #[derive(Deserialize, Default)]
@@ -1300,8 +1458,30 @@ struct RecommendationNode {
     /// downvote a recommendation, and a u32 would fail the whole decode.
     #[serde(default)]
     rating: i32,
+    /// The reader's own vote, as AniList's enum literal. `None` when signed
+    /// out or when the reader has not voted.
+    #[serde(rename = "userRating", default)]
+    user_rating: Option<String>,
+    /// Who first posted the recommendation. Absent for anonymous accounts.
+    #[serde(default)]
+    user: Option<RecommendationUserWire>,
     #[serde(rename = "mediaRecommendation", default)]
     media_recommendation: Option<Media>,
+}
+
+/// The reader who posted a recommendation, as AniList spells them.
+#[derive(Deserialize, Default)]
+struct RecommendationUserWire {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    avatar: Option<UserAvatarWire>,
+}
+
+#[derive(Deserialize, Default)]
+struct UserAvatarWire {
+    #[serde(default)]
+    medium: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1462,6 +1642,22 @@ fn map_recommendation_edge(edge: RecommendationEdge) -> Option<RecommendedAnime>
     Some(RecommendedAnime {
         anime: map_media(media),
         rating: node.rating,
+        user: node.user.and_then(map_recommendation_user),
+        user_rating: node
+            .user_rating
+            .and_then(|literal| RecommendationRating::from_literal(&literal)),
+    })
+}
+
+/// Map the reader who posted a recommendation, requiring a name.
+///
+/// AniList reports an avatar URL for most accounts but a bare name for all, so
+/// the avatar is optional while the name gates the whole entry -- a credit with
+/// nobody named is not worth showing.
+fn map_recommendation_user(user: RecommendationUserWire) -> Option<RecommenderUser> {
+    Some(RecommenderUser {
+        name: non_empty(user.name)?,
+        avatar: user.avatar.and_then(|a| non_empty(a.medium)),
     })
 }
 
@@ -2685,6 +2881,85 @@ mod tests {
         assert_auth(&server, Some("Bearer secret-token")).await;
     }
 
+    fn rated_recommendation_response(rating: i32) -> serde_json::Value {
+        serde_json::json!({ "data": { "SaveRecommendation": { "rating": rating } } })
+    }
+
+    /// The vote sends AniList's SCREAMING_SNAKE literal, not the camelCase the
+    /// frontend uses: the GraphQL enum has no camelCase spelling.
+    #[tokio::test]
+    async fn voting_sends_the_anilist_literal() {
+        let (server, provider) = provider_with(rated_recommendation_response(5), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .rate_recommendation(21, 5114, RecommendationRating::RateUp)
+            .await
+            .expect("vote should succeed");
+
+        assert_eq!(sent_variables(&server).await["rating"], "RATE_UP");
+    }
+
+    /// Both media ids travel: AniList keys a recommendation by the (base,
+    /// recommended) pair, not by a recommendation id.
+    #[tokio::test]
+    async fn voting_sends_both_media_ids() {
+        let (server, provider) = provider_with(rated_recommendation_response(2), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .rate_recommendation(21, 5114, RecommendationRating::RateDown)
+            .await
+            .expect("vote should succeed");
+
+        let variables = sent_variables(&server).await;
+        assert_eq!(variables["mediaId"], 21);
+        assert_eq!(variables["mediaRecommendationId"], 5114);
+        assert_eq!(variables["rating"], "RATE_DOWN");
+    }
+
+    /// The new tally comes back from the server, so the UI shows the real count
+    /// rather than the optimistic guess.
+    #[tokio::test]
+    async fn voting_returns_the_new_tally() {
+        let (_server, provider) = provider_with(rated_recommendation_response(9), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        let rating = provider
+            .rate_recommendation(21, 5114, RecommendationRating::RateUp)
+            .await
+            .expect("vote should succeed");
+
+        assert_eq!(rating, 9);
+    }
+
+    /// A refused vote must not look like success.
+    #[tokio::test]
+    async fn a_refused_vote_is_an_error() {
+        let response = serde_json::json!({ "data": { "SaveRecommendation": null } });
+        let (_server, provider) = provider_with(response, 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        let result = provider
+            .rate_recommendation(21, 5114, RecommendationRating::RateUp)
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_vote_carries_the_token() {
+        let (server, provider) = provider_with(rated_recommendation_response(5), 200).await;
+        provider.set_token(Some("secret-token".into()));
+
+        provider
+            .rate_recommendation(21, 5114, RecommendationRating::RateUp)
+            .await
+            .expect("vote should succeed");
+
+        assert_auth(&server, Some("Bearer secret-token")).await;
+    }
+
     #[tokio::test]
     async fn a_list_entry_is_read_back() {
         let response = serde_json::json!({
@@ -3361,12 +3636,21 @@ mod tests {
                 {
                     "node": {
                         "rating": 42,
+                        "user": {
+                            "name": "Recommender",
+                            "avatar": { "medium": "https://example.test/avatar.jpg" }
+                        },
                         "mediaRecommendation": {
                             "id": 16498,
                             "type": "ANIME",
                             "title": { "romaji": "Fullmetal Alchemist: Brotherhood" },
                             "coverImage": { "large": "https://example.test/fmab.jpg" },
-                            "format": "TV"
+                            "format": "TV",
+                            "trailer": {
+                                "id": "rec-trailer-1",
+                                "site": "youtube",
+                                "thumbnail": "https://example.test/rec-trailer.jpg"
+                            }
                         }
                     }
                 },
@@ -3408,6 +3692,28 @@ mod tests {
         assert_eq!(anime.recommendations.len(), 1);
         assert_eq!(anime.recommendations[0].rating, 42);
         assert_eq!(anime.recommendations[0].anime.id, 16498);
+
+        // The nested work carries its trailer, so a recommendation card shows
+        // the same trailer button a rail card does.
+        let trailer = anime.recommendations[0]
+            .anime
+            .trailer
+            .as_ref()
+            .expect("the recommended work should carry its trailer");
+        assert_eq!(trailer.id, "rec-trailer-1");
+        assert_eq!(trailer.site, "youtube");
+
+        // The inline lookup now carries the recommender too, so the credit is
+        // available wherever a recommendation is rendered.
+        let user = anime.recommendations[0]
+            .user
+            .as_ref()
+            .expect("the recommendation should carry its suggester");
+        assert_eq!(user.name, "Recommender");
+        assert_eq!(
+            user.avatar.as_deref(),
+            Some("https://example.test/avatar.jpg")
+        );
     }
 
     /// A downvoted recommendation must not fail the whole decode.
@@ -3521,6 +3827,7 @@ mod tests {
             "status",
             "seasonYear",
             "native",
+            "trailer",
         ] {
             assert!(
                 recommendation.contains(field),
@@ -3556,6 +3863,79 @@ mod tests {
         let trailer = anime.trailer.expect("trailer should be present");
         assert_eq!(trailer.id, "LHtdKWJdif4");
         assert_eq!(trailer.site, "youtube");
+    }
+
+    /// A page of recommendations, as the paged query returns it.
+    fn recommendations_response() -> serde_json::Value {
+        serde_json::json!({ "data": { "Media": { "recommendations": {
+            "pageInfo": {
+                "total": 30,
+                "currentPage": 2,
+                "lastPage": 3,
+                "hasNextPage": true
+            },
+            "edges": [
+                {
+                    "node": {
+                        "rating": 12,
+                        "userRating": "RATE_UP",
+                        "user": { "name": "Suggester" },
+                        "mediaRecommendation": {
+                            "id": 5114,
+                            "type": "ANIME",
+                            "title": { "romaji": "Fullmetal Alchemist: Brotherhood" }
+                        }
+                    }
+                },
+                { "node": { "rating": 3, "mediaRecommendation": null } }
+            ]
+        } } } })
+    }
+
+    /// The paged query pages by `page`/`perPage`, asks for the recommender, and
+    /// maps the page metadata plus the edges back.
+    #[tokio::test]
+    async fn recommendations_pages_and_maps_the_page_info() {
+        let (server, provider) = provider_with(recommendations_response(), 200).await;
+
+        let page = provider.recommendations(21, 2, 24).await.unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body = String::from_utf8_lossy(&requests[0].body);
+        // `page`/`perPage` travel as variables, so the VALUES are asserted
+        // rather than the query text; the field names are asserted too so a
+        // rename cannot silently drop the recommender.
+        assert!(body.contains("\"page\":2"), "page should be sent");
+        assert!(body.contains("\"perPage\":24"), "perPage should be sent");
+        assert!(
+            body.contains("name avatar"),
+            "query should ask for the recommender"
+        );
+        assert!(
+            body.contains("pageInfo"),
+            "query should ask for the page info"
+        );
+
+        // The null recommendation is dropped; the page metadata survives.
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].anime.id, 5114);
+        assert_eq!(page.items[0].rating, 12);
+        assert_eq!(
+            page.items[0].user.as_ref().map(|u| u.name.as_str()),
+            Some("Suggester")
+        );
+        // The reader's own vote maps from AniList's literal.
+        assert_eq!(
+            page.items[0].user_rating,
+            Some(RecommendationRating::RateUp)
+        );
+        assert_eq!(page.page_info.total, 30);
+        assert_eq!(page.page_info.current_page, 2);
+        assert_eq!(page.page_info.last_page, 3);
+        assert!(page.page_info.has_next_page);
     }
 
     /// A list query never asks for the detail fields, so they come back empty.

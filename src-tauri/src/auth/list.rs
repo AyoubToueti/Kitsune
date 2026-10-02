@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use super::{LastPlayed, LastPlayedStore, SharedAniList};
 use crate::providers::anilist::{ContinueWatchingItem, UserListEntry};
-use crate::types::ListStatus;
+use crate::types::{ListStatus, RecommendationRating};
 
 /// Event emitted after a write that changed the reader's list.
 ///
@@ -123,6 +123,24 @@ pub async fn delete_list_entry(
     // Only after the delete succeeded, same reasoning as `set_list_entry`.
     let _ = app.emit(LIST_CHANGED_EVENT, ());
     Ok(())
+}
+
+/// Cast the reader's vote on a recommendation, returning the new tally.
+///
+/// Needs a token: AniList rejects the mutation without one, so a signed-out
+/// caller gets an error rather than a silent no-op. The frontend gates the
+/// buttons on sign-in, so reaching here signed out is unexpected.
+#[tauri::command]
+pub async fn rate_recommendation(
+    provider: State<'_, SharedAniList>,
+    media_id: i64,
+    recommended_id: i64,
+    rating: RecommendationRating,
+) -> Result<i32, String> {
+    provider
+        .rate_recommendation(media_id, recommended_id, rating)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 /// Record that the reader opened a work, so the resume disc can find it again.
