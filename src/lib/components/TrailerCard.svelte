@@ -1,42 +1,11 @@
 <script lang="ts">
+  import { trailerEmbedUrl, trailerWatchUrl } from "$lib/trailer";
   import type { Trailer } from "$lib/types";
 
   let { trailer }: { trailer?: Trailer } = $props();
 
   // Manage modal open state
   let isOpen = $state(false);
-
-  /**
-   * Build the watch URL for a trailer.
-   *
-   * AniList reports the platform and the video id separately, and each platform
-   * spells its URL differently, so the mapping lives here. An unknown site has no
-   * URL to build, which the caller treats as "no trailer".
-   */
-  function watchUrl(video: Trailer): string | null {
-    switch (video.site.toLowerCase()) {
-      case "youtube":
-        return `https://www.youtube.com/watch?v=${video.id}`;
-      case "dailymotion":
-        return `https://www.dailymotion.com/video/${video.id}`;
-      default:
-        return null;
-    }
-  }
-
-  /**
-   * Build the specific embed URL variant required to play inside an iframe overlay.
-   */
-  function embedUrl(video: Trailer): string | null {
-    switch (video.site.toLowerCase()) {
-      case "youtube":
-        return `https://www.youtube.com/embed/${video.id}?autoplay=1`;
-      case "dailymotion":
-        return `https://www.dailymotion.com/embed/video/${video.id}?autoplay=1`;
-      default:
-        return null;
-    }
-  }
 
   // Handle closing modal via Escape key
   function handleKeyDown(event: KeyboardEvent) {
@@ -45,8 +14,9 @@
     }
   }
 
-  const url = $derived(trailer ? watchUrl(trailer) : null);
-  const videoEmbedUrl = $derived(trailer ? embedUrl(trailer) : null);
+  // The URL builders live in `$lib/trailer` so the card and this page agree.
+  const url = $derived(trailer ? trailerWatchUrl(trailer) : null);
+  const videoEmbedUrl = $derived(trailer ? trailerEmbedUrl(trailer) : null);
 </script>
 
 <!-- Global window listener to catch the Escape key shortcut automatically -->

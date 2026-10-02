@@ -9,11 +9,13 @@ const getUserListMock = vi.hoisted(() => vi.fn());
 const onAuthChangedMock = vi.hoisted(() => vi.fn());
 const setListEntryMock = vi.hoisted(() => vi.fn());
 const deleteListEntryMock = vi.hoisted(() => vi.fn());
+const onListChangedMock = vi.hoisted(() => vi.fn().mockResolvedValue(() => {}));
 vi.mock("$lib/api/auth", () => ({
   authStatus: authStatusMock,
   beginLogin: beginLoginMock,
   getUserList: getUserListMock,
   onAuthChanged: onAuthChangedMock,
+  onListChanged: onListChangedMock,
   setListEntry: setListEntryMock,
   deleteListEntry: deleteListEntryMock,
 }));

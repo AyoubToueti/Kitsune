@@ -55,15 +55,18 @@ const MEDIA_FIELDS: &str = r#"
     status
     season
     seasonYear
+    trailer { id site thumbnail }
 "#;
 
 /// Detail-only fields, added on top of [`MEDIA_FIELDS`] for the single-title
 /// lookup.
 ///
 /// Kept apart because they are expensive and only the detail page can use them:
-/// `relations` is a graph traversal, `recommendations` runs its own paged
-/// sub-query, and a card has nowhere to render either. Sending them on every
-/// list query would multiply AniList's work for data the UI throws away.
+/// `relations` is a graph traversal and `recommendations` runs its own paged
+/// sub-query. Sending them on every list query would multiply AniList's work
+/// for data the UI throws away. `trailer` is NOT here: it is a small flat
+/// object and a card renders a trailer button, so it travels with the media
+/// fields above.
 ///
 /// The fields inside `mediaRecommendation` are chosen to match what
 /// `HoverPreview.svelte` renders, because the detail page's Recommended row
@@ -109,7 +112,6 @@ const MEDIA_DETAIL_FIELDS: &str = r#"
         }
       }
     }
-    trailer { id site thumbnail }
 "#;
 
 /// An AniList GraphQL client.
@@ -3557,6 +3559,9 @@ mod tests {
     }
 
     /// A list query never asks for the detail fields, so they come back empty.
+    ///
+    /// `trailer` is deliberately NOT among them: a card renders a trailer
+    /// button, so it travels with the shared media fields.
     #[tokio::test]
     async fn trending_leaves_the_detail_fields_empty() {
         let (_server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
@@ -3564,7 +3569,24 @@ mod tests {
         let anime = provider.trending(1).await.unwrap();
         assert!(anime[0].relations.is_empty());
         assert!(anime[0].recommendations.is_empty());
-        assert!(anime[0].trailer.is_none());
+    }
+
+    /// A list query DOES ask for the trailer, because a card plays it.
+    #[tokio::test]
+    async fn list_queries_request_the_trailer() {
+        let (server, provider) = provider_with(page_response(vec![media_json()]), 200).await;
+
+        provider.trending(1).await.unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert!(
+            body.contains("trailer"),
+            "list query should ask for the trailer so a card can play it"
+        );
     }
 
     /// A missing title is not an error, so `by_id` must report `None`

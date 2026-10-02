@@ -145,7 +145,8 @@ describe("HoverPreview", () => {
 
     expect(screen.getByText("ワンピース")).toBeInTheDocument();
     expect(screen.getByText("1999")).toBeInTheDocument();
-    expect(screen.getByText("RELEASING")).toBeInTheDocument();
+    // The status badge renders the provider value lowercased.
+    expect(screen.getByText("releasing")).toBeInTheDocument();
   });
 
   it("strips HTML from the synopsis", () => {
@@ -175,8 +176,9 @@ describe("HoverPreview", () => {
       },
     });
 
-    // Five shown, the rest dropped.
-    expect(screen.getByRole("link", { name: "E" })).toBeInTheDocument();
+    // Four shown, the rest dropped.
+    expect(screen.getByRole("link", { name: "D" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "E" })).toBeNull();
     expect(screen.queryByRole("link", { name: "F" })).toBeNull();
     expect(screen.queryByRole("link", { name: "G" })).toBeNull();
   });

@@ -44,11 +44,13 @@ describe("Recommendations", () => {
       props: { recommendations: [recommendation(16498, "Fullmetal Alchemist")] },
     });
 
-    // A card renders two links to the same work (poster + Watch); both must
-    // point at the detail route.
-    for (const link of screen.getAllByRole("link")) {
-      expect(link).toHaveAttribute("href", "/anime/16498");
-    }
+    // A card renders two links to the same work (poster + Watch). The poster
+    // points at the detail route; the Watch button starts at the first episode.
+    const hrefs = screen
+      .getAllByRole("link")
+      .map((link) => link.getAttribute("href"));
+    expect(hrefs).toContain("/anime/16498");
+    expect(hrefs).toContain("/anime/16498?ep=0");
   });
 
   it("renders nothing when the list is empty", () => {

@@ -1,8 +1,18 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
-import AnimeCard from "./AnimeCard.svelte";
 import type { Anime } from "$lib/types";
+
+/**
+ * The card reads the shared progress store, which reaches Tauri. Mocked so the
+ * test controls the resumed episode directly and never touches the runtime.
+ */
+const progressForMock = vi.hoisted(() => vi.fn(() => 0));
+vi.mock("$lib/watch-progress.svelte", () => ({
+  progressFor: progressForMock,
+}));
+
+import AnimeCard from "./AnimeCard.svelte";
 
 function anime(overrides: Partial<Anime> = {}): Anime {
   return {
@@ -30,6 +40,7 @@ const trigger = () => screen.getByTestId("info-trigger");
 
 afterEach(() => {
   vi.restoreAllMocks();
+  progressForMock.mockReturnValue(0);
 });
 
 describe("AnimeCard", () => {
@@ -72,7 +83,7 @@ describe("AnimeCard", () => {
   it("shows a placeholder when there is no cover", () => {
     render(AnimeCard, { props: { anime: anime() } });
 
-    expect(screen.getByText("No cover")).toBeInTheDocument();
+    expect(screen.getByText("No Cover")).toBeInTheDocument();
   });
 
   it("renders the cover as decorative, since the link names the title", () => {
@@ -94,7 +105,7 @@ describe("AnimeCard", () => {
 
     // The zoom is pure CSS, so the class driving it is what can be asserted.
     expect(container.querySelector("img")?.className).toMatch(
-      /group-hover:scale-105/,
+      /group-hover:scale-108/,
     );
   });
 
@@ -102,10 +113,11 @@ describe("AnimeCard", () => {
     render(AnimeCard, { props: { anime: anime() } });
 
     const button = screen.getByTestId("info-trigger");
-    // The trigger lives in the quick bar that slides up on hover, so it is a
-    // sibling of the Watch link there.
-    expect(button.className).not.toMatch(/opacity-0/);
-    expect(button.parentElement?.className).toMatch(/translate-y-full/);
+    // The trigger lives in the quick bar that slides and fades in on hover, so
+    // it is a sibling of the Watch link there.
+    expect(button.parentElement?.className).toMatch(/opacity-0/);
+    expect(button.parentElement?.className).toMatch(/translate-y-3/);
+    expect(button.parentElement?.className).toMatch(/group-hover:opacity-100/);
     expect(button.parentElement?.className).toMatch(/group-hover:translate-y-0/);
   });
 
@@ -348,5 +360,74 @@ describe("AnimeCard", () => {
     await fireEvent.mouseEnter(trigger());
 
     expect(preview()).toHaveTextContent("a b");
+  });
+
+  // --- watch target -------------------------------------------------------
+
+  it("starts at the first episode when nothing has been watched", () => {
+    progressForMock.mockReturnValue(0);
+    render(AnimeCard, { props: { anime: anime({ id: 21 }) } });
+
+    expect(screen.getByTestId("watch-button")).toHaveAttribute(
+      "href",
+      "/anime/21?ep=0",
+    );
+    expect(screen.getByTestId("watch-button")).toHaveTextContent("Watch");
+  });
+
+  it("resumes the last episode when there is progress", () => {
+    // Progress is a 1-based episode number; `?ep=` is a 0-based index, so
+    // episode 5 resumes at index 4.
+    progressForMock.mockReturnValue(5);
+    render(AnimeCard, { props: { anime: anime({ id: 21 }) } });
+
+    expect(screen.getByTestId("watch-button")).toHaveAttribute(
+      "href",
+      "/anime/21?ep=4",
+    );
+    expect(screen.getByTestId("watch-button")).toHaveTextContent("Resume");
+  });
+
+  // --- trailer ------------------------------------------------------------
+
+  it("offers a trailer button when the work has one", () => {
+    progressForMock.mockReturnValue(0);
+    render(AnimeCard, {
+      props: {
+        anime: anime({ trailer: { id: "abc123", site: "youtube" } }),
+      },
+    });
+
+    expect(screen.getByTestId("trailer-trigger")).toBeInTheDocument();
+  });
+
+  it("hides the trailer button without one", () => {
+    progressForMock.mockReturnValue(0);
+    render(AnimeCard, { props: { anime: anime() } });
+
+    expect(screen.queryByTestId("trailer-trigger")).toBeNull();
+  });
+
+  it("hides the trailer button for a site that cannot be embedded", () => {
+    progressForMock.mockReturnValue(0);
+    render(AnimeCard, {
+      props: { anime: anime({ trailer: { id: "x", site: "vimeo" } }) },
+    });
+
+    expect(screen.queryByTestId("trailer-trigger")).toBeNull();
+  });
+
+  it("opens the trailer in a modal when the button is pressed", async () => {
+    progressForMock.mockReturnValue(0);
+    render(AnimeCard, {
+      props: {
+        anime: anime({ trailer: { id: "abc123", site: "youtube" } }),
+      },
+    });
+
+    await fireEvent.click(screen.getByTestId("trailer-trigger"));
+
+    const frame = screen.getByTitle(/trailer/i) as HTMLIFrameElement;
+    expect(frame.src).toContain("youtube.com/embed/abc123");
   });
 });

@@ -69,7 +69,7 @@ describe("ContinueWatchingCard", () => {
       },
     });
 
-    expect(screen.getByText("70% completed")).toBeInTheDocument();
+    expect(screen.getByText("70%")).toBeInTheDocument();
     expect(screen.getByText("Ep 7 / 10")).toBeInTheDocument();
   });
 
@@ -119,7 +119,9 @@ describe("ContinueWatchingCard", () => {
     render(ContinueWatchingCard, { props: { entry: entry() } });
 
     const bar = screen.getByTestId("resume").parentElement!;
-    expect(bar.className).toMatch(/translate-y-full/);
+    expect(bar.className).toMatch(/translate-y-3/);
+    expect(bar.className).toMatch(/opacity-0/);
     expect(bar.className).toMatch(/group-hover:translate-y-0/);
+    expect(bar.className).toMatch(/group-hover:opacity-100/);
   });
 });

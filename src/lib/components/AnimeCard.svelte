@@ -1,15 +1,43 @@
 <script lang="ts">
   import { displayTitle, type Anime } from "$lib/types";
   import { createHoverPreview } from "$lib/hover-preview.svelte";
+  import { resumeIndex } from "$lib/resume";
+  import { isPlayableTrailer, trailerEmbedUrl } from "$lib/trailer";
+  import { progressFor } from "$lib/watch-progress.svelte";
   import HoverPreview from "./HoverPreview.svelte";
+  import Modal from "./Modal.svelte";
 
   let { anime, fluid = false }: { anime: Anime; fluid?: boolean } = $props();
 
   const title = $derived(displayTitle(anime.title) ?? "Untitled");
 
-  /** The preview anchors to the info trigger button inside the quick bar. */
+  /**
+   * How far the reader got, in episodes watched.
+   *
+   * Reading this starts the shared progress store on first use, so every card
+   * on a page shares one read of the list.
+   */
+  const watched = $derived(progressFor(anime.id));
+
+  /**
+   * The episode the Watch button opens.
+   *
+   * Resume when there is progress, otherwise the first episode. The index is
+   * 0-based (`?ep=`), matching the watch page.
+   */
+  const targetEpisode = $derived(watched > 0 ? resumeIndex(watched) : 0);
+
+  /** The embed URL when the work has a playable trailer, else null. */
+  const trailerUrl = $derived(
+    isPlayableTrailer(anime.trailer) ? trailerEmbedUrl(anime.trailer) : null,
+  );
+
+  /** Whether the preview anchors to the info trigger button. */
   let trigger = $state<HTMLElement | null>(null);
   const hover = createHoverPreview(() => trigger);
+
+  /** Whether the trailer modal is open. */
+  let trailerOpen = $state(false);
 </script>
 
 <div
@@ -72,16 +100,33 @@
     <div
       class="absolute inset-x-2 bottom-2 z-20 flex translate-y-3 opacity-0 items-center gap-1.5 rounded-xl border border-white/10 bg-black/60 p-1.5 backdrop-blur-md shadow-lg transition-all duration-250 cubic-bezier(0.16,1,0.3,1) group-hover:translate-y-0 group-hover:opacity-100 focus-within:translate-y-0 focus-within:opacity-100"
     >
-      <!-- Quick Watch Action -->
+      <!-- Quick Watch Action. Resumes the last episode when there is progress,
+           otherwise starts from the first. -->
       <a
-        href={`/anime/${anime.id}`}
+        href={`/anime/${anime.id}?ep=${targetEpisode}`}
+        data-testid="watch-button"
         class="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent py-1.5 text-xs font-bold text-white shadow-sm transition-all hover:bg-accent-hover hover:shadow-accent/40 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
         <svg class="h-3.5 w-3.5 fill-current" viewBox="0 0 24 24" aria-hidden="true">
           <path d="M8 5v14l11-7z" />
         </svg>
-        <span>Watch</span>
+        <span>{watched > 0 ? "Resume" : "Watch"}</span>
       </a>
+
+      <!-- Trailer, only when the work has a playable one. -->
+      {#if trailerUrl}
+        <button
+          type="button"
+          data-testid="trailer-trigger"
+          aria-label={`Play trailer for ${title}`}
+          onclick={() => (trailerOpen = true)}
+          class="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/10 text-white transition-all hover:bg-white/25 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <svg class="h-3.5 w-3.5 stroke-current fill-none stroke-2" viewBox="0 0 24 24" aria-hidden="true">
+            <polygon points="10 8 16 12 10 16 10 8" />
+          </svg>
+        </button>
+      {/if}
 
       <!-- Info Trigger -->
       <button
@@ -128,4 +173,22 @@
     onenter={hover.enterPreview}
     onleave={hover.leavePreview}
   />
+{/if}
+
+{#if trailerOpen && trailerUrl}
+  <Modal
+    open={trailerOpen}
+    onClose={() => (trailerOpen = false)}
+    label={`${title} trailer`}
+  >
+    <div class="aspect-video w-full overflow-hidden rounded-lg bg-black">
+      <iframe
+        src={trailerUrl}
+        title={`${title} trailer`}
+        class="h-full w-full border-0"
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+        allowfullscreen
+      ></iframe>
+    </div>
+  </Modal>
 {/if}
