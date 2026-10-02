@@ -14,34 +14,25 @@
   import { displayTitle, type Anime } from "$lib/types";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
-  /**
-   * The work to resume, or `null` when there is nothing.
-   *
-   * `episode` is the 1-based episode NUMBER to resume at, or `undefined` for a
-   * work never started (or a film). Not a `ContinueWatchingItem`: that carries
-   * the LIST's progress, whereas this may come from the local last-opened
-   * record instead, which is a different number for a re-watch.
-   */
   let item = $state<{ anime: Anime; episode?: number } | null>(null);
   let loading = $state(true);
   let unlisten: UnlistenFn | null = null;
-  /** The list-change listener, kept apart so teardown removes both. */
   let unlistenList: UnlistenFn | null = null;
 
-  /**
-   * Whether the disc should show at all.
-   *
-   * Hidden on `/watch/*`: resuming the thing already on screen is nonsense, and
-   * the disc would sit over the player. Also hidden while the answer is unknown
-   * so a signed-out reader never sees it appear and vanish.
-   */
+  // Rotation Animation State
+  let isHovered = $state(false);
+  let rotation = $state(0);
+  let animationFrameId: number;
+  let lastTimestamp: number | null = null;
+
+  // Base speed: deg/ms (~30 deg/s normal, ~140 deg/s on hover)
+  let currentSpeed = 0.03;
+
   const visible = $derived(
     !loading &&
       item !== null &&
       !onWatchPage(page.url.pathname) &&
       !onOwnDetailPage(page.url.pathname, item.anime.id) &&
-      // While something is playing, the NowPlayingDisc owns this corner, so
-      // this one steps aside rather than stacking on top of it.
       !isActive(),
   );
 
@@ -49,13 +40,6 @@
     return pathname.startsWith("/watch/");
   }
 
-  /**
-   * Whether the disc would only duplicate the page it is on.
-   *
-   * On a work's own detail page the resume affordance already exists as its
-   * episode grid, so the disc would sit over the thing it points at. Hidden for
-   * that one id; still shown on any OTHER anime's page.
-   */
   function onOwnDetailPage(pathname: string, animeId: number): boolean {
     const match = /^\/anime\/(\d+)/.exec(pathname);
     return match !== null && Number(match[1]) === animeId;
@@ -64,31 +48,37 @@
   const title = $derived(item ? (displayTitle(item.anime.title) ?? "Untitled") : "");
 
   /**
-   * The work to resume.
-   *
-   * The local record is preferred: it answers "what did I last OPEN", which the
-   * list cannot, because AniList only reorders on a CHANGE -- re-watching the
-   * episode you are already on would not move you up. The list is the fallback
-   * for a reader who has not played anything since this feature existed.
+   * Smoothly animates rotation frame-by-frame.
+   * Interpolates currentSpeed towards targetSpeed without ever resetting the angle.
    */
+  function animateRotation(timestamp: number) {
+    if (lastTimestamp !== null) {
+      const delta = timestamp - lastTimestamp;
+      const targetSpeed = isHovered ? 0.16 : 0.03; // Faster when hovered
+
+      // Smoothly ease current speed towards target speed (lerp)
+      currentSpeed += (targetSpeed - currentSpeed) * 0.05;
+
+      // Accumulate total angle continuously
+      rotation = (rotation + currentSpeed * delta) % 360;
+    }
+    lastTimestamp = timestamp;
+    animationFrameId = requestAnimationFrame(animateRotation);
+  }
+
   async function resolveTarget(): Promise<{ anime: Anime; episode?: number } | null> {
     const record = await getLastPlayed().catch(() => null);
     if (record) {
-      // A cached lookup, so re-reading the same work is cheap.
       const anime = await getAnime(record.animeId).catch(() => null);
       if (anime) return { anime, episode: record.episode };
     }
 
-    // Nothing recorded (or the work could not be fetched): fall back to the
-    // list's newest entry, which is the best guess available.
     const items = await getContinueWatching(1);
     const first = items[0];
     if (!first) return null;
 
     return {
       anime: first.anime,
-      // `progress` is how many episodes were watched; 0 means never started, so
-      // there is no episode to resume at.
       episode: first.progress > 0 ? first.progress : undefined,
     };
   }
@@ -98,7 +88,6 @@
     try {
       item = await resolveTarget();
     } catch {
-      // A failed read just means no disc; it is an affordance, not a page.
       item = null;
     } finally {
       loading = false;
@@ -110,8 +99,9 @@
 
     load();
 
-    // Sign-in can complete while any page is open, so the disc appears without
-    // a reload once there is something to resume. Sign-out clears it.
+    // Start continuous smooth rotation loop
+    animationFrameId = requestAnimationFrame(animateRotation);
+
     onAuthChanged((signedIn) => {
       if (signedIn) void load();
       else item = null;
@@ -120,14 +110,8 @@
         if (cancelled) fn();
         else unlisten = fn;
       })
-      .catch(() => {
-        // Without the listener the disc still works on the next navigation.
-      });
+      .catch(() => {});
 
-    // A write from anywhere -- the detail page's menu, the watch page
-    // recording an episode, the My List page removing one -- announces itself
-    // and the disc re-reads. Without this it would show whatever was newest
-    // when the app started, because the layout never remounts.
     onListChanged(() => {
       void load();
     })
@@ -135,9 +119,7 @@
         if (cancelled) fn();
         else unlistenList = fn;
       })
-      .catch(() => {
-        // As above: the disc is an affordance, not a page that can fail.
-      });
+      .catch(() => {});
 
     return () => {
       cancelled = true;
@@ -147,66 +129,95 @@
   onDestroy(() => {
     unlisten?.();
     unlistenList?.();
+    if (animationFrameId) cancelAnimationFrame(animationFrameId);
   });
 </script>
 
 {#if visible && item}
-  <!-- `group` drives every hover state from one place. The whole thing is a
-       link, so the panel is aria-hidden: the accessible name already says the
-       work and the episode. -->
   <a
     href={`/anime/${item.anime.id}?ep=${resumeIndex(item.episode ?? 0)}`}
     data-testid="resume-disc"
     aria-label={`Resume ${title}${item.episode ? ` at episode ${item.episode}` : ""}`}
+    onmouseenter={() => (isHovered = true)}
+    onmouseleave={() => (isHovered = false)}
+    onfocusin={() => (isHovered = true)}
+    onfocusout={() => (isHovered = false)}
     class="group fixed right-6 bottom-6 z-40 flex items-center justify-end focus:outline-none"
   >
-    <!-- The now-playing card. Slides out to the left on hover, and is not
-         focusable -- it is a label for the disc, not a second control. -->
+    <!-- Floating Info Card -->
     <div
       aria-hidden="true"
       data-testid="resume-disc-card"
-      class="pointer-events-none mr-3 w-56 origin-right scale-95 opacity-0 transition-all duration-200 group-hover:scale-100 group-hover:opacity-100 group-focus-visible:scale-100 group-focus-visible:opacity-100 motion-reduce:transition-none"
+      class="pointer-events-none mr-3 w-60 origin-right translate-x-2 scale-95 opacity-0 transition-all duration-300 ease-out group-hover:translate-x-0 group-hover:scale-100 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:scale-100 group-focus-visible:opacity-100 motion-reduce:transition-none"
     >
-      <div class="rounded-xl border border-border-subtle bg-surface-raised p-3 shadow-xl">
-        <p class="text-[10px] font-medium tracking-wide text-ink-faint uppercase">
-          Now playing
-        </p>
-        <p class="mt-1 line-clamp-2 text-sm font-semibold text-ink">{title}</p>
-        <p class="mt-0.5 text-xs text-ink-muted">
+      <div
+        class="rounded-2xl border border-border-subtle/80 bg-surface-raised/95 p-3.5 shadow-2xl backdrop-blur-md"
+      >
+        <div class="flex items-center justify-between gap-2">
+          <span class="flex items-center gap-1.5 text-[10px] font-bold tracking-wider text-accent uppercase">
+            <span class="relative flex h-2 w-2">
+              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-75"></span>
+              <span class="relative inline-flex h-2 w-2 rounded-full bg-accent"></span>
+            </span>
+            Continue Watching
+          </span>
+        </div>
+
+        <p class="mt-1.5 line-clamp-1 text-xs font-bold text-ink">{title}</p>
+        <p class="mt-0.5 text-[11px] font-medium text-ink-muted">
           {item.episode ? `Episode ${item.episode}` : "Not started"}
         </p>
-        <p class="mt-2 text-xs text-accent">Resume ›</p>
+
+        <!-- CTA Action Row -->
+        <div class="mt-2.5 flex items-center justify-between border-t border-border-subtle/50 pt-2 text-xs font-semibold text-accent">
+          <span>Play now</span>
+          <svg class="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </div>
       </div>
     </div>
 
-    <!-- The record. Cover art fills it; a ring and a centre hole sit on top so
-         it still reads as vinyl rather than a round thumbnail. -->
+    <!-- Vinyl Disc -->
     <span
-      class="relative block h-14 w-14 shrink-0 overflow-hidden rounded-full shadow-lg ring-1 ring-white/15 transition-transform duration-200 group-hover:scale-110 group-focus-visible:scale-110 motion-reduce:transition-none"
+      class="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-neutral-900 shadow-2xl ring-2 ring-white/10 transition-all duration-300 group-hover:scale-110 group-hover:ring-accent/50 group-focus-visible:scale-110 motion-reduce:transition-none"
     >
-      {#if item.anime.coverImage}
-        <img
-          src={item.anime.coverImage}
-          alt=""
-          class="h-full w-full animate-spin-record rounded-full object-cover motion-reduce:animate-none group-hover:animate-spin-record-fast group-focus-visible:animate-spin-record-fast"
-        />
-      {:else}
-        <!-- No cover: a plain disc is better than a broken image. -->
-        <span
-          class="block h-full w-full animate-spin-record rounded-full bg-surface-hover motion-reduce:animate-none group-hover:animate-spin-record-fast"
-        ></span>
-      {/if}
+      <!-- Spin Outer Ring & Cover Art -->
+      <span class="relative h-full w-full overflow-hidden rounded-full">
+        {#if item.anime.coverImage}
+          <img
+            src={item.anime.coverImage}
+            alt=""
+            style="transform: rotate({rotation}deg);"
+            class="h-full w-full object-cover opacity-85 transition-opacity group-hover:opacity-100"
+          />
+        {:else}
+          <span
+            style="transform: rotate({rotation}deg);"
+            class="block h-full w-full bg-neutral-800"
+          ></span>
+        {/if}
 
-      <!-- Vinyl sheen + centre hole, over the art and not spinning with it. -->
+        <!-- Concentric Vinyl Grooves Effect -->
+        <span
+          aria-hidden="true"
+          class="pointer-events-none absolute inset-0 rounded-full border border-white/5 bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))] from-transparent via-black/20 to-black/60"
+        ></span>
+      </span>
+
+      <!-- Gloss Reflection Overlay -->
       <span
         aria-hidden="true"
-        class="pointer-events-none absolute inset-0 rounded-full"
-        style="background: radial-gradient(circle, transparent 30%, rgba(0,0,0,0.35) 100%);"
+        class="pointer-events-none absolute inset-0 rounded-full bg-gradient-to-tr from-transparent via-white/15 to-transparent"
       ></span>
+
+      <!-- Vinyl Center Hole & Label Hub -->
       <span
         aria-hidden="true"
-        class="pointer-events-none absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-surface ring-2 ring-white/20"
-      ></span>
+        class="pointer-events-none absolute top-1/2 left-1/2 flex h-4 w-4 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-accent ring-2 ring-neutral-950/80 shadow-inner"
+      >
+        <span class="h-1.5 w-1.5 rounded-full bg-neutral-950"></span>
+      </span>
     </span>
   </a>
 {/if}

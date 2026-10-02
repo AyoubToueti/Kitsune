@@ -79,7 +79,7 @@
 
     <!-- The body reserves a 60px gutter on the right for the nav buttons, so
          they never overlap the cards. -->
-    <div class="relative pr-[60px]">
+    <div class="relative pr-15">
       <!-- `no-scrollbar` + `snap-strip`: the rail hides its scrollbar and rests
            on whole slides, so a slide is never left half cut off. -->
       <ul

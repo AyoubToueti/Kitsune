@@ -32,7 +32,7 @@
     bind:this={thumb}
     role="presentation"
     data-testid="thumb"
-    class="relative aspect-[2/3] w-16 shrink-0 overflow-hidden rounded bg-surface-hover"
+    class="relative aspect-2/3 w-16 shrink-0 overflow-hidden rounded bg-surface-hover"
     onmouseenter={hover.show}
     onmouseleave={hover.scheduleClose}
   >
