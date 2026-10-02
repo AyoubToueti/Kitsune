@@ -49,7 +49,7 @@
   <!-- Artwork Container -->
   <div
     data-testid="poster"
-    class="relative aspect-[2/3] w-full overflow-hidden bg-surface-hover"
+    class="relative aspect-2/3 w-full overflow-hidden bg-surface-hover"
   >
     <a
       href={`/anime/${anime.id}`}
