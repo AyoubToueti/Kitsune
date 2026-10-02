@@ -703,6 +703,7 @@ impl AniListProvider {
             query ($mediaId: Int) {
               Media(id: $mediaId) {
                 mediaListEntry {
+                  id
                   status
                   progress
                 }
@@ -1004,6 +1005,11 @@ pub struct ContinueWatchingItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListEntry {
+    /// The list entry's own id, needed to remove it.
+    ///
+    /// Distinct from the media id: `DeleteMediaListEntry` identifies the entry,
+    /// and a media id would target the wrong thing.
+    pub id: i64,
     pub status: ListStatus,
     /// Episodes watched so far.
     pub progress: u32,
@@ -1045,6 +1051,8 @@ struct ListEntryMedia {
 
 #[derive(Deserialize, Default)]
 struct ListEntryWire {
+    #[serde(default)]
+    id: Option<i64>,
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
@@ -1130,6 +1138,9 @@ fn map_list_entry(wire: ListEntryWire) -> Option<ListEntry> {
     let status = ListStatus::from_literal(wire.status.as_deref()?)?;
 
     Some(ListEntry {
+        // Without an id the entry cannot be removed, so its absence drops the
+        // whole entry rather than surfacing a row whose Remove would fail.
+        id: wire.id?,
         status,
         // A missing progress is zero rather than an error: AniList omits it for
         // an entry that has never been watched.
@@ -2963,7 +2974,7 @@ mod tests {
     #[tokio::test]
     async fn a_list_entry_is_read_back() {
         let response = serde_json::json!({
-            "data": { "Media": { "mediaListEntry": { "status": "COMPLETED", "progress": 26 } } }
+            "data": { "Media": { "mediaListEntry": { "id": 77, "status": "COMPLETED", "progress": 26 } } }
         });
         let (_server, provider) = provider_with(response, 200).await;
 
@@ -2973,6 +2984,7 @@ mod tests {
             .expect("read should succeed")
             .expect("an entry should be present");
 
+        assert_eq!(entry.id, 77);
         assert_eq!(entry.status, ListStatus::Completed);
         assert_eq!(entry.progress, 26);
     }
@@ -2993,7 +3005,7 @@ mod tests {
     #[tokio::test]
     async fn a_missing_progress_reads_as_zero() {
         let response = serde_json::json!({
-            "data": { "Media": { "mediaListEntry": { "status": "PLANNING" } } }
+            "data": { "Media": { "mediaListEntry": { "id": 78, "status": "PLANNING" } } }
         });
         let (_server, provider) = provider_with(response, 200).await;
 
@@ -3021,7 +3033,7 @@ mod tests {
     #[tokio::test]
     async fn a_rewatch_folds_into_current() {
         let response = serde_json::json!({
-            "data": { "Media": { "mediaListEntry": { "status": "REWATCHING", "progress": 4 } } }
+            "data": { "Media": { "mediaListEntry": { "id": 79, "status": "REWATCHING", "progress": 4 } } }
         });
         let (_server, provider) = provider_with(response, 200).await;
 

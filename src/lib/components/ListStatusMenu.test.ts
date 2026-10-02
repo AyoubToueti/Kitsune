@@ -5,6 +5,7 @@ const authStatusMock = vi.hoisted(() => vi.fn());
 const beginLoginMock = vi.hoisted(() => vi.fn());
 const getListEntryMock = vi.hoisted(() => vi.fn());
 const setListEntryMock = vi.hoisted(() => vi.fn());
+const deleteListEntryMock = vi.hoisted(() => vi.fn());
 const onAuthChangedMock = vi.hoisted(() => vi.fn());
 const openUrlMock = vi.hoisted(() => vi.fn());
 
@@ -13,6 +14,7 @@ vi.mock("$lib/api/auth", () => ({
   beginLogin: beginLoginMock,
   getListEntry: getListEntryMock,
   setListEntry: setListEntryMock,
+  deleteListEntry: deleteListEntryMock,
   onAuthChanged: onAuthChangedMock,
 }));
 
@@ -25,6 +27,7 @@ beforeEach(() => {
   beginLoginMock.mockReset().mockResolvedValue("https://anilist.co/authorize");
   getListEntryMock.mockReset().mockResolvedValue(null);
   setListEntryMock.mockReset().mockResolvedValue(undefined);
+  deleteListEntryMock.mockReset().mockResolvedValue(undefined);
   // Returns an unlisten; never resolves with a listener the component keeps.
   onAuthChangedMock.mockReset().mockResolvedValue(() => {});
   openUrlMock.mockReset().mockResolvedValue(undefined);
@@ -69,7 +72,7 @@ describe("ListStatusMenu", () => {
     });
 
     it("shows the current status", async () => {
-      getListEntryMock.mockResolvedValue({ status: "current", progress: 3 });
+      getListEntryMock.mockResolvedValue({ id: 55, status: "current", progress: 3 });
 
       render(ListStatusMenu, { props: { mediaId: 7 } });
 
@@ -138,6 +141,47 @@ describe("ListStatusMenu", () => {
 
       await waitFor(() =>
         expect(screen.queryByTestId("list-status-menu")).toBeNull(),
+      );
+    });
+
+    it("offers remove only when the work is on the list", async () => {
+      render(ListStatusMenu, { props: { mediaId: 7 } });
+      await screen.findByTestId("list-status-button");
+
+      await fireEvent.click(screen.getByTestId("list-status-button"));
+      // Not on the list: nothing to remove.
+      expect(screen.queryByTestId("list-status-remove")).toBeNull();
+    });
+
+    it("removes the entry and resets the label", async () => {
+      getListEntryMock.mockResolvedValue({ id: 55, status: "current", progress: 3 });
+
+      render(ListStatusMenu, { props: { mediaId: 7 } });
+      await screen.findByTestId("list-status-button");
+
+      await fireEvent.click(screen.getByTestId("list-status-button"));
+      await fireEvent.click(screen.getByTestId("list-status-remove"));
+
+      await waitFor(() => expect(deleteListEntryMock).toHaveBeenCalledWith(55));
+      expect(await screen.findByTestId("list-status-button")).toHaveTextContent(
+        "Add to list",
+      );
+    });
+
+    it("restores the entry when the remove fails", async () => {
+      getListEntryMock.mockResolvedValue({ id: 55, status: "current", progress: 3 });
+      deleteListEntryMock.mockRejectedValue(new Error("offline"));
+
+      render(ListStatusMenu, { props: { mediaId: 7 } });
+      await screen.findByTestId("list-status-button");
+
+      await fireEvent.click(screen.getByTestId("list-status-button"));
+      await fireEvent.click(screen.getByTestId("list-status-remove"));
+
+      expect(await screen.findByTestId("list-status-error")).toBeInTheDocument();
+      // Back to the previous status: the optimistic clear is undone.
+      expect(screen.getByTestId("list-status-button")).toHaveTextContent(
+        "Watching",
       );
     });
   });

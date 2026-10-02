@@ -5,10 +5,12 @@
   import {
     authStatus,
     beginLogin,
+    deleteListEntry,
     getListEntry,
     onAuthChanged,
     setListEntry,
   } from "$lib/api/auth";
+  import { chooseMenuAlign, MENU_WIDTH } from "$lib/menu-position";
   import type { ListStatus } from "$lib/types";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -44,6 +46,19 @@
   let open = $state(false);
   let busy = $state(false);
   let container = $state<HTMLElement | null>(null);
+  let button = $state<HTMLButtonElement | null>(null);
+  /** The list entry's id, or `null` when the work is not on the reader's list. */
+  let entryId = $state<number | null>(null);
+
+  /**
+   * Inline position for the open menu.
+   *
+   * The menu is `position: fixed`, not absolute: the detail page's hero section
+   * is `overflow-hidden` (for its rounded corners), which would clip an absolute
+   * menu to the hero. Fixed escapes that, so the coordinates are measured from
+   * the trigger on open (and on scroll/resize) rather than left to CSS.
+   */
+  let menuStyle = $state("");
 
   /** A short-lived message when a write fails, so a click is never silent. */
   let error = $state<string | null>(null);
@@ -55,10 +70,12 @@
     try {
       const entry = await getListEntry(mediaId);
       status = entry?.status ?? null;
+      entryId = entry?.id ?? null;
     } catch {
       // A failed read is not worth an error message: it only means the menu
       // opens showing no selection, and the write path reports its own errors.
       status = null;
+      entryId = null;
     }
   }
 
@@ -82,7 +99,10 @@
     onAuthChanged((nowSignedIn) => {
       signedIn = nowSignedIn;
       if (nowSignedIn) void loadEntry();
-      else status = null;
+      else {
+        status = null;
+        entryId = null;
+      }
     })
       .then((fn) => {
         if (cancelled) fn();
@@ -108,6 +128,55 @@
     const target = event.target as Node | null;
     if (target !== null && !container.contains(target)) {
       open = false;
+    }
+  }
+
+  /**
+   * Measure the trigger and place the fixed menu just under it.
+   *
+   * Re-run on open and whenever the page scrolls or resizes while open, since a
+   * fixed element does not follow the button. Flips to right-alignment near the
+   * viewport edge via the shared `chooseMenuAlign` rule.
+   */
+  function positionMenu() {
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    const align = chooseMenuAlign(rect.left, window.innerWidth, MENU_WIDTH);
+    const left = align === "start" ? rect.left : rect.right - MENU_WIDTH;
+    menuStyle = `top: ${rect.bottom + 8}px; left: ${left}px;`;
+  }
+
+  /** Open or close, placing the fixed menu under the trigger when opening. */
+  function toggle() {
+    if (open) {
+      open = false;
+      return;
+    }
+    positionMenu();
+    open = true;
+  }
+
+  /** Remove the work from the reader's list, clearing the status optimistically. */
+  async function remove() {
+    open = false;
+    error = null;
+    if (busy || entryId === null) return;
+
+    const previousStatus = status;
+    const previousId = entryId;
+    // Off the list: the button drops back to "Add to list".
+    status = null;
+    entryId = null;
+    busy = true;
+
+    try {
+      await deleteListEntry(previousId);
+    } catch {
+      status = previousStatus;
+      entryId = previousId;
+      error = "Could not remove from your list.";
+    } finally {
+      busy = false;
     }
   }
 
@@ -153,7 +222,11 @@
     "flex shrink-0 items-center gap-2 rounded-full border border-border-subtle bg-surface-hover px-4 py-2 text-sm text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60";
 </script>
 
-<svelte:window onclick={onWindowClick} />
+<svelte:window
+  onclick={onWindowClick}
+  onscroll={() => open && positionMenu()}
+  onresize={() => open && positionMenu()}
+/>
 
 <div bind:this={container} class="relative inline-block">
   {#if signedIn === false}
@@ -170,12 +243,13 @@
     </button>
   {:else if signedIn === true}
     <button
+      bind:this={button}
       type="button"
       data-testid="list-status-button"
       aria-expanded={open}
       aria-controls="list-status-menu"
       disabled={busy}
-      onclick={() => (open = !open)}
+      onclick={toggle}
       class={buttonClass}
     >
       <span aria-hidden="true">＋</span>
@@ -183,11 +257,14 @@
     </button>
 
     {#if open}
-      <!-- z-30 clears the navbar, matching FilterBar's dropdowns. -->
+      <!-- Fixed, not absolute: the hero section is `overflow-hidden` and would
+           clip an absolute menu. Positioned from the measured trigger rect.
+           z-40 clears the navbar, matching Select's listbox. -->
       <div
         id="list-status-menu"
         data-testid="list-status-menu"
-        class="absolute left-0 top-full z-30 mt-2 w-48"
+        style={menuStyle}
+        class="fixed z-40 w-44"
       >
         <ul class="rounded-xl bg-surface py-2 shadow-xl">
           {#each STATUSES as { value, label } (value)}
@@ -206,6 +283,19 @@
               </button>
             </li>
           {/each}
+
+          {#if entryId !== null}
+            <li class="mt-1 border-t border-border-subtle pt-1">
+              <button
+                type="button"
+                data-testid="list-status-remove"
+                onclick={remove}
+                class="block w-full px-4 py-1.5 text-left text-sm text-red-400 transition-colors hover:bg-surface-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Remove from list
+              </button>
+            </li>
+          {/if}
         </ul>
       </div>
     {/if}

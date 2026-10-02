@@ -248,6 +248,8 @@ export type ListStatus =
 
 /** The reader's own entry for a work, when it has one. */
 export interface ListEntry {
+  /** The list entry's own id, needed to remove it. */
+  id: number;
   status: ListStatus;
   /** Episodes watched so far. */
   progress: number;
