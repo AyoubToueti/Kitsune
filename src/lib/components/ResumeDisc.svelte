@@ -134,21 +134,15 @@
 </script>
 
 {#if visible && item}
-  <a
-    href={`/anime/${item.anime.id}?ep=${resumeIndex(item.episode ?? 0)}`}
-    data-testid="resume-disc"
-    aria-label={`Resume ${title}${item.episode ? ` at episode ${item.episode}` : ""}`}
-    onmouseenter={() => (isHovered = true)}
-    onmouseleave={() => (isHovered = false)}
-    onfocusin={() => (isHovered = true)}
-    onfocusout={() => (isHovered = false)}
-    class="group fixed right-6 bottom-6 z-40 flex items-center justify-end focus:outline-none"
+  <div
+    class="fixed right-6 bottom-6 z-40 flex items-center justify-end"
   >
-    <!-- Floating Info Card -->
+    <!-- Floating Info Card (Uses reactive class toggles driven ONLY by disc interaction) -->
     <div
       aria-hidden="true"
       data-testid="resume-disc-card"
-      class="pointer-events-none mr-3 w-60 origin-right translate-x-2 scale-95 opacity-0 transition-all duration-300 ease-out group-hover:translate-x-0 group-hover:scale-100 group-hover:opacity-100 group-focus-visible:translate-x-0 group-focus-visible:scale-100 group-focus-visible:opacity-100 motion-reduce:transition-none"
+      class="pointer-events-none mr-3 w-60 origin-right transition-all duration-300 ease-out motion-reduce:transition-none
+        {isHovered ? 'translate-x-0 scale-100 opacity-100' : 'translate-x-2 scale-95 opacity-0'}"
     >
       <div
         class="rounded-2xl border border-border-subtle/80 bg-surface-raised/95 p-3.5 shadow-2xl backdrop-blur-md"
@@ -171,16 +165,27 @@
         <!-- CTA Action Row -->
         <div class="mt-2.5 flex items-center justify-between border-t border-border-subtle/50 pt-2 text-xs font-semibold text-accent">
           <span>Play now</span>
-          <svg class="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" viewBox="0 0 24 24" fill="currentColor">
+          <svg 
+            class="h-3.5 w-3.5 transition-transform {isHovered ? 'translate-x-0.5' : ''}" 
+            viewBox="0 0 24 24" 
+            fill="currentColor"
+          >
             <path d="M8 5v14l11-7z" />
           </svg>
         </div>
       </div>
     </div>
 
-    <!-- Vinyl Disc -->
-    <span
-      class="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-neutral-900 shadow-2xl ring-2 ring-white/10 transition-all duration-300 group-hover:scale-110 group-hover:ring-accent/50 group-focus-visible:scale-110 motion-reduce:transition-none"
+    <!-- Vinyl Disc (The exclusive pointer event target) -->
+    <a
+      href={`/anime/${item.anime.id}?ep=${resumeIndex(item.episode ?? 0)}`}
+      data-testid="resume-disc"
+      aria-label={`Resume ${title}${item.episode ? ` at episode ${item.episode}` : ""}`}
+      onmouseenter={() => (isHovered = true)}
+      onmouseleave={() => (isHovered = false)}
+      onfocusin={() => (isHovered = true)}
+      onfocusout={() => (isHovered = false)}
+      class="relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-neutral-900 shadow-2xl ring-2 ring-white/10 transition-all duration-300 focus:outline-none {isHovered ? 'scale-110 ring-accent/50' : ''}"
     >
       <!-- Spin Outer Ring & Cover Art -->
       <span class="relative h-full w-full overflow-hidden rounded-full">
@@ -189,7 +194,7 @@
             src={item.anime.coverImage}
             alt=""
             style="transform: rotate({rotation}deg);"
-            class="h-full w-full object-cover opacity-85 transition-opacity group-hover:opacity-100"
+            class="h-full w-full object-cover transition-opacity {isHovered ? 'opacity-100' : 'opacity-85'}"
           />
         {:else}
           <span
@@ -218,6 +223,6 @@
       >
         <span class="h-1.5 w-1.5 rounded-full bg-neutral-950"></span>
       </span>
-    </span>
-  </a>
+    </a>
+  </div>
 {/if}

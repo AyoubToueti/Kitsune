@@ -19,24 +19,14 @@
   import ListStatusMenu from "$lib/components/ListStatusMenu.svelte";
   import Recommendations from "$lib/components/Recommendations.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
-  import StreamingLinks from "$lib/components/StreamingLinks.svelte";
   import TrailerCard from "$lib/components/TrailerCard.svelte";
 
-  // Reactive: navigating from /anime/1 to /anime/2 does NOT remount the
-  // component in SvelteKit, so reading the param via $derived catches the
-  // change and $effect re-fetches.
+  // Reactive ID handling for SvelteKit page switches
   const id = $derived(Number(page.params.id));
 
   let anime = $state<Anime | null>(null);
   let loading = $state(true);
   let error = $state<string | null>(null);
-  /**
-   * The episode catalogue, or `null` while it is being fetched.
-   *
-   * The two empty-ish states need different UI: `null` means "not known yet" and
-   * renders a skeleton, while `[]` means "known, and there is nothing" and falls
-   * back to the synthesised list. A plain empty array would conflate them.
-   */
   let episodeInfo = $state<EpisodeInfo[] | null>(null);
 
   $effect(() => {
@@ -66,19 +56,9 @@
     };
   });
 
-  /**
-   * Fetch the episode catalogue once the work is known.
-   *
-   * Keyed on `idMal`, so it fires when the title changes rather than on every
-   * render. This is the episode list's source, not a bonus: a failure still falls
-   * back to the synthesised list rather than showing an error, because a work with
-   * no reachable catalogue is exactly the case synthesis exists for.
-   */
   $effect(() => {
     const malId = anime?.idMal;
 
-    // No MAL link means there is nothing to ask for, so fall straight through to
-    // synthesis instead of waiting on a request that will never be made.
     if (malId === undefined) {
       episodeInfo = [];
       return;
@@ -109,43 +89,17 @@
     anime ? (anime.bannerImage ?? anime.coverImage) : null,
   );
 
-  /**
-   * The episodes to show: the Jikan catalogue when it has entries, otherwise a
-   * synthesised 1..episodeCount stand-in using the cover as artwork, so a work
-   * with no MAL link is still navigable.
-   */
   const episodes = $derived(
     anime ? episodesFor(anime, episodeInfo ?? []) : [],
   );
 
-  /**
-   * The episode whose watch modal is open, by list index, or `undefined`.
-   *
-   * Opening the modal instead of navigating means the reader keeps the page
-   * they were browsing while they pick a release and start playback.
-   */
   let modalEpisode = $state<number | undefined>(undefined);
 
-  /**
-   * Open the watch modal for an episode.
-   *
-   * A named function rather than an inline arrow: the template narrows `anime`
-   * to non-null, but that narrowing does not survive into a callback, so the
-   * guard has to live inside the body.
-   */
   function watchEpisode(index: number): void {
     if (!anime) return;
     modalEpisode = index;
   }
 
-  /**
-   * The episode index requested by `?ep=`, when present and sane.
-   *
-   * Resume links (the Continue Watching row and the floating disc) point here
-   * with the SAME 0-based index the watch page uses, so a click lands on the
-   * detail page with the modal already open on the right episode. A nonsense
-   * value is treated as "no request" rather than clamped to an arbitrary one.
-   */
   const requestedEpisode = $derived.by(() => {
     const raw = page.url.searchParams.get("ep");
     if (raw === null) return undefined;
@@ -153,19 +107,12 @@
     return Number.isInteger(value) && value >= 0 ? value : undefined;
   });
 
-  // Open the modal for a requested episode once the list is known, so an
-  // out-of-range value is ignored rather than shown as a phantom selection.
   $effect(() => {
     const wanted = requestedEpisode;
     if (wanted === undefined || wanted >= episodes.length) return;
     modalEpisode = wanted;
   });
 
-  // Open the modal when the now-playing disc asks. Separate from the `?ep=`
-  // effect above because a request must work even when the URL does not change
-  // -- a click from this very page, where `?ep=` is already set. The request is
-  // only consumed once this page's work matches and the list is known, so one
-  // that arrives before load is not lost.
   $effect(() => {
     openRequested();
     const playing = nowPlaying();
@@ -178,92 +125,106 @@
 {#if loading}
   <DetailPageSkeleton />
 {:else if error}
-  <div class="py-16 text-center">
-    <p class="text-ink">Could not load details.</p>
-    <p class="mt-2 text-sm text-ink-faint">{error}</p>
+  <div class="my-12 flex flex-col items-center justify-center rounded-2xl border border-border-subtle bg-surface-raised/40 py-16 px-4 text-center">
+    <div class="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-accent/10 text-accent">
+      <svg class="h-6 w-6 stroke-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+    </div>
+    <h3 class="text-base font-bold text-ink">Could not load anime details</h3>
+    <p class="mt-1 max-w-sm text-xs text-ink-faint">{error}</p>
   </div>
 {:else if anime === null}
-  <div class="py-16 text-center">
-    <p class="text-ink">Anime not found.</p>
+  <div class="my-12 flex flex-col items-center justify-center rounded-2xl border border-border-subtle bg-surface-raised/40 py-16 text-center">
+    <p class="text-base font-bold text-ink">Anime not found.</p>
+    <p class="mt-1 text-xs text-ink-muted">The requested title does not exist or has been removed.</p>
   </div>
 {:else}
-  <!-- Hero section: banner backdrop + cover + title + metadata + synopsis -->
-  <!-- `overflow-hidden` lives on the backdrop layer, NOT the section. On the
-       section it would also clip the list-status dropdown, which is an
-       absolutely-positioned child; on an inner layer it still clips the image
-       to the rounded corners and leaves the menu free. -->
-  <section class="relative rounded-xl border border-border-subtle">
-    <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-xl">
+  <!-- Hero banner -->
+  <section class="group/hero relative overflow-hidden rounded-2xl border border-border-subtle/80 bg-surface shadow-lg">
+    <!-- Backdrop Background Image Layer -->
+    <div class="pointer-events-none absolute inset-0">
       {#if backdrop}
         <img
           src={backdrop}
           alt=""
-          class="absolute inset-0 h-full w-full object-cover opacity-40"
+          class="h-full w-full object-cover opacity-25 filter blur-xs scale-105 transition-transform duration-700 group-hover/hero:scale-100"
         />
       {/if}
-      <div
-        class="absolute inset-0 bg-linear-to-r from-surface via-surface/85 to-surface/40"
-      ></div>
+      <!-- Gradient Overlays for smooth readability -->
+      <div class="absolute inset-0 bg-gradient-to-t from-surface via-surface/80 to-surface/30"></div>
+      <div class="absolute inset-0 bg-gradient-to-r from-surface via-surface/85 to-transparent"></div>
     </div>
 
-    <div class="relative flex gap-5 p-6">
+    <!-- Content Area -->
+    <div class="relative flex flex-col gap-6 p-6 sm:p-8 md:flex-row md:items-start">
+      <!-- Poster Image -->
       {#if anime.coverImage}
-        <img
-          src={anime.coverImage}
-          alt=""
-          class="hidden w-32 shrink-0 rounded-lg object-cover sm:block"
-        />
+        <div class="relative shrink-0 self-center md:self-start">
+          <img
+            src={anime.coverImage}
+            alt={title ?? "Anime poster"}
+            class="w-40 sm:w-48 rounded-xl object-cover shadow-2xl ring-1 ring-white/10 transition-transform duration-300 hover:scale-[1.02]"
+          />
+        </div>
       {/if}
 
-      <div class="min-w-0">
-        <h1 class="text-2xl font-semibold tracking-tight sm:text-3xl">{title}</h1>
+      <!-- Main Info Block -->
+      <div class="flex min-w-0 flex-1 flex-col">
+        <!-- Title & Badges -->
+        <div>
+          <h1 class="text-2xl font-black tracking-tight text-ink sm:text-3xl lg:text-4xl">
+            {title}
+          </h1>
 
-        {#if (anime.genres ?? []).length}
-          <ul class="mt-2 flex flex-wrap gap-2">
-            {#each (anime.genres ?? []).slice(0, 6) as genre (genre)}
-              <!-- A link, not a label: a genre is a filter, and the pills are
-                   the shortest path to the rest of it. -->
-              <li>
-                <a
-                  href={genreHref(genre)}
-                  class="inline-block rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted transition-colors hover:bg-surface-raised hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                >
-                  {genre}
-                </a>
-              </li>
-            {/each}
-          </ul>
-        {/if}
+          <!-- Genres list -->
+          {#if (anime.genres ?? []).length}
+            <ul class="mt-3 flex flex-wrap gap-1.5">
+              {#each (anime.genres ?? []).slice(0, 6) as genre (genre)}
+                <li>
+                  <a
+                    href={genreHref(genre)}
+                    class="inline-flex items-center rounded-lg border border-border-subtle/60 bg-surface-raised/60 px-2.5 py-1 text-xs font-medium text-ink-muted backdrop-blur-md transition-all hover:border-accent/40 hover:bg-accent/10 hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    {genre}
+                  </a>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
 
-        <div class="mt-3">
+        <!-- Action Bar: Add/Edit List Status -->
+        <div class="mt-4 flex flex-wrap items-center gap-3 border-y border-border-subtle/50 py-3">
           <ListStatusMenu mediaId={anime.id} />
         </div>
 
+        <!-- Metadata Strip -->
         <div class="mt-3">
           <MetadataStrip {anime} />
         </div>
 
-        <div class="mt-3">
+        <!-- Synopsis Container -->
+        <div class="mt-4 text-xs sm:text-sm text-ink-muted">
           <Synopsis text={anime.description} />
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Episodes and relations share one row: the episode grid is the main
-       column, the relations a narrower sidebar beside it. They stack on narrow
-       screens, where a sidebar beside a grid would be too cramped. -->
+  <!-- Main Content Grid -->
   <div class="mt-8 grid gap-8 lg:grid-cols-[1fr_20rem]">
-    <div>
+    <!-- Left Column: Episodes List -->
+    <div class="min-w-0">
       {#if episodeInfo === null}
-        <!-- Waiting on the catalogue. A skeleton rather than the synthesised
-             list, so the grid does not visibly reshuffle when the real titles
-             land underneath it. -->
-        <Skeleton class="mb-3 h-6 w-24" />
-        <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {#each Array(8) as _, i (i)}
-            <Skeleton class="aspect-video w-full rounded-lg" />
-          {/each}
+        <!-- Loading Skeleton for Episodes -->
+        <div class="space-y-3">
+          <Skeleton class="h-6 w-32 rounded-md" />
+          <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {#each Array(8) as _, i (i)}
+              <Skeleton class="aspect-video w-full rounded-xl" />
+            {/each}
+          </div>
         </div>
       {:else if episodes.length > 0}
         <EpisodeList
@@ -273,22 +234,30 @@
           totalCount={anime.episodeCount}
         />
       {:else}
-        <!-- Neither a catalogue nor a count, so say so rather than render an
-             empty grid that reads as broken. -->
-        <p class="text-sm text-ink-faint">Episode information unavailable.</p>
+        <!-- Empty Episode State -->
+        <div class="flex flex-col items-center justify-center rounded-xl border border-border-subtle/60 bg-surface-raised/30 py-12 text-center">
+          <svg class="h-8 w-8 text-ink-faint mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+          <p class="text-sm font-semibold text-ink">Episode info unavailable</p>
+          <p class="text-xs text-ink-faint mt-0.5">No streaming or catalogue listings found for this title.</p>
+        </div>
       {/if}
     </div>
 
-      <aside>
+    <!-- Right Sidebar: Sticky Container for Trailer and Relations -->
+    <aside class="space-y-6 lg:sticky lg:top-6 lg:self-start">
       <TrailerCard trailer={anime.trailer} />
       <RelatedAnimeList relations={anime.relations ?? []} />
     </aside>
   </div>
 
+  <!-- Recommendations Carousel Section -->
+  <div class="mt-12 border-t border-border-subtle/60 pt-8">
+    <Recommendations recommendations={anime.recommendations ?? []} />
+  </div>
 
-  <!-- The in-place watch modal. Clicking an episode opens it rather than
-       navigating away, so the reader keeps their place on the page while they
-       pick a release and start playback. -->
+  <!-- In-place Episode Watch Modal -->
   <EpisodeWatchModal
     open={modalEpisode !== undefined}
     {anime}
@@ -296,12 +265,4 @@
     episodeIndex={modalEpisode}
     onClose={() => (modalEpisode = undefined)}
   />
-  <!-- Where to watch -->
-  <!-- <div class="mt-8">
-    <StreamingLinks episodes={anime.streamingEpisodes} />
-  </div> -->
-
-  <!-- Recommendations, full width below the grid: a poster row needs the room,
-       and it reads as "more like this" rather than part of the sidebar. -->
-  <Recommendations recommendations={anime.recommendations ?? []} />
 {/if}
