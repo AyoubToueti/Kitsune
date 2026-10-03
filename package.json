@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Anime streaming app built with Tauri and SvelteKit",
   "type": "module",
+  "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "vite dev",
     "test": "vitest run",
