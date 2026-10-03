@@ -144,7 +144,7 @@
       aria-label={label}
       tabindex="-1"
       data-testid="modal-dialog"
-      class="flex max-h-[min(88vh,820px)] w-full max-w-[920px] flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised shadow-2xl outline-none"
+      class="flex max-h-[min(88vh,820px)] w-full max-w-230 flex-col overflow-hidden rounded-2xl border border-border-subtle bg-surface-raised shadow-2xl outline-none"
       onkeydown={onKeydown}
     >
       {@render children()}

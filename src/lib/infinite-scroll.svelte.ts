@@ -169,8 +169,6 @@ export function createInfiniteScroll<T>(
     // Without untrack, `fetchNext` writing `loadedPage` would be read as a
     // dependency of this same effect and re-trigger it -- the loop that left
     // ScheduleWidget stuck on "Loading…".
-    const current = key();
-    void current;
 
     untrack(() => {
       // Bump BEFORE resetting: any request still in flight belongs to the

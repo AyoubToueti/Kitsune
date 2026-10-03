@@ -152,8 +152,8 @@
         />
       {/if}
       <!-- Gradient Overlays for smooth readability -->
-      <div class="absolute inset-0 bg-gradient-to-t from-surface via-surface/80 to-surface/30"></div>
-      <div class="absolute inset-0 bg-gradient-to-r from-surface via-surface/85 to-transparent"></div>
+      <div class="absolute inset-0 bg-linear-to-t from-surface via-surface/80 to-surface/30"></div>
+      <div class="absolute inset-0 bg-linear-to-r from-surface via-surface/85 to-transparent"></div>
     </div>
 
     <!-- Content Area -->
