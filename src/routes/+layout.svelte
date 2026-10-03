@@ -6,6 +6,7 @@
   import NowPlayingDisc from "$lib/components/NowPlayingDisc.svelte";
   import ResumeDisc from "$lib/components/ResumeDisc.svelte";
   import { getSettings } from "$lib/api/settings";
+  import { initErrorCapture } from "$lib/diagnostics";
   import { initTheme } from "$lib/theme.svelte";
 
   let { children } = $props();
@@ -13,6 +14,11 @@
   // Apply the stored appearance as early as possible. `initTheme` returns a
   // teardown for the OS-preference listener, kept for the app's life.
   onMount(() => {
+    // Forward uncaught webview errors to the backend log. Installed here, the
+    // one component mounted for every route, so it is in place before any page
+    // renders. Kept for the app's life.
+    const teardownErrors = initErrorCapture();
+
     let teardown: (() => void) | null = null;
     getSettings()
       .then((settings) => {
@@ -27,7 +33,10 @@
         teardown = initTheme("system");
       });
 
-    return () => teardown?.();
+    return () => {
+      teardown?.();
+      teardownErrors();
+    };
   });
 </script>
 

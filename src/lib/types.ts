@@ -544,6 +544,30 @@ export interface Settings {
 }
 
 /**
+ * A snapshot of the app process's resource usage.
+ *
+ * Mirrors the Rust `SystemStats`. `cpuPercent` is summed across cores, so it
+ * can exceed 100 on a multi-core machine. The system memory fields give the
+ * process figures context (how much of the machine is free).
+ */
+export interface SystemStats {
+  /** CPU usage of this process, summed across cores (may exceed 100). */
+  cpuPercent: number;
+  /** Resident set size: physical memory held, in bytes. */
+  rssBytes: number;
+  /** Virtual memory size, in bytes. */
+  virtualBytes: number;
+  /** Threads (tasks) in this process, including the main thread. */
+  threadCount: number;
+  /** Seconds this process has been running. */
+  uptimeSeconds: number;
+  /** Total physical memory on the machine, in bytes. */
+  systemTotalBytes: number;
+  /** Memory currently available on the machine, in bytes. */
+  systemAvailableBytes: number;
+}
+
+/**
  * A coarse health verdict for a release, from one probe.
  *
  * Mirrors the Rust `HealthBadge`. Three levels rather than a number because the

@@ -1,5 +1,18 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+
   import { page } from "$app/state";
+  import { logFrontendError } from "$lib/api/diagnostics";
+
+  // A route-level error is caught here rather than by `window.onerror`, so it
+  // would otherwise be shown to the reader but never recorded. Forward it to
+  // the backend log once on mount.
+  onMount(() => {
+    const message = page.error?.message;
+    if (message) {
+      void logFrontendError("error", `route error: ${message}`);
+    }
+  });
 </script>
 
 <!--
