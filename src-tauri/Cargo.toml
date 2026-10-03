@@ -35,6 +35,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Daily-rotating file sink, paired with the non-blocking writer so a slow disk
 # cannot stall the async runtime.
 tracing-appender = "0.2"
+# Reads this process's own CPU and resident memory for the diagnostics panel
+# and the periodic log line. Cross-platform: /proc on Linux, native APIs on
+# Windows and macOS.
+sysinfo = "0.39"
 reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
 async-trait = "0.1.92"
 tauri-plugin-dialog = "2.7.3"

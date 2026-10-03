@@ -78,6 +78,10 @@ pub fn run() {
             // reader stays signed in across restarts.
             .manage(auth::TokenStore::new())
             .manage(auth::LastPlayedStore::new())
+            // Behind a mutex because `sysinfo` needs two refreshes separated
+            // in time before CPU usage is meaningful, so the monitor carries
+            // state between polls.
+            .manage(std::sync::Mutex::new(diagnostics::SystemMonitor::new()))
             .setup(|app| {
                 use tauri::{Emitter, Manager};
                 // Imported once at the top of the closure: the trait provides
@@ -141,6 +145,11 @@ pub fn run() {
                     }
                 }
 
+                // Log CPU/RAM every 30s so a bug report can show what the app
+                // was doing. Spawned after the deep-link wiring so a failure to
+                // register the scheme is already on record.
+                diagnostics::task::spawn_periodic_log();
+
                 Ok(())
             })
             .invoke_handler(tauri::generate_handler![
@@ -186,6 +195,9 @@ pub fn run() {
                 // The reader's preferences.
                 settings::get_settings,
                 settings::set_settings,
+                // Diagnostics: resource usage and the log file location.
+                diagnostics::commands::get_system_stats,
+                diagnostics::commands::get_log_path,
             ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
