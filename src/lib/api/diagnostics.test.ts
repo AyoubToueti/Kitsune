@@ -16,9 +16,12 @@ import type { SystemStats } from "$lib/types";
 function stats(): SystemStats {
   return {
     cpuPercent: 12.5,
+    cpuPercentOfMachine: 3.1,
+    cpuCores: 4,
     rssBytes: 100_000_000,
     virtualBytes: 200_000_000,
     threadCount: 8,
+    processCount: 6,
     uptimeSeconds: 42,
     systemTotalBytes: 16_000_000_000,
     systemAvailableBytes: 8_000_000_000,

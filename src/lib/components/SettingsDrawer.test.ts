@@ -38,9 +38,12 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 vi.mock("$lib/api/diagnostics", () => ({
   getSystemStats: vi.fn(async () => ({
     cpuPercent: 1,
+    cpuPercentOfMachine: 1,
+    cpuCores: 1,
     rssBytes: 2,
     virtualBytes: 3,
     threadCount: 4,
+    processCount: 5,
     uptimeSeconds: 5,
     systemTotalBytes: 6,
     systemAvailableBytes: 7,

@@ -88,7 +88,10 @@
       >
         <dt class="text-[11px] text-ink-faint">CPU</dt>
         <dd class="text-sm text-ink" data-testid="diag-cpu">
-          {stats.cpuPercent.toFixed(1)}%
+          {stats.cpuPercentOfMachine.toFixed(1)}%
+          <span class="text-[11px] text-ink-faint" data-testid="diag-cpu-detail">
+            ({stats.cpuPercent.toFixed(0)}% of a core · {stats.cpuCores} cores)
+          </span>
         </dd>
       </div>
       <div
@@ -105,6 +108,14 @@
         <dt class="text-[11px] text-ink-faint">Threads</dt>
         <dd class="text-sm text-ink" data-testid="diag-threads">
           {stats.threadCount}
+        </dd>
+      </div>
+      <div
+        class="rounded-lg border border-border-subtle bg-surface-hover px-3 py-2"
+      >
+        <dt class="text-[11px] text-ink-faint">Processes</dt>
+        <dd class="text-sm text-ink" data-testid="diag-processes">
+          {stats.processCount}
         </dd>
       </div>
       <div

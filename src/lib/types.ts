@@ -551,15 +551,21 @@ export interface Settings {
  * process figures context (how much of the machine is free).
  */
 export interface SystemStats {
-  /** CPU usage of this process, summed across cores (may exceed 100). */
+  /** CPU usage of the process tree, summed across cores (may exceed 100). */
   cpuPercent: number;
-  /** Resident set size: physical memory held, in bytes. */
+  /** `cpuPercent` normalised to 0..100 across all cores, like a task manager. */
+  cpuPercentOfMachine: number;
+  /** Logical cores on the machine, for interpreting `cpuPercent`. */
+  cpuCores: number;
+  /** Resident set size of the process tree: physical memory held, in bytes. */
   rssBytes: number;
-  /** Virtual memory size, in bytes. */
+  /** Virtual memory size of the process tree, in bytes. */
   virtualBytes: number;
-  /** Threads (tasks) in this process, including the main thread. */
+  /** Threads (tasks) in the main process, including the main thread. */
   threadCount: number;
-  /** Seconds this process has been running. */
+  /** Processes in the tree: the main process plus its descendants. */
+  processCount: number;
+  /** Seconds the main process has been running. */
   uptimeSeconds: number;
   /** Total physical memory on the machine, in bytes. */
   systemTotalBytes: number;

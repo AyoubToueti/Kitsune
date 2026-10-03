@@ -20,9 +20,12 @@ import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
 function stats(overrides: Partial<SystemStats> = {}): SystemStats {
   return {
     cpuPercent: 12.5,
+    cpuPercentOfMachine: 3.1,
+    cpuCores: 4,
     rssBytes: 150_000_000,
     virtualBytes: 300_000_000,
     threadCount: 8,
+    processCount: 6,
     uptimeSeconds: 125,
     systemTotalBytes: 16_000_000_000,
     systemAvailableBytes: 8_000_000_000,
@@ -41,12 +44,17 @@ afterEach(() => {
 });
 
 describe("DiagnosticsPanel", () => {
-  it("renders the CPU, memory, threads and uptime", async () => {
+  it("renders the CPU, memory, threads, processes and uptime", async () => {
     render(DiagnosticsPanel);
 
-    expect(await screen.findByTestId("diag-cpu")).toHaveTextContent("12.5%");
+    // The headline CPU is the machine-wide figure; the per-core one is detail.
+    expect(await screen.findByTestId("diag-cpu")).toHaveTextContent("3.1%");
+    expect(screen.getByTestId("diag-cpu-detail")).toHaveTextContent(
+      "13% of a core · 4 cores",
+    );
     expect(screen.getByTestId("diag-memory")).toHaveTextContent("143 MB");
     expect(screen.getByTestId("diag-threads")).toHaveTextContent("8");
+    expect(screen.getByTestId("diag-processes")).toHaveTextContent("6");
     // 125 seconds is "2m 5s".
     expect(screen.getByTestId("diag-uptime")).toHaveTextContent("2m 5s");
   });
