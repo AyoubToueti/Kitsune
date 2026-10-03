@@ -1,4 +1,3 @@
-
 # Kitsune
 
 A desktop anime streaming app. Kitsune browses and searches anime metadata
@@ -9,6 +8,38 @@ them directly from torrents — without leaving the app.
 Built with [Tauri 2](https://v2.tauri.app/) + [SvelteKit](https://svelte.dev/docs/kit)
 + [Svelte 5](https://svelte.dev/) + TypeScript, styled with
 [Tailwind CSS 4](https://tailwindcss.com/).
+
+## Install
+
+Download the latest installer from the
+[Releases page](https://github.com/AyoubToueti/Kitsune/releases/latest).
+
+### Linux
+
+Every release ships a portable AppImage, a Debian/Ubuntu `.deb`, and a
+Fedora/openSUSE `.rpm`.
+
+    # AppImage — runs on any distro
+    chmod +x Kitsune_*_amd64.AppImage
+    ./Kitsune_*_amd64.AppImage
+
+    # Debian / Ubuntu
+    sudo apt install ./kitsune_*_amd64.deb
+
+    # Fedora / openSUSE
+    sudo dnf install ./kitsune-*.x86_64.rpm
+
+> The AppImage needs FUSE 2 to run. On newer distros where `libfuse2` is not
+> installed, either install it (`libfuse2t64` on Ubuntu 24.04+) or run the
+> AppImage with `--appimage-extract-and-run`.
+
+Playback uses the system GStreamer stack, and the external-player handoff uses
+`mpv`. Install them through your distro if they are missing.
+
+### Windows
+
+Run the `Kitsune_*_x64-setup.exe` (or the `.msi`) from the Releases page.
+WebView2 is bundled with Windows 10 and later, so no extra runtime is needed.
 
 ## Features
 
@@ -30,8 +61,8 @@ Built with [Tauri 2](https://v2.tauri.app/) + [SvelteKit](https://svelte.dev/doc
 
 ## Screenshots
 
-<!-- Drop PNGs into docs/screenshots/ using the filenames below, then these
-     will render. Suggested width: 1280px (the default window size). -->
+Drop PNGs into `docs/screenshots/` using the filenames below and they will
+render. Suggested width: 1280px (the default window size).
 
 | Home | Browse & filter |
 | :--: | :-------------: |
@@ -41,28 +72,26 @@ Built with [Tauri 2](https://v2.tauri.app/) + [SvelteKit](https://svelte.dev/doc
 | :---------: | :---: |
 | ![Detail page](docs/screenshots/detail.png) | ![Watch](docs/screenshots/watch.png) |
 
-| List page | settings |
-| :---------: | :---: |
-| ![Detail page](docs/screenshots/list.png) | ![Watch](docs/screenshots/settings.png) |
+| List page | Settings |
+| :-------: | :------: |
+| ![List page](docs/screenshots/list.png) | ![Settings](docs/screenshots/settings.png) |
 
 ## Project structure
 
-```
-src/                 SvelteKit frontend
-  lib/               pure logic + Svelte components (each unit is tested)
-  routes/            app routes: home, anime, filter, list, search, top, watch
-  test/              Vitest setup and SvelteKit virtual-module stubs
-src-tauri/           Rust backend
-  src/
-    commands.rs      IPC surface exposed to the frontend
-    providers/       AniList + Jikan metadata providers
-    indexer/         torrent search: Nyaa transport + Sonarr-derived parsing/ranking
-    torrent/         librqbit session management
-    player/          playback + player state
-    auth/            AniList token + deep-link handling
-    settings/        persisted settings store
-  tests/             `cargo test` integration tests (wiremock for HTTP)
-```
+    src/                 SvelteKit frontend
+      lib/               pure logic + Svelte components (each unit is tested)
+      routes/            app routes: home, anime, filter, list, search, top, watch
+      test/              Vitest setup and SvelteKit virtual-module stubs
+    src-tauri/           Rust backend
+      src/
+        commands.rs      IPC surface exposed to the frontend
+        providers/       AniList + Jikan metadata providers
+        indexer/         torrent search: Nyaa transport + Sonarr-derived parsing/ranking
+        torrent/         librqbit session management
+        player/          playback + player state
+        auth/            AniList token + deep-link handling
+        settings/        persisted settings store
+      tests/             `cargo test` integration tests (wiremock for HTTP)
 
 ## Getting started
 
@@ -120,6 +149,24 @@ Type-check the frontend:
 ```sh
 pnpm check
 ```
+
+## Releasing
+
+The app version lives in four files: `src-tauri/tauri.conf.json` (the source of
+truth), `package.json`, `src-tauri/Cargo.toml`, and the `kitsune` entry in
+`src-tauri/Cargo.lock`. Keep them in lockstep with:
+
+    pnpm version:sync 0.2.0     # set every file to 0.2.0
+    pnpm version:sync           # or propagate tauri.conf.json's version
+
+Then commit, tag, and push — the tag triggers the release workflow:
+
+    git commit -am "release: v0.2.0"
+    git tag v0.2.0
+    git push origin main --tags
+
+The tag **must** match the version (`tagName: v__VERSION__` is filled from
+`tauri.conf.json`).
 
 ## Credits
 

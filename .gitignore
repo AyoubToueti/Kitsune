@@ -42,4 +42,6 @@ Thumbs.db
 *.swp
 *~
 .*
+!.github/
+!.gitignore
 Sonarr*
