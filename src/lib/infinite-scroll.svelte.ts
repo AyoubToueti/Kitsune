@@ -165,11 +165,17 @@ export function createInfiniteScroll<T>(
   }
 
   $effect(() => {
-    // Read the key so a new query re-runs this, then untrack everything else.
-    // Without untrack, `fetchNext` writing `loadedPage` would be read as a
-    // dependency of this same effect and re-trigger it -- the loop that left
-    // ScheduleWidget stuck on "Loading…".
+    // Read the key so a new query re-runs this effect, then untrack everything
+    // else. This read is LOAD-BEARING, not leftover: it is the effect's only
+    // reactive dependency. Removing it (as a "unused variable" tidy-up once
+    // did) makes the effect run exactly once, so a filter or search change
+    // never resets or refetches the list.
+    void key();
 
+    // Everything else is untracked: `fetchNext` writes `loadedPage` and
+    // `items`, which would otherwise be read as dependencies of this same
+    // effect and re-trigger it -- the loop that left ScheduleWidget stuck on
+    // "Loading…".
     untrack(() => {
       // Bump BEFORE resetting: any request still in flight belongs to the
       // previous key and must not apply when it lands.
