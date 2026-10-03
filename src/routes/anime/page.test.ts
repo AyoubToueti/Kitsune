@@ -180,9 +180,10 @@ describe("detail page", () => {
       await screen.findByRole("heading", { name: "One Piece" }),
     ).toBeInTheDocument();
     // No episode data at all: the page still renders rather than hanging, and
-    // says so instead of showing an empty grid.
+    // says so instead of showing an empty grid. The copy was shortened in the
+    // detail-page redesign to "Episode info unavailable".
     expect(
-      screen.getByText(/episode information unavailable/i),
+      screen.getByText(/episode info unavailable/i),
     ).toBeInTheDocument();
   });
 

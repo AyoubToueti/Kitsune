@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/svelte";
+import { render, screen, waitFor, fireEvent } from "@testing-library/svelte";
 
 import type { ContinueWatchingItem } from "$lib/types";
 
@@ -124,6 +124,11 @@ describe("ResumeDisc", () => {
 
     render(ResumeDisc);
 
+    // The card is revealed on hover (and on keyboard focus), so it only exists
+    // once the disc is hovered.
+    const disc = await screen.findByTestId("resume-disc");
+    await fireEvent.mouseEnter(disc);
+
     const card = await screen.findByTestId("resume-disc-card");
     expect(card).toHaveTextContent("One Piece");
     expect(card).toHaveTextContent("Episode 5");
@@ -133,6 +138,9 @@ describe("ResumeDisc", () => {
     getContinueWatchingMock.mockResolvedValue([item(0)]);
 
     render(ResumeDisc);
+
+    const disc = await screen.findByTestId("resume-disc");
+    await fireEvent.mouseEnter(disc);
 
     const card = await screen.findByTestId("resume-disc-card");
     expect(card).toHaveTextContent("Not started");
@@ -156,7 +164,12 @@ describe("ResumeDisc", () => {
 
     const disc = await screen.findByTestId("resume-disc");
     expect(disc).toHaveAttribute("href", "/anime/99?ep=5");
-    expect(disc).toHaveTextContent("Smoking Behind the Supermarket");
+    // The title is exposed as the disc's accessible name, and shown in the
+    // hover card -- not as the disc's own text.
+    expect(disc).toHaveAttribute(
+      "aria-label",
+      "Resume Smoking Behind the Supermarket at episode 6",
+    );
     // The list was never consulted, because a record existed.
     expect(getContinueWatchingMock).not.toHaveBeenCalled();
   });
