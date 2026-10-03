@@ -141,6 +141,16 @@ impl SystemMonitor {
         let mut processes = 0usize;
 
         for (pid, process) in self.system.processes() {
+            // On Linux, a refresh keeps tasks enabled, and sysinfo lists each
+            // thread of every process as its own entry. Such an entry shares
+            // its process's address space, so summing its `memory()` would
+            // multiply RSS by the thread count (a WebKit process with ~37
+            // threads reported ~20 GB that way), and its parent is the process
+            // itself, so it would count as a descendant too. Threads belong in
+            // `thread_count` (read from `tasks()`), not in this sum.
+            if process.thread_kind().is_some() {
+                continue;
+            }
             if *pid == self.pid || is_descendant(&self.system, *pid, self.pid) {
                 cpu += process.cpu_usage();
                 rss += process.memory();
@@ -318,7 +328,13 @@ mod tests {
 
         assert!(stats.rss_bytes > 0, "test process should hold memory");
         assert!(stats.thread_count >= 1);
-        assert!(stats.process_count >= 1);
+        // The test process is a leaf: it has no descendants. If this is more
+        // than 1, the descendant walk is matching unrelated processes.
+        assert!(
+            stats.process_count <= 3,
+            "process_count was {} (expected ~1)",
+            stats.process_count
+        );
         assert!(stats.cpu_cores >= 1);
         assert!(
             stats.cpu_percent >= 0.0,
