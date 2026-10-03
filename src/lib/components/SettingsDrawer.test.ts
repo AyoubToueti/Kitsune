@@ -29,7 +29,24 @@ vi.mock("$lib/api/player", () => ({
   suggestedPlayers: vi.fn(async () => ["mpv", "vlc"]),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => ({
+  openUrl: vi.fn(),
+  revealItemInDir: vi.fn(),
+}));
+// The drawer mounts DiagnosticsPanel, which polls this. Stub it so the drawer
+// test stays about the drawer.
+vi.mock("$lib/api/diagnostics", () => ({
+  getSystemStats: vi.fn(async () => ({
+    cpuPercent: 1,
+    rssBytes: 2,
+    virtualBytes: 3,
+    threadCount: 4,
+    uptimeSeconds: 5,
+    systemTotalBytes: 6,
+    systemAvailableBytes: 7,
+  })),
+  getLogPath: vi.fn(async () => "/data/kitsune/logs/kitsune.log"),
+}));
 
 import SettingsDrawer from "./SettingsDrawer.svelte";
 
@@ -90,5 +107,14 @@ describe("SettingsDrawer", () => {
   it("does not load while closed", () => {
     render(SettingsDrawer, { props: { open: false, onClose: () => {} } });
     expect(getSettingsMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the diagnostics panel", async () => {
+    render(SettingsDrawer, { props: { open: true, onClose: () => {} } });
+
+    expect(await screen.findByTestId("diagnostics-panel")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /reveal log/i }),
+    ).toBeInTheDocument();
   });
 });

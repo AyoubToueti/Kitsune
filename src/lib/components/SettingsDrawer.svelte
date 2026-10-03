@@ -15,6 +15,7 @@
   import { applyTheme, type ThemeChoice } from "$lib/theme.svelte";
   import type { Resolution, Settings } from "$lib/types";
 
+  import DiagnosticsPanel from "./DiagnosticsPanel.svelte";
   import Modal from "./Modal.svelte";
   import Select, { type SelectOption } from "./Select.svelte";
 
@@ -354,6 +355,9 @@
           class="w-24 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         />
       </section>
+
+      <!-- Diagnostics -->
+      <DiagnosticsPanel />
 
       {#if error}
         <p class="mt-4 text-xs text-danger" role="status">{error}</p>

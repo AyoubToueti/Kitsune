@@ -11,6 +11,10 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "magnet:*" }]
+    },
+    {
+      "identifier": "opener:allow-reveal-item-in-dir",
+      "allow": [{ "path": "$DATA/kitsune/logs" }]
     }
   ]
 }
