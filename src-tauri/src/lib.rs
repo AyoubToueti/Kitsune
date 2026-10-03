@@ -22,6 +22,10 @@ pub fn run() {
     // truncates buffered lines.
     let _log_guard = diagnostics::logging::init_logging();
 
+    // Record panics in that log before they abort the process. Installed
+    // right after logging so the hook has somewhere to write.
+    diagnostics::panic::install_panic_hook();
+
     // One provider for the process: each `reqwest::Client` keeps a
     // connection pool, so building one per call would waste connections
     // and invite AniList's rate limiter.
@@ -198,6 +202,8 @@ pub fn run() {
                 // Diagnostics: resource usage and the log file location.
                 diagnostics::commands::get_system_stats,
                 diagnostics::commands::get_log_path,
+                // Frontend errors forwarded into the same log file.
+                diagnostics::commands::log_frontend_error,
             ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
