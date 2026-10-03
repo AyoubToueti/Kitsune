@@ -11,7 +11,8 @@ pub const RESOURCE_LOG_INTERVAL: Duration = Duration::from_secs(30);
 /// [`RESOURCE_LOG_INTERVAL`].
 ///
 /// A separate `SystemMonitor` from the one the panel polls, so the two never
-/// contend on a lock: each only tracks this one process, so the cost is small.
+/// contend on a lock. Each sums the app's process tree, so the cost is a walk
+/// of the process table -- acceptable at this interval.
 ///
 /// Spawned through `tauri::async_runtime` rather than `tokio::spawn`: `setup`
 /// runs on the main thread outside a runtime context, where a bare
@@ -27,11 +28,15 @@ pub fn spawn_periodic_log() {
             tokio::time::sleep(RESOURCE_LOG_INTERVAL).await;
 
             let stats = monitor.snapshot();
+            // `cpu_percent` is per-core (may exceed 100); `cpu_pct` is the
+            // machine-wide 0..100 figure a task manager shows.
             tracing::info!(
                 cpu_percent = stats.cpu_percent,
+                cpu_pct = stats.cpu_percent_of_machine,
                 rss_mb = stats.rss_bytes / (1024 * 1024),
                 virtual_mb = stats.virtual_bytes / (1024 * 1024),
                 threads = stats.thread_count,
+                processes = stats.process_count,
                 uptime_s = stats.uptime_seconds,
                 "resource usage"
             );
