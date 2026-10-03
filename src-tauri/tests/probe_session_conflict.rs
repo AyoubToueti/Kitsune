@@ -22,9 +22,10 @@ use std::sync::Arc;
 
 use librqbit::{AddTorrent, AddTorrentOptions, Session};
 
-/// The repository's bundled well-known torrent.
+/// The bundled well-known torrent, committed under `tests/fixtures/` so the
+/// test also runs in CI (the repo root copy is gitignored).
 fn torrent_path() -> PathBuf {
-    PathBuf::from("../big-buck-bunny.torrent")
+    PathBuf::from("tests/fixtures/big-buck-bunny.torrent")
 }
 
 /// Add a torrent with an explicit file selection, returning its id.

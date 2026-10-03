@@ -30,6 +30,9 @@ coverage/
 
 # ---- Torrent files (used for manual smoke tests, never committed) ----
 *.torrent
+# ...except the test fixture probe_session_conflict.rs relies on. Big Buck
+# Bunny is Creative Commons, so it is fine to commit.
+!src-tauri/tests/fixtures/*.torrent
 
 # ---- Nix ----
 .direnv/
