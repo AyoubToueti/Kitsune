@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod commands;
+pub mod diagnostics;
 pub mod indexer;
 pub mod player;
 pub mod providers;
@@ -15,6 +16,12 @@ fn greet(name: &str) -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Install the global logger before anything else, so startup failures --
+    // a bad token file, a scheme that will not register -- are recorded. The
+    // guard owns the logging thread and MUST outlive the app; dropping it
+    // truncates buffered lines.
+    let _log_guard = diagnostics::logging::init_logging();
+
     // One provider for the process: each `reqwest::Client` keeps a
     // connection pool, so building one per call would waste connections
     // and invite AniList's rate limiter.

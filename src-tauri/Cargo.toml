@@ -27,6 +27,14 @@ anyhow = "1.0.104"
 librqbit-dualstack-sockets = "0.7.0"
 tokio = { version = "1.53.1", features = ["rt", "sync", "time", "net"] }
 tracing = "0.1.44"
+# The subscriber that makes the `tracing` calls throughout the crate actually
+# go somewhere. Without it they are silently dropped, and a release GUI build
+# on Windows has no console to fall back on. `env-filter` is what lets RUST_LOG
+# tune the level; the file half of the sink lives in `diagnostics::logging`.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Daily-rotating file sink, paired with the non-blocking writer so a slow disk
+# cannot stall the async runtime.
+tracing-appender = "0.2"
 reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
 async-trait = "0.1.92"
 tauri-plugin-dialog = "2.7.3"
