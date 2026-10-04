@@ -10,6 +10,7 @@
     "frontendDist": "../build"
   },
   "app": {
+    "enableGTKAppId": true,
     "windows": [
       {
         "title": "Kitsune",
@@ -41,6 +42,18 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/applications/com.kitsune.app.desktop": "linux/com.kitsune.app.desktop"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/applications/com.kitsune.app.desktop": "linux/com.kitsune.app.desktop"
+        }
+      }
+    }
   }
 }

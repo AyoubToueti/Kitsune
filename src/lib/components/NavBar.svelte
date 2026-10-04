@@ -2,6 +2,7 @@
   import SearchBox from "./SearchBox.svelte";
   import SettingsDrawer from "./SettingsDrawer.svelte";
   import { page } from "$app/state"; // Or `$app/stores` depending on SvelteKit version
+  import logo from "$lib/assets/logo.svg";
 
   /** Whether the settings drawer is open. */
   let settingsOpen = $state(false);
@@ -13,21 +14,30 @@
 <header
   class="sticky top-0 z-40 border-b border-border-subtle/80 bg-surface-raised/80 backdrop-blur-md transition-all"
 >
-  <nav class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 sm:px-6">
+  <nav
+    class="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 sm:px-6"
+  >
     <!-- Brand / Logo -->
     <a
       href="/"
       class="group flex items-center gap-2.5 shrink-0 text-lg font-bold tracking-tight text-ink transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded-lg p-1"
     >
-      <!-- Optional Logo Glyph Accent -->
-      <div class="flex h-8 w-8 items-center justify-center rounded-xl bg-accent text-white shadow-sm transition-transform group-hover:scale-105">
-        <svg class="h-5 w-5 fill-current" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-        </svg>
+      <div
+        class="relative flex h-9 w-9 shrink-0 items-center justify-center transition-transform group-hover:scale-105"
+      >
+        <img
+          src={logo}
+          alt=""
+          class="h-15 w-15 max-w-none object-contain drop-shadow-sm"
+        />
       </div>
-      <span class="bg-linear-to-r from-ink to-ink-muted bg-clip-text text-transparent">Kitsune</span>
+      <span
+        class="inline-block bg-linear-to-r from-ink to-ink-muted bg-clip-text text-transparent transition-all duration-200 ease-out group-hover:from-accent group-hover:to-accent group-hover:scale-105"
+        style="will-change: transform; transform-origin: left center;"
+      >
+        Kitsune
+      </span>
     </a>
-
     <!-- Center Search Container -->
     <div class="flex-1 max-w-md mx-2">
       <SearchBox />
@@ -36,18 +46,28 @@
     <!-- Navigation Links & Profile Action -->
     <div class="flex items-center gap-1.5 sm:gap-2">
       <!-- Nav Pill Links -->
-      <div class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-base/50 p-1 shadow-inner">
+      <div
+        class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-base/50 p-1 shadow-inner"
+      >
         <a
           href="/list"
           aria-current={isActive("/list") ? "page" : undefined}
           class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
             {isActive('/list')
-              ? 'bg-accent text-white shadow-sm'
-              : 'text-ink-muted hover:text-ink hover:bg-surface-hover'}"
+            ? 'bg-accent text-white shadow-sm'
+            : 'text-ink-muted hover:text-ink hover:bg-surface-hover'}"
         >
           <!-- Bookmark Icon -->
-          <svg class="h-3.5 w-3.5 fill-none stroke-current stroke-2" viewBox="0 0 24 24" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"/>
+          <svg
+            class="h-3.5 w-3.5 fill-none stroke-current stroke-2"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z"
+            />
           </svg>
           <span class="hidden sm:inline">My List</span>
         </a>
@@ -57,12 +77,20 @@
           aria-current={isActive("/filter") ? "page" : undefined}
           class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
             {isActive('/filter')
-              ? 'bg-accent text-white shadow-sm'
-              : 'text-ink-muted hover:text-ink hover:bg-surface-hover'}"
+            ? 'bg-accent text-white shadow-sm'
+            : 'text-ink-muted hover:text-ink hover:bg-surface-hover'}"
         >
           <!-- Sliders Icon -->
-          <svg class="h-3.5 w-3.5 fill-none stroke-current stroke-2" viewBox="0 0 24 24" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"/>
+          <svg
+            class="h-3.5 w-3.5 fill-none stroke-current stroke-2"
+            viewBox="0 0 24 24"
+            aria-hidden="true"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"
+            />
           </svg>
           <span class="hidden sm:inline">Filter</span>
         </a>

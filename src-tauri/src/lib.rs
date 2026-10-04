@@ -1,3 +1,4 @@
+pub mod appimage_integration;
 pub mod auth;
 pub mod commands;
 pub mod diagnostics;
@@ -105,6 +106,12 @@ pub fn run() {
                 // listener below need. Scoping it to the `#[cfg]` block left
                 // the listener without it.
                 use tauri_plugin_deep_link::DeepLinkExt;
+
+                // Register the AppImage with the desktop environment on first
+                // launch. A no-op for the deb/rpm builds and for dev, which
+                // have a proper installer; only an AppImage needs it, since it
+                // has none.
+                appimage_integration::integrate();
 
                 // Put any stored token back into the provider. Without this a
                 // signed-in reader would look signed out on every launch: the

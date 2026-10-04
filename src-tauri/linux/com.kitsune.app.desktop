@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Kitsune
+Comment=Anime streaming app
+Exec=kitsune %U
+Icon=kitsune
+Terminal=false
+NoDisplay=true
+Categories=AudioVideo;Video;
+StartupWMClass=com.kitsune.app
+MimeType=x-scheme-handler/kitsune
