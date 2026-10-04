@@ -6,6 +6,15 @@
 /** Which upstream a given id belongs to. */
 export type ProviderId = "anilist" | "tmdb" | "nyaa" | "yts";
 
+/**
+ * Whether a release search wants the one episode or the packs that contain it.
+ *
+ * Mirrors the Rust `SearchMode`. The two are mutually exclusive: the reader
+ * either wants the episode they clicked, or a whole-season/batch pack whose
+ * files the torrent session then narrows to that episode.
+ */
+export type SearchMode = "episodes" | "packs";
+
 /** A work's title in the several forms providers offer. */
 export interface Title {
   romaji?: string;

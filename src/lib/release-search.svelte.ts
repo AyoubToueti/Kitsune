@@ -12,7 +12,12 @@
 
 import { searchReleases, onProbeResult, probeReleases } from "./api/releases";
 import { errorMessage } from "./api/anime";
-import { titleForms, type ProbeOutcome, type Release } from "./types";
+import {
+  titleForms,
+  type ProbeOutcome,
+  type Release,
+  type SearchMode,
+} from "./types";
 
 /** What to search for. `null` means "nothing to search yet". */
 export interface ReleaseRequest {
@@ -22,6 +27,8 @@ export interface ReleaseRequest {
   episode?: number;
   /** Work-wide episode number, when it differs from `episode`. */
   absoluteEpisode?: number;
+  /** Whether to find the one episode or the packs that contain it. */
+  mode?: SearchMode;
 }
 
 /** The reactive surface a caller renders. */
@@ -70,7 +77,12 @@ export function createReleaseSearch(
     searching = true;
     error = null;
 
-    searchReleases(request.titles, request.episode, request.absoluteEpisode)
+    searchReleases(
+      request.titles,
+      request.episode,
+      request.absoluteEpisode,
+      request.mode,
+    )
       .then((found) => {
         if (cancelled) return;
         releases = found;
@@ -169,9 +181,10 @@ export function releaseRequest(
   title: { romaji?: string; english?: string; native?: string; userPreferred?: string } | undefined,
   episode?: number,
   absoluteEpisode?: number,
+  mode?: SearchMode,
 ): ReleaseRequest | null {
   if (!title) return null;
   const titles = titleForms(title);
   if (titles.length === 0) return null;
-  return { titles, episode, absoluteEpisode };
+  return { titles, episode, absoluteEpisode, mode };
 }

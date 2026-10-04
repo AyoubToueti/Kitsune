@@ -61,21 +61,41 @@ describe("release command wrappers", () => {
     expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.search, {
       titles: ["Show", "Shou"],
       episode: 5,
-        absoluteEpisode: undefined,
-      });
-      expect(found).toHaveLength(1);
+      absoluteEpisode: undefined,
+      mode: undefined,
     });
-  
-    it("searchReleases passes the absolute episode when the numbers differ", async () => {
-      invokeMock.mockResolvedValue([release()]);
-  
-      await searchReleases(["Show Season 2"], 1, 13);
-  
-      expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.search, {
-        titles: ["Show Season 2"],
-        episode: 1,
-        absoluteEpisode: 13,
-      });
+    expect(found).toHaveLength(1);
+  });
+
+  it("searchReleases passes the absolute episode when the numbers differ", async () => {
+    invokeMock.mockResolvedValue([release()]);
+
+    await searchReleases(["Show Season 2"], 1, 13);
+
+    expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.search, {
+      titles: ["Show Season 2"],
+      episode: 1,
+      absoluteEpisode: 13,
+      mode: undefined,
+    });
+  });
+
+  it("searchReleases forwards a packs mode", async () => {
+    invokeMock.mockResolvedValue([release()]);
+
+    await searchReleases(["Show"], 1, undefined, "packs");
+
+    expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.search, {
+      titles: ["Show"],
+      episode: 1,
+      absoluteEpisode: undefined,
+      mode: "packs",
+    });
+  });
+
+  it("downloadTorrent sends the url and the destination path", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
     await downloadTorrent("https://nyaa.si/download/1.torrent", "/tmp/1.torrent");
 
     expect(invokeMock).toHaveBeenCalledWith(RELEASE_COMMANDS.download, {

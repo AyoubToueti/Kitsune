@@ -7,7 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { ProbeOutcome, Release } from "$lib/types";
+import type { ProbeOutcome, Release, SearchMode } from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const RELEASE_COMMANDS = {
@@ -50,11 +50,13 @@ export const PROBE_RESULT_EVENT = "probe-result";
         titles: string[],
         episode?: number,
         absoluteEpisode?: number,
+        mode?: SearchMode,
       ): Promise<Release[]> {
         return invoke<Release[]>(RELEASE_COMMANDS.search, {
           titles,
           episode,
           absoluteEpisode,
+          mode,
         });
 }
 

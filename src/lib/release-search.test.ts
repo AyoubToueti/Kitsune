@@ -54,8 +54,28 @@ describe("createReleaseSearch", () => {
 
     await settle();
 
-    expect(searchReleasesMock).toHaveBeenCalledWith(["Show"], 3, undefined);
+    expect(searchReleasesMock).toHaveBeenCalledWith(
+      ["Show"],
+      3,
+      undefined,
+      undefined,
+    );
     expect(h.search.releases).toHaveLength(1);
+    h.destroy();
+  });
+
+  it("forwards the packs mode from the request", async () => {
+    searchReleasesMock.mockResolvedValue([]);
+    const h = start({ titles: ["Show"], episode: 3, mode: "packs" });
+
+    await settle();
+
+    expect(searchReleasesMock).toHaveBeenCalledWith(
+      ["Show"],
+      3,
+      undefined,
+      "packs",
+    );
     h.destroy();
   });
 
@@ -97,7 +117,12 @@ describe("createReleaseSearch", () => {
     h.setRequest({ titles: ["Show"], episode: 4 });
     await settle();
 
-    expect(searchReleasesMock).toHaveBeenCalledWith(["Show"], 4, undefined);
+    expect(searchReleasesMock).toHaveBeenCalledWith(
+      ["Show"],
+      4,
+      undefined,
+      undefined,
+    );
     h.destroy();
   });
 
