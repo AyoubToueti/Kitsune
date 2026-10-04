@@ -55,8 +55,13 @@ static ABSOLUTE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
 ///
 /// These are recognised so the matcher can reject them for a single-episode
 /// request: a season pack is not what "episode 3" asked for.
-static RANGE_PATTERN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b(?:\d{1,4}[\s._-]*[-~][\s._-]*\d{1,4}|\d{1,4}\s*~\s*\d{1,4})\b").unwrap());
+static RANGE_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    // The first number may carry an `S`/`E` prefix (`S01-12`, `E01-02`), which
+    // a plain `\b\d` would miss: `S` and `0` are both word characters, so
+    // there is no boundary between them.
+    Regex::new(r"(?i)\b[se]?(?:\d{1,4}[\s._-]*[-~][\s._-]*\d{1,4}|\d{1,4}\s*~\s*\d{1,4})\b")
+        .unwrap()
+});
 
 /// Words that mark a pack outright, whatever else the name says.
 ///
@@ -73,6 +78,16 @@ static UNCONDITIONAL_PACK_WORDS: Lazy<Regex> =
 /// see [`is_pack`].
 static SEASON_PACK_WORDS: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)\bseason\s*\d+\b").unwrap());
+
+/// A bare `S01`/`S1` season marker with no episode or range after it.
+///
+/// Groups name a whole season `Show S01 1080p`, with no `E##` for the
+/// season/episode patterns to latch onto. The negative lookaheads keep this
+/// from firing on a single episode (`S01E05`) or a range (`S01-12`), both of
+/// which state their own episode and are handled elsewhere.
+static BARE_SEASON_MARKER: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(?<![a-z0-9])s\d{1,2}(?![\s._-]*e\d)(?![\s._-]*[-~]\s*\d)(?!\d)").unwrap()
+});
 
 /// Parse a release name into its title, numbers and subgroup.
 ///
@@ -204,6 +219,13 @@ pub fn is_pack(name: &str) -> bool {
             || !states_an_episode(&without_season);
     }
 
+    // A bare `S01` with no episode of its own is a season pack. The pattern
+    // already excludes `S01E05` and `S01-12`, so a match here means the name
+    // carries a season and nothing more.
+    if is_match(&BARE_SEASON_MARKER, &normalized) {
+        return true;
+    }
+
     is_match(&RANGE_PATTERN, &normalized)
 }
 
@@ -313,6 +335,25 @@ mod tests {
     fn a_bare_season_marker_is_a_pack() {
         // `Show Season 3` states a season but no episode, so it is the pack.
         assert!(is_pack("[Group] Show Season 3 [1080p]"));
+    }
+
+    #[test]
+    fn a_bare_sxx_marker_is_a_pack() {
+        // The naming the real GTO upload uses: a season and nothing else.
+        assert!(is_pack("GTO Great Teacher Onizuka S01 1080p NF WEB-DL -VARYG"));
+        assert!(is_pack("[Group] Show S02 [1080p]"));
+        assert!(is_pack("[Group] Show S1 [720p]"));
+    }
+
+    #[test]
+    fn a_bare_sxx_with_an_episode_is_not_a_pack() {
+        assert!(!is_pack("[Group] Show S01E05 [1080p]"));
+    }
+
+    #[test]
+    fn a_bare_sxx_range_is_still_a_pack() {
+        // `S01-12` is a range, which the range rule already recognises.
+        assert!(is_pack("[Group] Show S01-12 [1080p]"));
     }
 
     #[test]
