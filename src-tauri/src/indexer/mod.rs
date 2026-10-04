@@ -26,6 +26,7 @@ pub mod traits;
 pub use commands::{search_all, search_releases, IndexerRegistry};
 pub use match_spec::{EpisodeRequest, MatchRejection};
 pub use nyaa::{NyaaIndexer, NYAA_ENDPOINT};
+pub use query::SearchMode;
 pub use traits::{Indexer, IndexerError};
 
 use crate::types::{Release, ReleasePreference};
@@ -51,6 +52,8 @@ pub struct ReleaseRequest {
     /// total, so both spellings are worth matching. `None` means the two agree
     /// and only `episode` is in play.
     pub absolute_episode: Option<u32>,
+    /// Whether to find the one episode or the packs that contain it.
+    pub mode: SearchMode,
 }
 
 impl ReleaseRequest {
@@ -61,7 +64,12 @@ impl ReleaseRequest {
     /// `09`, and a release may name the work by either its English or its romaji
     /// title. The construction lives in [`query`] so it can be tested on its own.
     pub fn queries(&self) -> Vec<String> {
-        query::build_queries(&self.titles, self.episode, query::MAX_QUERIES)
+        query::build_queries_in_mode(
+            &self.titles,
+            self.episode,
+            self.mode,
+            query::MAX_QUERIES,
+        )
     }
 
     /// The matcher's view of this request.
@@ -70,7 +78,14 @@ impl ReleaseRequest {
     /// play: a season-1 entry is titled without a marker, but its releases are
     /// still named `S01E01`. Without the default, a season-2 release carrying
     /// the same episode number would satisfy a season-1 search.
+    ///
+    /// A pack search returns `None`: filtering for packs is `is_pack`, not an
+    /// episode match, and [`refine`] handles that case directly.
     pub fn as_match(&self) -> Option<EpisodeRequest> {
+        if self.mode == SearchMode::Packs {
+            return None;
+        }
+
         // The first title is the one the UI prefers, so it is the one whose
         // season marker the matcher should honour.
         let title = self.titles.first().map(String::as_str).unwrap_or("");
@@ -145,12 +160,21 @@ pub fn refine(
     request: &ReleaseRequest,
     preference: &ReleasePreference,
 ) -> Vec<Release> {
-    let mut kept = match request.as_match() {
-        Some(matcher) => releases
+    let mut kept = match (request.mode, request.as_match()) {
+        // A pack search keeps only the releases that ARE packs. Without this
+        // branch `as_match` returning `None` would leave the list unfiltered,
+        // handing back every single-episode release too.
+        (SearchMode::Packs, _) => releases
+            .into_iter()
+            .filter(|release| parse::is_pack(&release.title))
+            .collect(),
+        (_, Some(matcher)) => releases
             .into_iter()
             .filter(|release| match_spec::matches(release, &matcher).is_ok())
             .collect(),
-        None => releases,
+        // A film or whole-work search names no episode, so there is nothing to
+        // filter against: the title match is the whole answer.
+        (_, None) => releases,
     };
 
     // A search that filtered everything out is a legitimate empty result; the
@@ -191,6 +215,7 @@ mod tests {
                 titles: vec!["Show".into()],
                 episode: Some(5),
                 absolute_episode: None,
+                mode: SearchMode::Episodes,
             };
             let built = request.queries();
             assert!(
@@ -206,6 +231,7 @@ mod tests {
                 titles: vec!["  Show  ".into()],
                 episode: None,
                 absolute_episode: None,
+                mode: SearchMode::Episodes,
             };
             assert_eq!(request.queries(), vec!["Show".to_string()]);
         }
@@ -266,6 +292,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let preference = ReleasePreference::default();
 
@@ -292,6 +319,7 @@ mod tests {
             titles: vec!["Mushoku Tensei: Jobless Reincarnation".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let matcher = request.as_match().expect("an episode was requested");
         assert_eq!(matcher.season, Some(1));
@@ -304,6 +332,7 @@ mod tests {
             titles: vec!["Mushoku Tensei: Jobless Reincarnation Season 3".into()],
             episode: Some(9),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let matcher = request.as_match().expect("an episode was requested");
         assert_eq!(matcher.season, Some(3));
@@ -317,6 +346,7 @@ mod tests {
             titles: vec!["Show Season 2".into()],
             episode: Some(1),
             absolute_episode: Some(13),
+            mode: SearchMode::Episodes,
         };
         let matcher = request.as_match().expect("an episode was requested");
         assert_eq!(matcher.episode, 1);
@@ -332,6 +362,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let matcher = request.as_match().expect("an episode was requested");
         assert_eq!(matcher.absolute_episode, Some(5));
@@ -344,6 +375,7 @@ mod tests {
             titles: vec!["Some Movie".into()],
             episode: None,
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         assert!(request.as_match().is_none());
     }
@@ -354,6 +386,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let preference = ReleasePreference::default();
 
@@ -376,6 +409,7 @@ mod tests {
             titles: vec!["Mushoku Tensei: Jobless Reincarnation Season 3".into()],
             episode: Some(9),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let preference = ReleasePreference::default();
 
@@ -392,6 +426,55 @@ mod tests {
             refined.iter().any(|r| r.title.contains("S03E09")),
             "the SxxExx spelling must be kept: {refined:?}"
         );
+    }
+
+    #[test]
+    fn refine_in_packs_mode_keeps_packs_and_drops_episodes() {
+        // The whole point of the mode: an episode search rejects a season pack,
+        // so a pack search is the only way to surface one.
+        let request = ReleaseRequest {
+            titles: vec!["Great Teacher Onizuka".into()],
+            episode: Some(1),
+            absolute_episode: None,
+            mode: SearchMode::Packs,
+        };
+        let preference = ReleasePreference::default();
+
+        let releases = vec![
+            release_named("GTO Great Teacher Onizuka S01 1080p NF WEB-DL -VARYG"),
+            release_named("[Group] Great Teacher Onizuka 01-43 [480p] (Batch)"),
+            release_named("[SubsPlease] Great Teacher Onizuka - 01 [1080p]"),
+        ];
+
+        let refined = refine(releases, &request, &preference);
+
+        assert_eq!(refined.len(), 2, "only the two packs survive: {refined:?}");
+        assert!(
+            refined.iter().all(|r| !r.title.contains("- 01 ")),
+            "the single episode must be gone: {refined:?}"
+        );
+    }
+
+    #[test]
+    fn refine_in_episode_mode_still_drops_packs() {
+        // The regression guard: adding Packs must not loosen Episodes.
+        let request = ReleaseRequest {
+            titles: vec!["Show".into()],
+            episode: Some(5),
+            absolute_episode: None,
+            mode: SearchMode::Episodes,
+        };
+        let preference = ReleasePreference::default();
+
+        let releases = vec![
+            release_named("[G] Show S01 1080p"),
+            release_named("[G] Show - 05 [1080p]"),
+        ];
+
+        let refined = refine(releases, &request, &preference);
+
+        assert_eq!(refined.len(), 1, "only episode 5 survives: {refined:?}");
+        assert!(refined[0].title.contains("- 05"));
     }
 
     #[tokio::test]
@@ -415,6 +498,7 @@ mod tests {
             titles: vec!["Show".into(), "Shou".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
 
         let found = search(
@@ -439,6 +523,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: None,
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let preference = ReleasePreference::default();
 
@@ -457,6 +542,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: Some(1),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let preference = ReleasePreference::default();
 
@@ -493,6 +579,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
         let releases = search(&indexer, &request, &ReleasePreference::default())
             .await

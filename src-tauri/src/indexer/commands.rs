@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::probe_rank::ProbeOutcome;
-use super::{search, Indexer, ReleaseRequest};
+use super::{search, Indexer, ReleaseRequest, SearchMode};
 use crate::settings::SharedSettings;
 use crate::types::{Release, ReleasePreference};
 
@@ -62,6 +62,7 @@ pub async fn search_releases(
     titles: Vec<String>,
     episode: Option<u32>,
     absolute_episode: Option<u32>,
+    mode: Option<SearchMode>,
     preference: Option<ReleasePreference>,
 ) -> Result<Vec<Release>, String> {
     let indexers: Vec<Arc<dyn Indexer>> = registry.indexers().to_vec();
@@ -69,6 +70,9 @@ pub async fn search_releases(
         titles,
         episode,
         absolute_episode,
+        // Absent means the ordinary episode search, so an older frontend that
+        // never sends the field keeps working unchanged.
+        mode: mode.unwrap_or_default(),
     };
     // An explicit preference wins (a caller can override for one search);
     // otherwise use the reader's stored taste, so the settings page steers
@@ -315,6 +319,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
 
         let found = search_all(&indexers, &request, &ReleasePreference::default()).await;
@@ -332,6 +337,7 @@ mod tests {
             titles: vec!["Show".into()],
             episode: Some(5),
             absolute_episode: None,
+            mode: SearchMode::Episodes,
         };
 
         let found = search_all(&indexers, &request, &preference_default()).await;

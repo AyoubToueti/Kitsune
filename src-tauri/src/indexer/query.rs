@@ -22,6 +22,7 @@
 
 use fancy_regex::Regex;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 
 use super::normalize::collapse_whitespace;
 
@@ -32,6 +33,24 @@ use super::normalize::collapse_whitespace;
 /// across four variant spellings and three episode patterns; de-duplication
 /// usually brings the real count well below it.
 pub const MAX_QUERIES: usize = 12;
+
+/// What kind of release the caller is looking for.
+///
+/// The two modes are mutually exclusive by design: the reader either wants the
+/// one episode they clicked, or the packs that contain it. A pack is found by a
+/// season-level query (`Title S01`) and filtered to pack-shaped names; an
+/// episode by the `S01E01`/`01`/`1` spellings. Keeping them apart means neither
+/// list is diluted by the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    /// Single-episode releases -- the ordinary watch flow.
+    #[default]
+    Episodes,
+    /// Whole-season and batch packs, which the file matcher then narrows to the
+    /// selected episode's file.
+    Packs,
+}
 
 /// The shortest pre-colon segment worth searching on its own.
 ///
@@ -237,7 +256,14 @@ fn apply(
 }
 
 /// The patterns to try, strongest first, for a given request.
-fn patterns_for(season: Option<u32>, episode: Option<u32>) -> Vec<Pattern> {
+fn patterns_for(season: Option<u32>, episode: Option<u32>, mode: SearchMode) -> Vec<Pattern> {
+    // A pack is never named `S01E01`, so the episode patterns cannot find one.
+    // The season spelling leads (it is how a season pack is named), with the
+    // bare title as a fallback for a whole-work batch.
+    if mode == SearchMode::Packs {
+        return vec![Pattern::SeasonOnly, Pattern::TitleOnly];
+    }
+
     match (season, episode) {
         (Some(_), Some(_)) => vec![
             Pattern::SeasonEpisode,
@@ -265,22 +291,39 @@ fn patterns_for(season: Option<u32>, episode: Option<u32>) -> Vec<Pattern> {
 /// is what a season-1 entry is called, and without it `... 01` finds nothing --
 /// Nyaa's results are all named `S01E01`.
 pub fn build_queries(titles: &[String], episode: Option<u32>, max: usize) -> Vec<String> {
+    build_queries_in_mode(titles, episode, SearchMode::Episodes, max)
+}
+
+/// Build the query strings for a search in a given mode, most promising first.
+///
+/// [`build_queries`] is the episode-mode spelling; this is the general form.
+/// `mode` selects the patterns: an episode search asks `S01E01`/`01`/`1`, a
+/// pack search asks `S01` and the bare title. The season is taken from the
+/// title's marker, defaulting to 1 once a season is in play so a season-1 work
+/// is queried as `Title S01` -- the spelling its packs actually use.
+pub fn build_queries_in_mode(
+    titles: &[String],
+    episode: Option<u32>,
+    mode: SearchMode,
+    max: usize,
+) -> Vec<String> {
     let forms: Vec<&String> = titles.iter().filter(|t| !t.trim().is_empty()).collect();
     if forms.is_empty() || max == 0 {
         return Vec::new();
     }
 
     let stated = forms.first().and_then(|t| split_season(t).1);
-    // Only default a season once an episode is in play: a film search must not
-    // become `S01`.
-    let season = match (episode, stated) {
-        (Some(_), None) => Some(1),
-        (_, season) => season,
+    // A pack search is always season-scoped, and an episode search gains a
+    // season once an episode is in play. A film search stays bare.
+    let season = match (mode, episode, stated) {
+        (SearchMode::Packs, _, _) => stated.or(Some(1)),
+        (_, Some(_), None) => Some(1),
+        (_, _, season) => season,
     };
 
     let mut queries: Vec<String> = Vec::new();
 
-    for pattern in patterns_for(season, episode) {
+    for pattern in patterns_for(season, episode, mode) {
         for form in &forms {
             for variant in variants_of(form) {
                 let Some(candidate) = apply(pattern, &variant, season, episode) else {
@@ -409,6 +452,50 @@ mod tests {
             built.first().map(String::as_str),
             Some("Mushoku Tensei Jobless Reincarnation S03E09"),
             "got {built:?}"
+        );
+    }
+
+    #[test]
+    fn pack_mode_queries_the_season_and_the_bare_title() {
+        let built = build_queries_in_mode(
+            &titles(&["Great Teacher Onizuka"]),
+            Some(1),
+            SearchMode::Packs,
+            MAX_QUERIES,
+        );
+
+        assert!(
+            built.contains(&"Great Teacher Onizuka S01".to_string()),
+            "got {built:?}"
+        );
+        assert!(
+            built.contains(&"Great Teacher Onizuka".to_string()),
+            "got {built:?}"
+        );
+        assert!(
+            !built.iter().any(|q| q.contains("E01")),
+            "a pack query must not ask for an episode: {built:?}"
+        );
+    }
+
+    #[test]
+    fn pack_mode_takes_the_season_from_the_title() {
+        let built = build_queries_in_mode(
+            &titles(&["Show Season 2"]),
+            None,
+            SearchMode::Packs,
+            MAX_QUERIES,
+        );
+        assert!(built.contains(&"Show S02".to_string()), "got {built:?}");
+    }
+
+    #[test]
+    fn episode_mode_is_the_build_queries_default() {
+        // The wrapper must stay byte-identical to the old behaviour.
+        let titles = titles(&["Show"]);
+        assert_eq!(
+            build_queries(&titles, Some(5), MAX_QUERIES),
+            build_queries_in_mode(&titles, Some(5), SearchMode::Episodes, MAX_QUERIES)
         );
     }
 
