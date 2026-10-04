@@ -6,15 +6,24 @@
 // cached -- a resource snapshot is only meaningful for the moment it was taken.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { SystemStats } from "$lib/types";
+import type { SpeedTestProgress, SpeedTestResult, SystemStats } from "$lib/types";
 
 /** Command names, centralised so a rename cannot drift. */
 export const DIAGNOSTICS_COMMANDS = {
   systemStats: "get_system_stats",
   logPath: "get_log_path",
   logError: "log_frontend_error",
+  speedTest: "run_speed_test",
 } as const;
+
+/**
+ * Event the backend emits with each speed-test progress update.
+ *
+ * Kept in sync with `speedtest::PROGRESS_EVENT` in the Rust backend.
+ */
+export const SPEEDTEST_PROGRESS_EVENT = "speedtest-progress";
 
 /**
  * A fresh snapshot of the app process's CPU and memory.
@@ -47,5 +56,34 @@ export async function logFrontendError(
     level,
     message,
     stack: stack ?? null,
+  });
+}
+
+/**
+ * Measure latency and download speed against Cloudflare.
+ *
+ * Resolves with the final result once the whole test finishes (a few seconds).
+ * Rejects with a message when the endpoint is unreachable or another test is
+ * already running. Progress is not returned here -- subscribe with
+ * [`onSpeedTestProgress`] to show a live readout.
+ */
+export async function runSpeedTest(): Promise<SpeedTestResult> {
+  return invoke<SpeedTestResult>(DIAGNOSTICS_COMMANDS.speedTest);
+}
+
+/**
+ * Subscribe to speed-test progress, calling back with each update.
+ *
+ * `listen` resolves with an unlisten function, so the caller cannot forget to
+ * await it and leak the listener. A malformed payload is dropped rather than
+ * thrown into Tauri's event loop.
+ */
+export async function onSpeedTestProgress(
+  handler: (progress: SpeedTestProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<SpeedTestProgress>(SPEEDTEST_PROGRESS_EVENT, (event) => {
+    const progress = event.payload;
+    if (progress == null || typeof progress !== "object") return;
+    handler(progress);
   });
 }

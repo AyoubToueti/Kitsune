@@ -573,6 +573,42 @@ export interface SystemStats {
   systemAvailableBytes: number;
 }
 
+/** A one-word verdict on the measured connection. Mirrors the Rust enum. */
+export type SpeedVerdict = "good" | "ok" | "poor";
+
+/**
+ * The result of a completed internet speed test.
+ *
+ * Mirrors the Rust `SpeedTestResult`. `downloadMbps` is decimal megabits
+ * (1 Mbps = 1e6 bps), the way connections are sold.
+ */
+export interface SpeedTestResult {
+  /** Median round-trip time across the latency samples, in milliseconds. */
+  latencyMs: number;
+  /** Half the spread of the latency samples, in milliseconds. */
+  jitterMs: number;
+  /** Download throughput in megabits per second. */
+  downloadMbps: number;
+  /** Total bytes received during the download phase. */
+  bytesDownloaded: number;
+  /** Wall-clock time the download phase took, in milliseconds. */
+  durationMs: number;
+  /** The one-word verdict for the measured numbers. */
+  verdict: SpeedVerdict;
+}
+
+/** One progress update while a speed test runs. */
+export interface SpeedTestProgress {
+  /** `"latency"`, `"download"` or `"done"`. */
+  phase: string;
+  /** Overall completion, 0..100. */
+  percent: number;
+  /** The median latency so far, once any sample exists. */
+  latencyMs?: number | null;
+  /** The running download rate, once the download phase has begun. */
+  downloadMbps?: number | null;
+}
+
 /**
  * A coarse health verdict for a release, from one probe.
  *

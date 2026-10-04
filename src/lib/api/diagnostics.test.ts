@@ -5,13 +5,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
+const listenMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
+
 import {
   DIAGNOSTICS_COMMANDS,
+  SPEEDTEST_PROGRESS_EVENT,
   getLogPath,
   getSystemStats,
   logFrontendError,
+  onSpeedTestProgress,
+  runSpeedTest,
 } from "./diagnostics";
-import type { SystemStats } from "$lib/types";
+import type { SpeedTestResult, SystemStats } from "$lib/types";
 
 function stats(): SystemStats {
   return {
@@ -30,6 +36,7 @@ function stats(): SystemStats {
 
 beforeEach(() => {
   invokeMock.mockReset();
+  listenMock.mockReset();
 });
 
 describe("diagnostics command wrappers", () => {
@@ -76,5 +83,56 @@ describe("diagnostics command wrappers", () => {
       message: "careful",
       stack: "at foo (app.js:1)",
     });
+  });
+
+  it("runSpeedTest returns the result", async () => {
+    const result: SpeedTestResult = {
+      latencyMs: 18,
+      jitterMs: 2,
+      downloadMbps: 42,
+      bytesDownloaded: 10_000_000,
+      durationMs: 8000,
+      verdict: "good",
+    };
+    invokeMock.mockResolvedValue(result);
+
+    const measured = await runSpeedTest();
+
+    expect(invokeMock).toHaveBeenCalledWith(DIAGNOSTICS_COMMANDS.speedTest);
+    expect(measured.downloadMbps).toBe(42);
+  });
+
+  it("onSpeedTestProgress forwards a well-formed payload", async () => {
+    const unlisten = vi.fn();
+    listenMock.mockImplementation(
+      async (_event: string, handler: (e: { payload: unknown }) => void) => {
+        handler({ payload: { phase: "download", percent: 60 } });
+        return unlisten;
+      },
+    );
+
+    const seen: number[] = [];
+    await onSpeedTestProgress((p) => seen.push(p.percent));
+
+    expect(listenMock).toHaveBeenCalledWith(
+      SPEEDTEST_PROGRESS_EVENT,
+      expect.any(Function),
+    );
+    expect(seen).toEqual([60]);
+  });
+
+  it("onSpeedTestProgress drops a malformed payload", async () => {
+    listenMock.mockImplementation(
+      async (_event: string, handler: (e: { payload: unknown }) => void) => {
+        handler({ payload: null });
+        handler({ payload: "nonsense" });
+        return vi.fn();
+      },
+    );
+
+    const seen: unknown[] = [];
+    await onSpeedTestProgress((p) => seen.push(p));
+
+    expect(seen).toEqual([]);
   });
 });
