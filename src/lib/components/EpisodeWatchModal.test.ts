@@ -53,6 +53,15 @@ vi.mock("$lib/api/auth", () => ({
   recordLastPlayed: recordLastPlayedMock,
 }));
 
+// The footer's speed test subscribes to progress on open; a never-firing stub
+// is enough, and returning an unlisten matches the real shape.
+const runSpeedTestMock = vi.hoisted(() => vi.fn());
+const onSpeedTestProgressMock = vi.hoisted(() => vi.fn(async () => () => {}));
+vi.mock("$lib/api/diagnostics", () => ({
+  runSpeedTest: runSpeedTestMock,
+  onSpeedTestProgress: onSpeedTestProgressMock,
+}));
+
 import EpisodeWatchModal from "./EpisodeWatchModal.svelte";
 import { stopPlaying } from "$lib/now-playing.svelte";
 
@@ -111,6 +120,8 @@ beforeEach(() => {
   openDialogMock.mockReset();
   saveDialogMock.mockReset();
   openUrlMock.mockReset();
+  runSpeedTestMock.mockReset();
+  onSpeedTestProgressMock.mockReset().mockResolvedValue(() => {});
 });
 
 describe("EpisodeWatchModal", () => {
@@ -370,5 +381,52 @@ describe("EpisodeWatchModal", () => {
     // It goes back to the release list rather than opening the file picker.
     expect(await screen.findByTestId("stage-releases")).toBeInTheDocument();
     expect(openDialogMock).not.toHaveBeenCalled();
+  });
+
+  it("runs a speed test from the footer and shows the inline result", async () => {
+    runSpeedTestMock.mockResolvedValue({
+      latencyMs: 18,
+      jitterMs: 2,
+      downloadMbps: 42,
+      bytesDownloaded: 10_000_000,
+      durationMs: 8000,
+      verdict: "good",
+    });
+
+    render(EpisodeWatchModal, {
+      props: {
+        open: true,
+        anime: anime(),
+        episodes: episodes(),
+        episodeIndex: 0,
+        onClose: () => {},
+      },
+    });
+
+    await fireEvent.click(await screen.findByTestId("modal-speed-test"));
+
+    expect(await screen.findByTestId("modal-speed-result")).toHaveTextContent(
+      "42 Mbps · 18 ms",
+    );
+  });
+
+  it("shows a footer speed-test error without breaking the modal", async () => {
+    runSpeedTestMock.mockRejectedValue(new Error("a speed test is already running"));
+
+    render(EpisodeWatchModal, {
+      props: {
+        open: true,
+        anime: anime(),
+        episodes: episodes(),
+        episodeIndex: 0,
+        onClose: () => {},
+      },
+    });
+
+    await fireEvent.click(await screen.findByTestId("modal-speed-test"));
+
+    expect(await screen.findByTestId("modal-speed-error")).toHaveTextContent(
+      /already running/i,
+    );
   });
 });

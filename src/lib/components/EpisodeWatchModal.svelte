@@ -14,6 +14,8 @@
     formatSize,
   } from "$lib/release-display";
   import { createReleaseSearch } from "$lib/release-search.svelte";
+  import { createSpeedTest } from "$lib/speed-test.svelte";
+  import { compactResult } from "$lib/speed-test";
   import { fileKind, type FileKind } from "$lib/torrent-files";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
   import { nowPlayingSession, startPlaying } from "$lib/now-playing.svelte";
@@ -103,6 +105,24 @@
    * episode starting, does.
    */
   const session = nowPlayingSession();
+
+  /**
+   * The internet speed test, for the footer.
+   *
+   * Shared logic with the Settings panel; this renders the compact form. The
+   * progress listener is subscribed only while the modal is open, via the
+   * effect below.
+   */
+  const speed = createSpeedTest();
+  const speedResult = $derived(speed.result ? compactResult(speed.result) : null);
+
+  // Subscribe to speed-test progress while the modal is open, and unsubscribe
+  // when it closes. `$effect` can return a teardown, and `start()` returns one
+  // synchronously, so this is the whole lifecycle.
+  $effect(() => {
+    if (!isOpen) return;
+    return speed.start();
+  });
 
   // Hand the episode to the store whenever the selection changes, so the disc
   // knows what is playing. Read `anime` and `episodes` untracked: only the
@@ -569,6 +589,36 @@
             ? "Change torrent"
             : "Load torrent by hand"}
       </button>
+
+      <!-- A quick connection check before committing to a download. -->
+      <button
+        type="button"
+        onclick={speed.run}
+        disabled={speed.running}
+        data-testid="modal-speed-test"
+        title="Test your internet speed"
+        class="rounded-lg border border-border-subtle bg-surface-hover px-4 py-2 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {#if speed.running && speed.progress}
+          Testing… {speed.progress.percent}%
+        {:else if speed.running}
+          Testing…
+        {:else}
+          Test speed
+        {/if}
+      </button>
+
+      {#if speedResult}
+        <span class="text-[11px] text-ink-muted" data-testid="modal-speed-result">
+          {speedResult}
+        </span>
+      {/if}
+
+      {#if speed.error}
+        <span class="text-[11px] text-danger" data-testid="modal-speed-error">
+          {speed.error}
+        </span>
+      {/if}
 
       <div class="flex-1"></div>
 
