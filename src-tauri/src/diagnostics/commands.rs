@@ -1,8 +1,12 @@
 //! Tauri commands exposing diagnostics to the frontend.
 
-use tauri::State;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use reqwest::Client;
+use tauri::{AppHandle, Emitter, State};
 
 use super::metrics::{SystemMonitor, SystemStats};
+use super::speedtest::{self, SpeedTestConfig, SpeedTestResult};
 
 /// Severity a frontend error is logged at.
 ///
@@ -79,6 +83,68 @@ pub fn log_frontend_error(level: String, message: String, stack: Option<String>)
         // Every other tracing level is unreachable from `ErrorLevel`, but the
         // match must be total.
         _ => tracing::error!(target: "frontend", message = %message, stack = %stack),
+    }
+}
+
+/// Shared state for the speed test: one pooled client, and a flag that keeps
+/// two tests from running at once.
+pub struct SpeedTestState {
+    client: Client,
+    /// Set while a test runs. A second caller gets an error instead of
+    /// competing for bandwidth with the first (which would corrupt both
+    /// numbers).
+    running: AtomicBool,
+}
+
+impl SpeedTestState {
+    /// Build the state, failing only if the HTTP client cannot be built.
+    pub fn new() -> anyhow::Result<Self> {
+        Ok(Self {
+            client: speedtest::build_client()?,
+            running: AtomicBool::new(false),
+        })
+    }
+}
+
+/// Measure latency and download speed against Cloudflare.
+///
+/// Emits [`speedtest::PROGRESS_EVENT`] as it runs, then resolves with the final
+/// result. Rejects a second call while one is in flight.
+#[tauri::command]
+pub async fn run_speed_test(
+    app: AppHandle,
+    state: State<'_, SpeedTestState>,
+) -> Result<SpeedTestResult, String> {
+    // Claim the guard; if it was already taken, another test is running.
+    if state
+        .running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err("a speed test is already running".to_string());
+    }
+
+    // Release the guard however this returns.
+    let _guard = RunningGuard(&state.running);
+
+    let config = SpeedTestConfig::default();
+    let emit_app = app.clone();
+    speedtest::run_measurement(&state.client, speedtest::DOWN_URL, &config, move |progress| {
+        // A failed emit is not worth failing the measurement over: the final
+        // result is returned to the caller anyway.
+        let _ = emit_app.emit(speedtest::PROGRESS_EVENT, progress);
+    })
+    .await
+    .map_err(|err| err.to_string())
+}
+
+/// Clears the running flag on drop, so an early return (an error) still
+/// releases it.
+struct RunningGuard<'a>(&'a AtomicBool);
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 

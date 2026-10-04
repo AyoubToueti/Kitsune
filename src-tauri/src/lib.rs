@@ -99,6 +99,9 @@ pub fn run() {
             // in time before CPU usage is meaningful, so the monitor carries
             // state between polls.
             .manage(std::sync::Mutex::new(diagnostics::SystemMonitor::new()))
+            // One pooled HTTP client and a run-guard for the speed test, built
+            // at startup so a client failure is caught before the app is up.
+            .manage(diagnostics::commands::SpeedTestState::new().expect("speed-test client"))
             .setup(|app| {
                 use tauri::{Emitter, Manager};
                 // Imported once at the top of the closure: the trait provides
@@ -225,6 +228,8 @@ pub fn run() {
                 diagnostics::commands::get_log_path,
                 // Frontend errors forwarded into the same log file.
                 diagnostics::commands::log_frontend_error,
+                // On-demand internet speed test.
+                diagnostics::commands::run_speed_test,
             ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

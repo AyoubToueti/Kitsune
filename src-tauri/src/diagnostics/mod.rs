@@ -8,6 +8,7 @@ pub mod commands;
 pub mod logging;
 pub mod metrics;
 pub mod panic;
+pub mod speedtest;
 pub mod task;
 
 pub use metrics::{SystemMonitor, SystemStats};
