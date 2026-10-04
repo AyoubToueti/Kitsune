@@ -5,9 +5,13 @@ import type { SystemStats } from "$lib/types";
 
 const getSystemStatsMock = vi.hoisted(() => vi.fn());
 const getLogPathMock = vi.hoisted(() => vi.fn());
+const runSpeedTestMock = vi.hoisted(() => vi.fn());
+const onSpeedTestProgressMock = vi.hoisted(() => vi.fn(async () => () => {}));
 vi.mock("$lib/api/diagnostics", () => ({
   getSystemStats: getSystemStatsMock,
   getLogPath: getLogPathMock,
+  runSpeedTest: runSpeedTestMock,
+  onSpeedTestProgress: onSpeedTestProgressMock,
 }));
 
 const revealItemInDirMock = vi.hoisted(() => vi.fn());
@@ -37,6 +41,8 @@ beforeEach(() => {
   getSystemStatsMock.mockReset().mockResolvedValue(stats());
   getLogPathMock.mockReset().mockResolvedValue("/data/kitsune/logs/kitsune.log");
   revealItemInDirMock.mockReset().mockResolvedValue(undefined);
+  runSpeedTestMock.mockReset();
+  onSpeedTestProgressMock.mockReset().mockResolvedValue(() => {});
 });
 
 afterEach(() => {
@@ -97,5 +103,36 @@ describe("DiagnosticsPanel", () => {
 
     await vi.advanceTimersByTimeAsync(2000);
     expect(getSystemStatsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("runs a speed test and shows the result and verdict", async () => {
+    runSpeedTestMock.mockResolvedValue({
+      latencyMs: 18,
+      jitterMs: 2,
+      downloadMbps: 42,
+      bytesDownloaded: 10_000_000,
+      durationMs: 8000,
+      verdict: "good",
+    });
+    render(DiagnosticsPanel);
+
+    await fireEvent.click(await screen.findByTestId("speed-test-run"));
+
+    expect(await screen.findByTestId("speed-download")).toHaveTextContent(
+      "42 Mbps",
+    );
+    expect(screen.getByTestId("speed-latency")).toHaveTextContent("18 ms");
+    expect(screen.getByTestId("speed-verdict")).toHaveTextContent(/stream/i);
+  });
+
+  it("shows an error when the speed test fails", async () => {
+    runSpeedTestMock.mockRejectedValue(new Error("a speed test is already running"));
+    render(DiagnosticsPanel);
+
+    await fireEvent.click(await screen.findByTestId("speed-test-run"));
+
+    expect(await screen.findByTestId("speed-error")).toHaveTextContent(
+      /already running/i,
+    );
   });
 });

@@ -4,6 +4,8 @@
 
   import { getLogPath, getSystemStats } from "$lib/api/diagnostics";
   import { formatSize } from "$lib/release-display";
+  import { createSpeedTest } from "$lib/speed-test.svelte";
+  import { speedSummary, verdictClass } from "$lib/speed-test";
   import type { SystemStats } from "$lib/types";
 
   /**
@@ -21,7 +23,16 @@
   let stats = $state<SystemStats | null>(null);
   let error = $state<string | null>(null);
 
+  /** The internet speed test: shared logic, rendered as tiles below. */
+  const speed = createSpeedTest();
+
+  /** The summary sentence for a finished test, or `null`. */
+  const summary = $derived(speed.result ? speedSummary(speed.result) : null);
+
   onMount(() => {
+    // Subscribe to speed-test progress for as long as the panel is open.
+    const stopSpeed = speed.start();
+
     let active = true;
 
     const tick = async (): Promise<void> => {
@@ -43,6 +54,7 @@
     return () => {
       active = false;
       clearInterval(timer);
+      stopSpeed();
     };
   });
 
@@ -134,6 +146,71 @@
       of {formatSize(stats.systemTotalBytes) ?? "—"}
     </p>
   {/if}
+
+  <!-- Internet speed test -->
+  <div class="mt-4 border-t border-border-subtle pt-4" data-testid="speed-test">
+    <div class="flex items-center justify-between gap-3">
+      <div>
+        <h4 class="text-xs font-semibold text-ink">Internet speed</h4>
+        <p class="text-[11px] text-ink-faint">
+          {#if speed.running && speed.progress}
+            {speed.progress.phase === "latency"
+              ? "Measuring latency…"
+              : "Measuring download…"} {speed.progress.percent}%
+          {:else if speed.running}
+            Starting…
+          {:else}
+            Latency and download, against Cloudflare.
+          {/if}
+        </p>
+      </div>
+      <button
+        type="button"
+        onclick={speed.run}
+        disabled={speed.running}
+        data-testid="speed-test-run"
+        class="shrink-0 rounded-lg border border-border-subtle bg-surface-hover px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {speed.running ? "Testing…" : "Test speed"}
+      </button>
+    </div>
+
+    {#if summary && speed.result}
+      <dl class="mt-3 grid grid-cols-2 gap-2">
+        <div
+          class="rounded-lg border border-border-subtle bg-surface-hover px-3 py-2"
+        >
+          <dt class="text-[11px] text-ink-faint">Download</dt>
+          <dd class="text-sm text-ink" data-testid="speed-download">
+            {speed.result.downloadMbps.toFixed(0)} Mbps
+          </dd>
+        </div>
+        <div
+          class="rounded-lg border border-border-subtle bg-surface-hover px-3 py-2"
+        >
+          <dt class="text-[11px] text-ink-faint">Latency</dt>
+          <dd class="text-sm text-ink" data-testid="speed-latency">
+            {speed.result.latencyMs.toFixed(0)} ms
+            <span class="text-[11px] text-ink-faint">
+              (±{speed.result.jitterMs.toFixed(0)})
+            </span>
+          </dd>
+        </div>
+      </dl>
+      <p
+        class="mt-2 text-[11px] {verdictClass(speed.result.verdict)}"
+        data-testid="speed-verdict"
+      >
+        <span aria-hidden="true">{summary.icon}</span> {summary.message}
+      </p>
+    {/if}
+
+    {#if speed.error}
+      <p class="mt-2 text-[11px] text-danger" data-testid="speed-error">
+        {speed.error}
+      </p>
+    {/if}
+  </div>
 
   <button
     type="button"
