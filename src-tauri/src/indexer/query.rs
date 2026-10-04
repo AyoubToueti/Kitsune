@@ -70,6 +70,20 @@ static SEASON_SUFFIX: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
+/// A season marker anywhere in a title, trailing or not.
+///
+/// [`SEASON_SUFFIX`] is anchored to the end because it also *strips* the marker
+/// to form a searchable base. Detection is a different question: `Show Season 4
+/// Part 2` and `Show Season 4 (2025)` both state a season, and the `Sxx`
+/// spelling must still be generated for them. This pattern is deliberately not
+/// anchored, so it finds the marker wherever it sits.
+static SEASON_ANYWHERE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)(?:\bseason\s*(?<plain>\d{1,2})\b|\b(?<ordinal>\d{1,2})\s*(?:st|nd|rd|th)\s+season\b)",
+    )
+    .unwrap()
+});
+
 /// Rewrite a title into the spelling a search engine is more likely to match.
 ///
 /// `:`, `,`, `-` and `_` become spaces, and runs of whitespace collapse. Case is
@@ -122,6 +136,32 @@ pub fn split_season(title: &str) -> (String, Option<u32>) {
     }
 
     (base, Some(number))
+}
+
+/// The season a title states anywhere, trailing or not.
+///
+/// Separate from [`split_season`], which only recognises a trailing marker and
+/// also returns the base text. This answers a narrower question -- "does the
+/// title name a season, and which one?" -- for callers that build a `Sxx`
+/// spelling and have no need for the stripped base.
+pub fn detect_season(title: &str) -> Option<u32> {
+    let captures = SEASON_ANYWHERE.captures(title).ok().flatten()?;
+
+    captures
+        .name("plain")
+        .or_else(|| captures.name("ordinal"))
+        .and_then(|m| m.as_str().parse::<u32>().ok())
+}
+
+/// The first season any of the title forms states, best form first.
+///
+/// The forms are ordered best-first (the UI's preferred title leads), so the
+/// first one that names a season is the one to trust. Scanning every form --
+/// not just the first -- matters because a work's preferred title is often the
+/// romaji with no marker, while its English title says `Season 4`; reading only
+/// the first form would silently default the season to 1 and query `S01`.
+pub fn stated_season(titles: &[String]) -> Option<u32> {
+    titles.iter().find_map(|title| detect_season(title))
 }
 
 /// The part of a title before its first colon, when it is worth searching.
@@ -312,7 +352,9 @@ pub fn build_queries_in_mode(
         return Vec::new();
     }
 
-    let stated = forms.first().and_then(|t| split_season(t).1);
+    // Scan every form, not just the first: the preferred title may be the
+    // romaji without a marker while a later form says `Season 4`.
+    let stated = stated_season(titles);
     // A pack search is always season-scoped, and an episode search gains a
     // season once an episode is in play. A film search stays bare.
     let season = match (mode, episode, stated) {
@@ -487,6 +529,68 @@ mod tests {
             MAX_QUERIES,
         );
         assert!(built.contains(&"Show S02".to_string()), "got {built:?}");
+    }
+
+    #[test]
+    fn detect_season_finds_a_trailing_marker() {
+        assert_eq!(detect_season("Show Season 3"), Some(3));
+        assert_eq!(detect_season("Jujutsu Kaisen 2nd Season"), Some(2));
+    }
+
+    #[test]
+    fn detect_season_finds_a_non_trailing_marker() {
+        // `split_season` only handles a trailing marker; detection must not.
+        assert_eq!(detect_season("Show Season 4 Part 2"), Some(4));
+        assert_eq!(detect_season("Show Season 4 (2025)"), Some(4));
+    }
+
+    #[test]
+    fn detect_season_is_none_without_a_marker() {
+        assert_eq!(detect_season("Attack on Titan"), None);
+        assert_eq!(detect_season("Gundam III"), None);
+    }
+
+    #[test]
+    fn stated_season_scans_every_form_not_just_the_first() {
+        // The preferred form is the romaji with no marker; the English one
+        // states the season. Reading only the first would lose the `4`.
+        let forms = titles(&[
+            "Re:Zero kara Hajimeru Isekai Seikatsu",
+            "Re:ZERO -Starting Life in Another World- Season 4",
+        ]);
+        assert_eq!(stated_season(&forms), Some(4));
+    }
+
+    #[test]
+    fn a_later_form_season_drives_the_sxx_spelling() {
+        // The end-to-end fix: the S04 spelling comes from the SECOND form.
+        let forms = titles(&[
+            "Re:Zero kara Hajimeru Isekai Seikatsu",
+            "Re:ZERO -Starting Life in Another World- Season 4",
+        ]);
+        let built = build_queries(&forms, Some(17), MAX_QUERIES);
+
+        // The colon is sanitised to a space, so the base reads `Re ZERO ...`.
+        assert!(
+            built.contains(&"Re ZERO Starting Life in Another World S04E17".to_string()),
+            "expected an S04E17 spelling from the second form: {built:?}"
+        );
+        assert!(
+            !built.iter().any(|q| q.contains("S01E17")),
+            "the season must not default to 1 when a form states 4: {built:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_trailing_marker_still_yields_the_sxx_spelling() {
+        // The base is not stripped (the marker is not trailing), so the season
+        // rides along with the rest of the title. The `Sxx` spelling is still
+        // produced, which is the point: the season number is no longer lost.
+        let built = build_queries(&titles(&["Show Season 4 Part 2"]), Some(3), MAX_QUERIES);
+        assert!(
+            built.iter().any(|q| q.contains("S04E03")),
+            "got {built:?}"
+        );
     }
 
     #[test]

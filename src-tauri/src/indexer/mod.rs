@@ -86,11 +86,10 @@ impl ReleaseRequest {
             return None;
         }
 
-        // The first title is the one the UI prefers, so it is the one whose
-        // season marker the matcher should honour.
-        let title = self.titles.first().map(String::as_str).unwrap_or("");
+        // Any title form may state the season: the preferred one is often the
+        // romaji without a marker while the English form says `Season 4`.
+        let season = query::stated_season(&self.titles).unwrap_or(1);
         self.episode.map(|episode| {
-            let season = query::split_season(title).1.unwrap_or(1);
             match self.absolute_episode {
                 Some(absolute) => {
                     EpisodeRequest::anime_in_season_with_absolute(episode, absolute, season)
@@ -336,6 +335,23 @@ mod tests {
         };
         let matcher = request.as_match().expect("an episode was requested");
         assert_eq!(matcher.season, Some(3));
+    }
+
+    #[test]
+    fn as_match_takes_the_season_from_a_later_title_form() {
+        // The preferred form states no season; the English one does. The
+        // matcher must honour it rather than defaulting to season 1.
+        let request = ReleaseRequest {
+            titles: vec![
+                "Re:Zero kara Hajimeru Isekai Seikatsu".into(),
+                "Re:ZERO -Starting Life in Another World- Season 4".into(),
+            ],
+            episode: Some(17),
+            absolute_episode: None,
+            mode: SearchMode::Episodes,
+        };
+        let matcher = request.as_match().expect("an episode was requested");
+        assert_eq!(matcher.season, Some(4));
     }
 
     #[test]
