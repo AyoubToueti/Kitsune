@@ -1,26 +1,54 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+
+  import { getTrailerEmbedBase } from "$lib/api/anime";
   import { trailerEmbedUrl, trailerWatchUrl } from "$lib/trailer";
   import type { Trailer } from "$lib/types";
+  import Modal from "./Modal.svelte";
 
   let { trailer }: { trailer?: Trailer } = $props();
 
-  // Manage modal open state
+  // Whether the trailer overlay is open.
   let isOpen = $state(false);
-
-  // Handle closing modal via Escape key
-  function handleKeyDown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      isOpen = false;
-    }
-  }
 
   // The URL builders live in `$lib/trailer` so the card and this page agree.
   const url = $derived(trailer ? trailerWatchUrl(trailer) : null);
-  const videoEmbedUrl = $derived(trailer ? trailerEmbedUrl(trailer) : null);
-</script>
 
-<!-- Global window listener to catch the Escape key shortcut automatically -->
-<svelte:window onkeydown={handleKeyDown} />
+  /**
+   * The loopback server's base URL, or `null` when it is not running.
+   *
+   * Read once: the port is fixed for the app's life. Until it resolves, the
+   * YouTube embed falls back to the direct URL, which only works in dev.
+   */
+  let embedBase = $state<string | null>(null);
+
+  onMount(() => {
+    getTrailerEmbedBase()
+      .then((base) => {
+        embedBase = base;
+      })
+      .catch(() => {
+        // Fall back to the direct embed; the trailer may still play in dev.
+        embedBase = null;
+      });
+  });
+
+  /**
+   * Where the iframe points.
+   *
+   * YouTube is served through the loopback page when it is available: its
+   * player refuses to configure on a page with no HTTP referer, which the app's
+   * `tauri://localhost` origin is, so a direct embed fails with Error 153 in a
+   * production build. Other sites embed directly as before.
+   */
+  const videoEmbedUrl = $derived.by(() => {
+    if (!trailer) return null;
+    if (trailer.site.toLowerCase() === "youtube" && embedBase !== null) {
+      return `${embedBase}/embed?v=${encodeURIComponent(trailer.id)}`;
+    }
+    return trailerEmbedUrl(trailer);
+  });
+</script>
 
 {#if trailer && url && videoEmbedUrl}
   <div class="mt-6">
@@ -52,30 +80,20 @@
   </div>
 {/if}
 
-<!-- Overlay Video Modal -->
-{#if isOpen && videoEmbedUrl}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <!-- svelte-ignore a11y_interactive_supports_focus -->
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
-    role="dialog"
-    aria-modal="true"
-    onclick={() => (isOpen = false)}
-  >
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="relative w-full max-w-4xl aspect-video overflow-hidden rounded-xl bg-black shadow-2xl border border-border-subtle"
-      onclick={(e) => e.stopPropagation()}
-    >
-      <!-- Video Player Frame -->
-      <iframe
-        src={videoEmbedUrl}
-        title="Trailer Player"
-        class="h-full w-full border-0"
-        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-        allowfullscreen
-      ></iframe>
-    </div>
+<!-- Trailer overlay. `Modal` portals to <body>, so this escapes the sidebar's
+     sticky stacking context and paints above the Recommended row. -->
+<Modal
+  open={isOpen && videoEmbedUrl !== null}
+  onClose={() => (isOpen = false)}
+  label="Trailer"
+>
+  <div class="aspect-video w-full overflow-hidden bg-black">
+    <iframe
+      src={videoEmbedUrl ?? ""}
+      title="Trailer Player"
+      class="h-full w-full border-0"
+      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+      allowfullscreen
+    ></iframe>
   </div>
-{/if}
+</Modal>

@@ -29,6 +29,7 @@ export const COMMANDS = {
   tags: "get_tags",
   schedule: "get_schedule",
   episodes: "get_episodes",
+  trailerEmbedBase: "trailer_embed_base",
 } as const;
 
 /**
@@ -87,6 +88,23 @@ export async function getRecommendations(
         page,
         perPage,
       }),
+  );
+}
+
+/**
+ * The base URL of the loopback server that hosts the trailer embed page, or
+ * `null` when it is not running.
+ *
+ * YouTube's embed player requires a valid HTTP referer, which the app's
+ * `tauri://localhost` origin cannot provide in a production build (Error 153).
+ * The page served here is on `http://127.0.0.1`, a real HTTP origin YouTube
+ * accepts. The port is OS-assigned, so it must be fetched rather than assumed.
+ *
+ * Cached: the port is fixed for the app's life.
+ */
+export async function getTrailerEmbedBase(): Promise<string | null> {
+  return cached("trailer-embed-base", API_TTL.detail, () =>
+    invoke<string | null>(COMMANDS.trailerEmbedBase),
   );
 }
 

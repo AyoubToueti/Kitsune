@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod commands;
 pub mod diagnostics;
+pub mod embed_server;
 pub mod indexer;
 pub mod player;
 pub mod providers;
@@ -40,6 +41,14 @@ pub fn run() {
     // One settings store for the process, shared by the player state and the
     // settings commands.
     let settings = std::sync::Arc::new(settings::SettingsStore::new());
+
+    // The loopback server that hosts the trailer embed page. Started before
+    // the builder so the port is known when the webview loads; a failed bind
+    // leaves `None` and the trailer falls back to a direct embed.
+    let embed = embed_server::EmbedState(embed_server::start());
+    if embed.0.is_none() {
+        tracing::warn!("the trailer embed server did not start; YouTube trailers may fail");
+    }
 
         // Jikan is managed separately: it is not an `AnimeProvider`, it only fills
         // in episode lists for works AniList already described.
@@ -82,6 +91,9 @@ pub fn run() {
             // reader stays signed in across restarts.
             .manage(auth::TokenStore::new())
             .manage(auth::LastPlayedStore::new())
+            // The trailer embed server's port, so the frontend can build the
+            // `http://127.0.0.1:<port>/embed?v=` URL that satisfies YouTube.
+            .manage(embed)
             // Behind a mutex because `sysinfo` needs two refreshes separated
             // in time before CPU usage is meaningful, so the monitor carries
             // state between polls.
@@ -168,6 +180,8 @@ pub fn run() {
                 commands::get_anime,
                 commands::get_recommendations,
                 commands::get_episodes,
+                // The loopback URL a YouTube trailer is embedded through.
+                embed_server::trailer_embed_base,
                 // Finding releases.
                 indexer::commands::search_releases,
                 indexer::commands::download_torrent,
