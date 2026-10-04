@@ -1,0 +1,75 @@
+name: build
+
+# Build Kitsune for Linux (x64) and Windows (x64) WITHOUT creating a release.
+#
+# Run it manually from the Actions tab (Run workflow). The installers are
+# attached to the run as downloadable artifacts. No tag, no Release, and the
+# app version is whatever tauri.conf.json currently says.
+#
+# Use this to verify the builder works. For an actual release, push a version
+# tag — that is handled by release.yml.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "ubuntu-22.04" # Linux x64 (.AppImage, .deb, .rpm)
+            args: ""
+          - platform: "windows-latest" # Windows x64 (.msi, -setup.exe)
+            args: ""
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # WebKitGTK 4.1 and the tray/indicator + SVG libs are what the webview and
+      # the appindicator need to link. `libfuse2` lets the produced AppImage run
+      # on the runner; end users may need it too (see README).
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            xdg-utils \
+            libfuse2
+
+      # Version comes from package.json's `packageManager`; do NOT also pass a
+      # `version:` here or pnpm/action-setup@v4 errors with "Multiple versions".
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Omitting tagName / releaseName / releaseId makes tauri-action build
+      # only; uploadWorkflowArtifacts attaches the bundles to this run.
+      - name: Build
+        uses: tauri-apps/tauri-action@v1
+        with:
+          uploadWorkflowArtifacts: true
+          args: ${{ matrix.args }}
