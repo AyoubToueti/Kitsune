@@ -31,6 +31,8 @@ export const PLAYER_COMMANDS = {
   streamUrl: "get_stream_url",
   torrentStats: "get_torrent_stats",
   openInPlayer: "open_in_player",
+  chooseAndOpenPlayer: "choose_and_open_player",
+  choosePlayerPreview: "choose_player_preview",
   getPlayer: "get_player",
   setPlayer: "set_player",
   suggestedPlayers: "suggested_players",
@@ -151,6 +153,38 @@ export async function openInPlayer(
     player,
     torrentId,
   });
+}
+
+/**
+ * Open the OS "Open With" chooser, then open `url` in the picked application.
+ *
+ * The replacement for the silent auto-launch: the desktop's own app chooser
+ * lists the video players registered for the file type, so the reader picks
+ * per launch instead of the app always using the stored preference. Resolves
+ * to the chosen program's name, or an empty string when the dialog was
+ * cancelled -- a cancel opens nothing and is not an error.
+ *
+ * `torrentId` is held for the player's lifetime exactly as in [`openInPlayer`].
+ */
+export async function chooseAndOpenPlayer(
+  url: string,
+  torrentId?: number,
+): Promise<string> {
+  return invoke<string>(PLAYER_COMMANDS.chooseAndOpenPlayer, {
+    url,
+    torrentId,
+  });
+}
+
+/**
+ * Show the app chooser against a stub URL without opening anything.
+ *
+ * A development affordance for exercising the dialog with no torrent and no
+ * buffering wait. Resolves to the chosen program's name, or an empty string on
+ * cancel.
+ */
+export async function choosePlayerPreview(): Promise<string> {
+  return invoke<string>(PLAYER_COMMANDS.choosePlayerPreview);
 }
 
 /** The chosen external player. */
