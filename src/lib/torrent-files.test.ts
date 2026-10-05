@@ -4,15 +4,59 @@ import {
   bestEffortFile,
   fileForEpisode,
   fileKind,
+  firstTargetFile,
   isPlayable,
   matchNumber,
   matchesFileQuery,
+  playableCount,
 } from "./torrent-files";
 import type { TorrentFile } from "./types";
 
 function file(name: string, lengthBytes = 1_000_000): TorrentFile {
   return { idx: 0, name, lengthBytes };
 }
+
+describe("playableCount", () => {
+  it("counts only playable videos", () => {
+    const files = [
+      file("Show - 01.mkv"),
+      file("Show - 01.srt"),
+      file("cover.jpg"),
+      file("Show - 02.mp4"),
+    ];
+    expect(playableCount(files)).toBe(2);
+  });
+
+  it("is zero for a torrent with no video", () => {
+    expect(playableCount([file("a.srt"), file("b.nfo")])).toBe(0);
+  });
+});
+
+describe("firstTargetFile", () => {
+  it("prefers an exact episode match even among many files", () => {
+    const files = [
+      file("Show - 01.mkv"),
+      file("Show - 03.mkv"),
+      file("Show - 04.mkv"),
+    ];
+    expect(firstTargetFile(files, 3, 0)?.name).toBe("Show - 03.mkv");
+  });
+
+  it("waits when there is no match and more than one video", () => {
+    const files = [file("Show - 01.mkv"), file("Show - 02.mkv")];
+    expect(firstTargetFile(files, 9, 0)).toBeNull();
+  });
+
+  it("starts the lone video when nothing matches", () => {
+    const files = [file("something-else.mkv"), file("notes.nfo")];
+    expect(firstTargetFile(files, 3, 0)?.name).toBe("something-else.mkv");
+  });
+
+  it("waits when the number is unknown and there is a choice", () => {
+    const files = [file("a.mkv"), file("b.mkv")];
+    expect(firstTargetFile(files, undefined, 0)).toBeNull();
+  });
+});
 
 describe("matchesFileQuery", () => {
   it("matches an empty query", () => {

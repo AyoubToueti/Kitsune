@@ -67,6 +67,42 @@ export function isPlayable(file: TorrentFile): boolean {
 }
 
 /**
+ * How many playable videos a torrent holds.
+ *
+ * The count that decides "is this a single episode, or is there a choice to
+ * make?". Deliberately counts only playable files: a release that ships the
+ * episode beside a subtitle and cover art is one video, not three, and should
+ * not be forced to wait for a pick.
+ */
+export function playableCount(files: TorrentFile[]): number {
+  return files.filter(isPlayable).length;
+}
+
+/**
+ * The file to start automatically, or `null` to wait for the reader's pick.
+ *
+ * The rule that keeps a batch from downloading an arbitrary guess: an exact
+ * episode match always wins, but when nothing matches and there is more than
+ * one video to choose from, nothing is started — the reader picks, and the
+ * torrent is held paused until they do. A single video with no match still
+ * starts, since there is no choice to make.
+ */
+export function firstTargetFile(
+  files: TorrentFile[],
+  number: number | undefined,
+  offset: number,
+): TorrentFile | null {
+  if (number !== undefined) {
+    const exact = fileForEpisode(files, number, offset);
+    if (exact !== null) return exact;
+  }
+
+  if (playableCount(files) > 1) return null;
+
+  return bestEffortFile(files);
+}
+
+/**
  * Whether a file's name contains `query`, case-insensitively.
  *
  * The file list's filter box. A plain substring match rather than a token
