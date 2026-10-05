@@ -273,6 +273,57 @@ async fn pick_player(
     rx.recv().map_err(|err| err.to_string())?
 }
 
+/// The players the in-app picker should offer, in display order.
+///
+/// Discovered, not hardcoded: the desktop's registered applications for the
+/// content type, plus a few known players that are installed. The reader's
+/// stored preference is marked, so the picker can show what is already chosen.
+#[tauri::command]
+pub async fn list_players(
+    state: State<'_, PlayerState>,
+) -> Result<Vec<super::chooser::PlayerOption>, String> {
+    let default = state.resolved_player();
+    Ok(super::chooser::list_players(
+        super::chooser::VIDEO_CONTENT_TYPE,
+        Some(&default),
+    ))
+}
+
+/// Open a URL in a specific player the picker named.
+///
+/// The counterpart of [`choose_and_open_player`] for the in-app picker: the
+/// frontend already resolved which program and arguments to use, so there is no
+/// dialog here -- just the same hold/spawn/wait/release path, so a picked player
+/// cannot leak the torrent.
+#[tauri::command]
+pub async fn open_in_player_choice(
+    app: AppHandle,
+    state: State<'_, PlayerState>,
+    url: String,
+    program: String,
+    extra_args: Option<Vec<String>>,
+    torrent_id: Option<usize>,
+) -> Result<String, String> {
+    let choice = super::chooser::PlayerChoice {
+        program,
+        extra_args: extra_args.unwrap_or_default(),
+    };
+
+    let on_exit: Option<Arc<dyn Fn(usize) + Send + Sync>> = torrent_id.map(|_| {
+        let app = app.clone();
+        Arc::new(move |id: usize| {
+            if let Err(err) = app.emit(PLAYER_EXIT_EVENT, id) {
+                tracing::warn!("failed to emit {PLAYER_EXIT_EVENT} for torrent {id}: {err:#}");
+            }
+        }) as Arc<dyn Fn(usize) + Send + Sync>
+    });
+
+    state
+        .open_in_player_choice(&url, &choice, torrent_id, on_exit)
+        .await
+        .map_err(|err| err.to_string())
+}
+
 /// The chosen external player.
 #[tauri::command]
 pub fn get_player(state: State<'_, PlayerState>) -> String {

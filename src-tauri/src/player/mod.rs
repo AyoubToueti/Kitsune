@@ -8,9 +8,13 @@
 
 pub mod chooser;
 pub mod commands;
+pub mod icons;
 pub mod launch;
 pub mod state;
 
-pub use chooser::{choose_player_blocking, PlayerChoice, CHOOSER_UNSUPPORTED, VIDEO_CONTENT_TYPE};
+pub use chooser::{
+    choose_player_blocking, list_players, registered_players, PlayerChoice, PlayerOption,
+    CHOOSER_UNSUPPORTED, VIDEO_CONTENT_TYPE,
+};
 pub use launch::{resolve_player, spawn_player, DEFAULT_PLAYER, SUGGESTED_PLAYERS};
 pub use state::{PlayerState, TorrentFile, TorrentHandle};

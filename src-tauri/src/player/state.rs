@@ -228,7 +228,7 @@ impl PlayerState {
     /// page never reached the launch path and only took effect after a restart.
     /// The store is the single source of truth; the mutex remains only as the
     /// fallback for a `PlayerState` built without a store (tests).
-    fn resolved_player(&self) -> String {
+    pub fn resolved_player(&self) -> String {
         match self.inner.settings.as_ref() {
             Some(store) => resolve_player(Some(&store.read().player)),
             None => self.player(),

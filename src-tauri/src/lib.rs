@@ -208,6 +208,8 @@ pub fn run() {
                 player::commands::open_in_player,
                 player::commands::choose_and_open_player,
                 player::commands::choose_player_preview,
+                player::commands::list_players,
+                player::commands::open_in_player_choice,
                 player::commands::get_player,
                 player::commands::set_player,
                 player::commands::suggested_players,
@@ -228,6 +230,7 @@ pub fn run() {
                 // The reader's preferences.
                 settings::get_settings,
                 settings::set_settings,
+                settings::set_default_player,
                 // Diagnostics: resource usage and the log file location.
                 diagnostics::commands::get_system_stats,
                 diagnostics::commands::get_log_path,

@@ -53,6 +53,10 @@ tempfile = "3.27.0"
 # Resolves the OS data directory for the AniList token store. Already present
 # transitively in Cargo.lock, so this promotes rather than adds to the graph.
 dirs = "6"
+# Encodes a player's icon as a data URL for the picker. The CSP allows `data:`
+# but not `file:`, so the bytes have to travel inline. Already in the graph
+# transitively, so this promotes rather than adds to it.
+base64 = "0.22"
 
 # Desktop only: single-instance has no mobile equivalent, and the `deep-link`
 # feature is what makes a link delivered to a second process reach the running

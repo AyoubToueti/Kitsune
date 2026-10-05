@@ -47,6 +47,170 @@ pub struct PlayerChoice {
     pub extra_args: Vec<String>,
 }
 
+/// A player offered in the in-app picker, before anything is launched.
+///
+/// Carries enough to render a row AND to launch it later, so the picker does
+/// not have to re-resolve anything. `id` is the executable path, which is what
+/// de-duplicates a player found both by GIO and by the PATH scan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerOption {
+    /// Stable identity: the resolved executable path.
+    pub id: String,
+    /// Human name for the row, e.g. "VLC media player" or "mpv".
+    pub name: String,
+    /// The program to spawn.
+    pub program: String,
+    /// The program's own arguments, in order, minus any URL placeholder.
+    pub extra_args: Vec<String>,
+    /// True for the reader's stored preference, so the picker can mark it.
+    pub is_default: bool,
+    /// The player's icon as a `data:` URL, or `None` when none was found.
+    ///
+    /// A `data:` URL rather than a path: the app's CSP allows `data:` but not
+    /// `file:`, so the bytes have to travel inline. `None` is not a failure --
+    /// the picker draws its own fallback glyph.
+    pub icon: Option<String>,
+}
+
+/// An icon `data:` URL for a player's executable, if one can be found.
+///
+/// The icon name is the executable's file stem: a `.desktop` file names its
+/// icon after the app (`vlc`), and the known-player scan matches the binary
+/// the same way. Failure is silent -- a missing icon is cosmetic.
+pub fn icon_for_program(program: &str) -> Option<String> {
+    let stem = std::path::Path::new(program)
+        .file_stem()
+        .and_then(|s| s.to_str())?;
+    let roots = super::icons::icon_theme_roots();
+    let path = super::icons::resolve_icon_path(stem, &roots)?;
+    super::icons::icon_data_url(&path)
+}
+
+/// Known players to add when they are installed but not registered.
+///
+/// GIO lists only what a `.desktop` file declares, so a player with no desktop
+/// entry is invisible to it -- mpv on a bare NixOS profile is exactly that
+/// case, and it silently vanished from the chooser. These names are probed on
+/// `PATH` and added when present. A HINT list, not the whole list: discovery
+/// still supplies everything the desktop knows about, and this only fills the
+/// gap for the players this app is most likely to be paired with.
+const KNOWN_PLAYERS: &[&str] = &["mpv", "vlc", "celluloid", "totem", "haruna", "smplayer"];
+
+/// Build the player list: everything registered for the content type, plus any
+/// known player that is installed but not registered.
+///
+/// `registered` is what the platform discovered (GIO on Linux, empty
+/// elsewhere); `on_path` answers "is this program installed, and where". The
+/// two seams are injected so the merge -- the part with the de-duplication and
+/// the preference marking -- is tested without GIO or a real filesystem.
+pub fn merge_players(
+    registered: Vec<PlayerChoice>,
+    known: &[&str],
+    on_path: &dyn Fn(&str) -> Option<String>,
+    default_program: Option<&str>,
+) -> Vec<PlayerOption> {
+    let mut options: Vec<PlayerOption> = Vec::new();
+
+    // Registered players first: the desktop's own opinion of what opens this
+    // type, which is the most trustworthy source.
+    for choice in registered {
+        // Name computed before `program` is moved into `push_unique`.
+        let name = name_for(&choice.program);
+        push_unique(&mut options, choice.program, name, choice.extra_args);
+    }
+
+    // Then the known names, but only those actually installed. A name that is
+    // not on PATH is skipped rather than listed as a broken row.
+    for name in known {
+        if let Some(path) = on_path(name) {
+            push_unique(&mut options, path, (*name).to_string(), Vec::new());
+        }
+    }
+
+    // Mark the reader's stored choice, comparing on the resolved executable so
+    // "mpv" and "/usr/bin/mpv" are recognised as the same player.
+    if let Some(default) = default_program {
+        let resolved = on_path(default).unwrap_or_else(|| default.to_string());
+        for option in &mut options {
+            if option.program == resolved || option.program == default {
+                option.is_default = true;
+            }
+        }
+    }
+
+    options
+}
+
+/// Add `program` if it is not already listed, keyed on the executable path.
+///
+/// A player can arrive from both GIO and the PATH scan; without this it would
+/// appear twice with different names.
+fn push_unique(
+    options: &mut Vec<PlayerOption>,
+    program: String,
+    name: String,
+    extra_args: Vec<String>,
+) {
+    if options.iter().any(|existing| existing.program == program) {
+        return;
+    }
+    // The icon is resolved from the executable's own name; a player whose
+    // theme has no matching icon simply gets `None` and a fallback glyph.
+    let icon = icon_for_program(&program);
+    options.push(PlayerOption {
+        id: program.clone(),
+        name,
+        program,
+        extra_args,
+        is_default: false,
+        icon,
+    });
+}
+
+/// A readable name for a registered player's executable.
+///
+/// The desktop name is not available from the executable alone, so the file
+/// stem is title-cased: `/usr/bin/vlc` -> "Vlc". Good enough for a row; the
+/// known-player path supplies the nicer names for the players we care about.
+fn name_for(program: &str) -> String {
+    std::path::Path::new(program)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| {
+            let mut chars = stem.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => program.to_string(),
+            }
+        })
+        .unwrap_or_else(|| program.to_string())
+}
+
+/// Find a program on `PATH`, returning its absolute path.
+///
+/// The same lookup a shell does, without spawning one. `None` means the
+/// program is not installed, which is what keeps an absent known player out of
+/// the list.
+pub fn find_on_path(name: &str) -> Option<String> {
+    // An absolute or relative path is used as-is: the reader may have typed a
+    // full path in settings, and `PATH` lookup would miss it.
+    if name.contains('/') {
+        let path = std::path::Path::new(name);
+        return if path.is_file() {
+            Some(name.to_string())
+        } else {
+            None
+        };
+    }
+
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
 /// Whether an argument is a desktop-entry field code we must not pass through.
 ///
 /// The freedesktop spec lets a `.desktop` file write placeholders such as `%U`
@@ -259,6 +423,68 @@ pub fn choose_player_blocking(_content_type: &str) -> Result<Option<PlayerChoice
     Err(CHOOSER_UNSUPPORTED.to_string())
 }
 
+/// Applications the desktop registers for the content type, as choices.
+///
+/// GIO, not GTK: this only READS the app registry, so it does not need a
+/// display and does not have to run on the main thread. Empty on a failure --
+/// an unreadable registry is not worth failing the whole picker over, since
+/// the known-player scan still supplies mpv and vlc.
+#[cfg(target_os = "linux")]
+pub fn registered_players(content_type: &str) -> Vec<PlayerChoice> {
+    // `gio` is re-exported through the `gtk` crate, which is already a Linux
+    // dependency of this crate; no extra dependency is introduced. The
+    // extension trait supplies `executable`/`commandline`, which are not
+    // inherent methods.
+    use gtk::gio;
+
+    let mut players = Vec::new();
+    for app in gio::AppInfo::all_for_type(content_type) {
+        if let Some(choice) = choice_for_app(&app) {
+            players.push(choice);
+        }
+    }
+    players
+}
+
+/// The non-Linux stub: no app registry is consulted, so nothing is listed.
+#[cfg(not(target_os = "linux"))]
+pub fn registered_players(_content_type: &str) -> Vec<PlayerChoice> {
+    Vec::new()
+}
+
+/// Turn a GIO application into a launchable choice.
+///
+/// Prefers the full command line, which carries the arguments the app expects.
+/// Falls back to the executable alone when that line is missing or blank --
+/// [`resolve_choice`] owns that policy, so it is not repeated here.
+#[cfg(target_os = "linux")]
+fn choice_for_app(app: &gtk::gio::AppInfo) -> Option<PlayerChoice> {
+    // `commandline`/`executable` come from the extension trait, not inherent
+    // methods, so it must be in scope at the call site.
+    use gtk::gio::prelude::AppInfoExt;
+
+    let commandline = app.commandline().map(|p| p.to_string_lossy().into_owned());
+    let executable = app.executable().to_string_lossy().into_owned();
+    resolve_choice(commandline.as_deref(), Some(executable.as_str()))
+}
+
+/// Every player the in-app picker should offer, in display order.
+///
+/// The merged list: the desktop's registered apps, plus known players that are
+/// installed. `default` is the reader's stored preference, marked in the list
+/// so the picker can show which one is already chosen.
+pub fn list_players(
+    content_type: &str,
+    default: Option<&str>,
+) -> Vec<PlayerOption> {
+    merge_players(
+        registered_players(content_type),
+        KNOWN_PLAYERS,
+        &find_on_path,
+        default,
+    )
+}
+
 /// Marker returned when the platform has no app chooser.
 ///
 /// The command layer compares against this to decide between "the reader
@@ -317,6 +543,83 @@ mod tests {
     #[test]
     fn empty_argv_has_no_choice() {
         assert_eq!(choice_from_argv(&[]), None);
+    }
+
+    #[test]
+    fn merge_keeps_registered_players_first() {
+        let registered = vec![PlayerChoice {
+            program: "/usr/bin/vlc".to_string(),
+            extra_args: vec!["--started-from-file".to_string()],
+        }];
+        let merged = merge_players(registered, &[], &|_| None, None);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].program, "/usr/bin/vlc");
+        assert_eq!(merged[0].name, "Vlc");
+        assert_eq!(merged[0].extra_args, vec!["--started-from-file".to_string()]);
+    }
+
+    #[test]
+    fn merge_adds_known_players_that_are_installed() {
+        let on_path = |name: &str| match name {
+            "mpv" => Some("/usr/bin/mpv".to_string()),
+            _ => None,
+        };
+        let merged = merge_players(vec![], &["mpv", "vlc"], &on_path, None);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].program, "/usr/bin/mpv");
+        assert_eq!(merged[0].name, "mpv");
+    }
+
+    #[test]
+    fn merge_does_not_duplicate_a_player_found_both_ways() {
+        // VLC registered by GIO AND installed on PATH must appear once.
+        let registered = vec![PlayerChoice {
+            program: "/usr/bin/vlc".to_string(),
+            extra_args: vec![],
+        }];
+        let on_path = |name: &str| {
+            (name == "vlc").then(|| "/usr/bin/vlc".to_string())
+        };
+        let merged = merge_players(registered, &["vlc"], &on_path, None);
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn merge_marks_the_stored_preference() {
+        let on_path = |name: &str| {
+            (name == "mpv").then(|| "/usr/bin/mpv".to_string())
+        };
+        let merged = merge_players(vec![], &["mpv"], &on_path, Some("mpv"));
+        assert!(merged[0].is_default);
+    }
+
+    #[test]
+    fn merge_marks_the_default_by_resolved_path_too() {
+        // The stored preference is a bare name; the list holds an absolute
+        // path. They must still be recognised as the same player.
+        let registered = vec![PlayerChoice {
+            program: "/nix/store/abc/bin/mpv".to_string(),
+            extra_args: vec![],
+        }];
+        let on_path = |name: &str| {
+            (name == "mpv").then(|| "/nix/store/abc/bin/mpv".to_string())
+        };
+        let merged = merge_players(registered, &["mpv"], &on_path, Some("mpv"));
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].is_default);
+    }
+
+    #[test]
+    fn find_on_path_uses_an_explicit_path_as_is() {
+        // A reader-typed absolute path is not looked up on PATH.
+        let existing = std::env::current_exe().expect("current exe");
+        let found = find_on_path(&existing.to_string_lossy());
+        assert_eq!(found.as_deref(), Some(existing.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn find_on_path_misses_a_nonexistent_absolute_path() {
+        assert_eq!(find_on_path("/definitely/not/here/nope"), None);
     }
 
     #[test]
