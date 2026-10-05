@@ -31,6 +31,7 @@ const removeTorrentMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
 const getTorrentStatsMock = vi.hoisted(() => vi.fn());
 const openInPlayerMock = vi.hoisted(() => vi.fn());
+const chooseAndOpenPlayerMock = vi.hoisted(() => vi.fn());
 // The session subscribes to player exits; a never-firing stub is enough here,
 // and returning an unlisten function matches the real shape so cleanup works.
 const onPlayerExitMock = vi.hoisted(() =>
@@ -49,6 +50,7 @@ vi.mock("$lib/api/player", () => ({
   getStreamUrl: getStreamUrlMock,
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
+  chooseAndOpenPlayer: chooseAndOpenPlayerMock,
   onPlayerExit: onPlayerExitMock,
 }));
 
@@ -124,6 +126,7 @@ beforeEach(() => {
   getStreamUrlMock.mockReset().mockResolvedValue("http://127.0.0.1/stream/0");
   getTorrentStatsMock.mockReset().mockResolvedValue(null);
   openInPlayerMock.mockReset().mockResolvedValue("mpv");
+  chooseAndOpenPlayerMock.mockReset().mockResolvedValue("mpv");
   setListEntryMock.mockReset().mockResolvedValue(undefined);
   recordLastPlayedMock.mockReset().mockResolvedValue(undefined);
   openDialogMock.mockReset();

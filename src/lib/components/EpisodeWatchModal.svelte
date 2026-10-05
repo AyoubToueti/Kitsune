@@ -287,6 +287,24 @@
             >
               {#snippet actions()}
                 <div class="flex items-center gap-1.5">
+                  <!-- Choose Player Button -->
+                  <button
+                    type="button"
+                    onclick={() => session.choosePlayer()}
+                    disabled={session.launched}
+                    title="Choose which player to open"
+                    aria-label="Choose which player to open"
+                    data-testid="buffer-choose-player"
+                    class="group relative flex size-8 items-center justify-center rounded-full border border-border-subtle bg-surface text-ink transition-all hover:border-accent hover:bg-accent hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+                  >
+                    <!-- Play-in-window icon: a player window with a play glyph -->
+                    <svg class="size-3.5 fill-current" viewBox="0 0 24 24">
+                      <path
+                        d="M3 5h18v14H3V5zm2 2v10h14V7H5zm5 2.5v5l4-2.5-4-2.5z"
+                      />
+                    </svg>
+                  </button>
+
                   <!-- Pause / Resume Button -->
                   <button
                     type="button"
