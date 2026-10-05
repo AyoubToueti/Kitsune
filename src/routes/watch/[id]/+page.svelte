@@ -982,6 +982,10 @@
         {fileFraction}
         {torrentFraction}
         empty={streamUrl === undefined}
+        fileBytes={chosen
+          ? (torrentProgress?.fileProgress[chosen.idx] ?? 0)
+          : undefined}
+        fileTotalBytes={chosen?.lengthBytes}
       />
 
       <div class="mt-3 flex flex-wrap items-center gap-2">

@@ -30,6 +30,8 @@
     staleSeconds = 0,
     playedFraction = 0,
     paused = false,
+    fileBytes,
+    fileTotalBytes,
     actions,
   }: {
     /** Latest snapshot, or `null` before the first poll has answered. */
@@ -74,6 +76,17 @@
      * the margin ahead of the playhead. `0` when nothing is playing yet.
      */
     playedFraction?: number;
+    /**
+     * Bytes of the chosen file downloaded so far.
+     *
+     * The reader watches one episode, so its own byte count is the number that
+     * matters -- the whole-torrent total (which includes every other episode in
+     * a pack) tells them nothing about whether they can start. Falls back to the
+     * torrent totals when omitted.
+     */
+    fileBytes?: number;
+    /** Total size of the chosen file, paired with `fileBytes`. */
+    fileTotalBytes?: number;
   } = $props();
 
   /** The single notice worth showing, or `null`. */
@@ -222,9 +235,13 @@
       {#if progress}
         <div class="mt-1.5 flex items-center justify-between text-[11px]">
           <span class="text-ink-faint" data-testid="bytes">
-            {formatBytes(progress.progressBytes)} / {formatBytes(
-              progress.totalBytes,
-            )}
+            {#if fileBytes !== undefined && fileTotalBytes !== undefined}
+              {formatBytes(fileBytes)} / {formatBytes(fileTotalBytes)}
+            {:else}
+              {formatBytes(progress.progressBytes)} / {formatBytes(
+                progress.totalBytes,
+              )}
+            {/if}
           </span>
           <!-- The whole-torrent figure is kept for tests and context, but it
                sits quietly beside the byte count rather than owning a bar. -->

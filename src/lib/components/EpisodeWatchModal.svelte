@@ -279,6 +279,10 @@
               staleSeconds={session.staleSeconds}
               empty={false}
               paused={session.paused}
+              fileBytes={session.chosen
+                ? (session.progress?.fileProgress[session.chosen.idx] ?? 0)
+                : undefined}
+              fileTotalBytes={session.chosen?.lengthBytes}
             >
               {#snippet actions()}
                 <div class="flex items-center gap-1.5">

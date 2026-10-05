@@ -217,6 +217,21 @@ describe("StreamStatus", () => {
     expect(screen.getByTestId("bytes")).toHaveTextContent(/1.4 MB \/ 2.9 MB/);
   });
 
+  it("shows the chosen file's bytes when they are given", () => {
+    render(StreamStatus, {
+      props: {
+        progress: progress({ progressBytes: 2_000_000, totalBytes: 25_000_000_000 }),
+        // The whole torrent is 25 GB, but this one episode is 1.4 GB and 200 MB
+        // of it has arrived. The reader cares about the episode, not the pack.
+        fileBytes: 200_000_000,
+        fileTotalBytes: 1_400_000_000,
+      },
+    });
+
+    expect(screen.getByTestId("bytes")).toHaveTextContent(/191 MB \/ 1.3 GB/);
+    expect(screen.getByTestId("bytes")).not.toHaveTextContent(/25/);
+  });
+
   it("surfaces a torrent error message", () => {
     render(StreamStatus, {
       props: {
