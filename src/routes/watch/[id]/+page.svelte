@@ -9,9 +9,9 @@
   import {
     addMagnet,
     addTorrent,
+    chooseAndOpenPlayer,
     getStreamUrl,
     getTorrentStats,
-    openInPlayer,
     removeTorrent,
   } from "$lib/api/player";
   import {
@@ -187,6 +187,13 @@
   let launching = $state(false);
   /** True once the player has been opened for the current selection. */
   let launched = $state(false);
+  /**
+   * True once the player chooser has been shown for the current selection.
+   *
+   * Apart from `launched` because cancelling the chooser opens nothing yet must
+   * still stop the poll from re-opening the dialog on the next tick.
+   */
+  let prompted = $state(false);
 
   // --- the indexer search --------------------------------------------------
 
@@ -677,6 +684,9 @@
     torrentFraction = 0;
     launched = false;
     launching = false;
+    // A new file is a new choice: allow the chooser to open for it even if the
+    // reader cancelled it for the previous file.
+    prompted = false;
 
     try {
       streamUrl = await getStreamUrl(torrentId, file.idx);
@@ -729,22 +739,33 @@
    * the moment playback actually begins.
    */
   async function launch(): Promise<void> {
-    if (launched || launching) return;
+    if (launched || launching || prompted) return;
     if (streamUrl === undefined || torrentId === null) return;
 
+    // Mark prompted BEFORE awaiting: the chooser is modal and the poll runs
+    // twice a second, so without this the next tick would stack a second dialog.
+    prompted = true;
     launching = true;
+
+    let program: string;
     try {
-      // No player argument: the backend uses the reader's stored preference,
-      // falling back to its default when none was ever chosen.
-      await openInPlayer(streamUrl, undefined, torrentId);
+      program = await chooseAndOpenPlayer(streamUrl, torrentId);
     } catch (err) {
       torrentError = errorMessage(err);
       launching = false;
+      // A failed launch must not wedge the page: allow a later retry.
+      prompted = false;
       return;
     }
 
-    launched = true;
     launching = false;
+
+    // An empty result means the reader cancelled: nothing opened, so playback
+    // has NOT started. `prompted` stays set so the poll does not re-open the
+    // dialog every tick.
+    if (program === "") return;
+
+    launched = true;
 
     // Only now that playback has started. The episode NUMBER is recorded, not
     // the list index: `wantedEpisode` is already derived through

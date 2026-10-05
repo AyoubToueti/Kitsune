@@ -37,6 +37,7 @@ const removeTorrentMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
 const getTorrentStatsMock = vi.hoisted(() => vi.fn());
 const openInPlayerMock = vi.hoisted(() => vi.fn());
+const chooseAndOpenPlayerMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/player", async () => {
   const actual =
     await vi.importActual<typeof import("$lib/api/player")>("$lib/api/player");
@@ -55,6 +56,9 @@ vi.mock("$lib/api/player", async () => {
     // Auto-launch reaches this once the threshold is met. Mocked so tests can
     // assert the player was opened without spawning a real process.
     openInPlayer: openInPlayerMock,
+    // The auto-launch now prompts the OS chooser instead of opening the stored
+    // player. Mocked so tests can drive a pick or a cancel.
+    chooseAndOpenPlayer: chooseAndOpenPlayerMock,
     // The sidebar button fetches these; stub them so the page renders.
     getPlayer: vi.fn().mockResolvedValue("mpv"),
     suggestedPlayers: vi.fn().mockResolvedValue(["mpv"]),
@@ -209,6 +213,9 @@ beforeEach(() => {
       }),
     );
   openInPlayerMock.mockReset().mockResolvedValue("mpv");
+  // The auto-launch now prompts the OS chooser. A non-empty result means a
+  // player was picked, which is what the launch-completed assertions expect.
+  chooseAndOpenPlayerMock.mockReset().mockResolvedValue("mpv");
   // Default: no releases, so tests that do not care are unaffected.
   searchReleasesMock.mockReset().mockResolvedValue([]);
   // Probing resolves with nothing and reports no progress by default. It
@@ -694,12 +701,10 @@ describe("watch page", () => {
     await fireEvent.click(within(files).getAllByRole("button")[0]);
 
     // The default snapshot is already finished, so the first poll trips the
-    // threshold. Passing no player name makes the backend use the stored
-    // preference.
+    // threshold and the player chooser is prompted for the current torrent.
     await waitFor(() =>
-      expect(openInPlayerMock).toHaveBeenCalledWith(
+      expect(chooseAndOpenPlayerMock).toHaveBeenCalledWith(
         "http://127.0.0.1:3030/torrents/5/stream/0",
-        undefined,
         5,
       ),
     );
@@ -720,7 +725,7 @@ describe("watch page", () => {
 
     // The stream URL must resolve first, then confirm no launch happened.
     await waitFor(() => expect(getStreamUrlMock).toHaveBeenCalled());
-    expect(openInPlayerMock).not.toHaveBeenCalled();
+    expect(chooseAndOpenPlayerMock).not.toHaveBeenCalled();
   });
 
   it("launches only once even as the poll keeps firing", async () => {
@@ -731,10 +736,10 @@ describe("watch page", () => {
     const files = await screen.findByTestId("torrent-files");
     await fireEvent.click(within(files).getAllByRole("button")[0]);
 
-    await waitFor(() => expect(openInPlayerMock).toHaveBeenCalled());
+    await waitFor(() => expect(chooseAndOpenPlayerMock).toHaveBeenCalled());
     // Let several poll intervals elapse; the guard must hold.
     await new Promise((r) => setTimeout(r, 700));
-    expect(openInPlayerMock).toHaveBeenCalledTimes(1);
+    expect(chooseAndOpenPlayerMock).toHaveBeenCalledTimes(1);
   });
 
   it("records progress only once the player actually launches", async () => {
@@ -755,7 +760,7 @@ describe("watch page", () => {
   });
 
   it("surfaces a failure to open the player", async () => {
-    openInPlayerMock.mockRejectedValue("mpv is not installed");
+    chooseAndOpenPlayerMock.mockRejectedValue("mpv is not installed");
 
     render(Page);
     await screen.findByRole("heading", { name: /attack on titan/i });
