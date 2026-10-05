@@ -15,7 +15,7 @@
 // instance would fight the first for the same commands.
 
 import { createTorrentSession, type TorrentSession } from "./torrent-session.svelte";
-import { getSettings } from "./api/settings";
+import { getSettings, onSettingsChanged } from "./api/settings";
 import type { Anime } from "./types";
 import type { Episode } from "./episodes";
 import { absoluteOffset, episodeNumber } from "./episode";
@@ -41,6 +41,14 @@ let current = $state<NowPlaying | null>(null);
  */
 let readyFraction: number | undefined;
 
+/**
+ * Whether to prompt for a player, read alongside the threshold.
+ *
+ * `undefined` until the settings land, which the session reads as "ask" -- the
+ * safe default, since a prompt is recoverable and a silent launch is not.
+ */
+let askEveryTime: boolean | undefined;
+
 // Deliberately NOT a top-level `await`: that makes this module async, and
 // SvelteKit's client entry imports the chain reaching it (layout -> disc ->
 // here). An async module delays `start()` past the point the app's `component`
@@ -50,10 +58,27 @@ let readyFraction: number | undefined;
 void getSettings()
   .then((settings) => {
     readyFraction = settings.readyFraction;
+    askEveryTime = settings.askEveryTime;
   })
   .catch(() => {
     // The session falls back to its own default.
   });
+
+/**
+ * Re-read the settings when they change elsewhere.
+ *
+ * The "Always" button and the Settings toggle both write, so without this a
+ * running session would keep the value it read at startup and go on prompting
+ * (or not) against the reader's latest choice.
+ */
+void onSettingsChanged((settings) => {
+  readyFraction = settings.readyFraction;
+  askEveryTime = settings.askEveryTime;
+}).catch(() => {
+  // A listener that never installs leaves both values at their startup
+  // defaults, which is the same fallback the getSettings read above already
+  // accepts. Without this the rejection is unhandled.
+});
 
 /**
  * The session, created on first use.
@@ -80,6 +105,7 @@ function ensureSession(): TorrentSession {
       getEpisode: () => current?.episode,
       getEpisodeOffset: () => current?.offset ?? 0,
       getReadyFraction: () => readyFraction ?? 0.05,
+      getAskEveryTime: () => askEveryTime ?? true,
     });
   });
   session = created;

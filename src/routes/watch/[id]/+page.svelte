@@ -9,11 +9,15 @@
   import {
     addMagnet,
     addTorrent,
-    chooseAndOpenPlayer,
     getStreamUrl,
     getTorrentStats,
     removeTorrent,
+    openInPlayer,
   } from "$lib/api/player";
+  import {
+    getSettings,
+    onSettingsChanged,
+  } from "$lib/api/settings";
   import {
     downloadTorrent,
     onProbeResult,
@@ -56,6 +60,7 @@
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
   import ReleaseModeToggle from "$lib/components/ReleaseModeToggle.svelte";
   import ResolutionFilter from "$lib/components/ResolutionFilter.svelte";
+  import PlayerPicker from "$lib/components/PlayerPicker.svelte";
   import StreamStatus from "$lib/components/StreamStatus.svelte";
 
   const id = $derived(Number(page.params.id));
@@ -194,6 +199,33 @@
    * still stop the poll from re-opening the dialog on the next tick.
    */
   let prompted = $state(false);
+  /** True while the in-app player picker is showing. */
+  let pickerOpen = $state(false);
+  /**
+   * Whether to prompt for a player, mirroring the stored setting.
+   *
+   * Defaults to `true` (ask) until the settings land, and re-read on change, so
+   * the "Always" choice made in the picker applies to this page without a
+   * reload. When false, `launch` opens the stored player directly.
+   */
+  let askEveryTime = $state(true);
+
+  $effect(() => {
+    getSettings()
+      .then((settings) => {
+        askEveryTime = settings.askEveryTime;
+      })
+      .catch(() => {
+        // Keep the safe default: prompting is recoverable, silence is not.
+      });
+
+    const unlisten = onSettingsChanged((settings) => {
+      askEveryTime = settings.askEveryTime;
+    });
+    return () => {
+      void unlisten.then((fn) => fn());
+    };
+  });
 
   // --- the indexer search --------------------------------------------------
 
@@ -742,36 +774,47 @@
     if (launched || launching || prompted) return;
     if (streamUrl === undefined || torrentId === null) return;
 
-    // Mark prompted BEFORE awaiting: the chooser is modal and the poll runs
-    // twice a second, so without this the next tick would stack a second dialog.
+    // Mark prompted BEFORE showing the picker: it is a modal and the poll runs
+    // twice a second, so without this the next tick would stack a second one.
     prompted = true;
-    launching = true;
 
-    let program: string;
-    try {
-      program = await chooseAndOpenPlayer(streamUrl, torrentId);
-    } catch (err) {
-      torrentError = errorMessage(err);
-      launching = false;
-      // A failed launch must not wedge the page: allow a later retry.
-      prompted = false;
+    // "Always" is on (or was never set): skip the prompt and open the stored
+    // player directly, the same as the modal's session does.
+    if (!askEveryTime) {
+      launching = true;
+      try {
+        await openInPlayer(streamUrl, undefined, torrentId);
+        noteLaunched();
+      } catch (err) {
+        torrentError = errorMessage(err);
+        launching = false;
+        // Allow a retry on the next tick, since readiness may still hold.
+        prompted = false;
+      }
       return;
     }
 
-    launching = false;
+    pickerOpen = true;
+  }
 
-    // An empty result means the reader cancelled: nothing opened, so playback
-    // has NOT started. `prompted` stays set so the poll does not re-open the
-    // dialog every tick.
-    if (program === "") return;
+  /**
+   * Record that a player was opened, from the picker.
+   *
+   * The picker calls this once the backend confirms the spawn, so progress is
+   * written only when playback has actually begun.
+   */
+  function noteLaunched(): void {
+    if (launched) return;
 
     launched = true;
+    launching = false;
+    pickerOpen = false;
 
-    // Only now that playback has started. The episode NUMBER is recorded, not
-    // the list index: `wantedEpisode` is already derived through
-    // `episodeNumberFor`, and sending the index would be off by one on every
-    // entry. Recorded even without a number: watching a release with no episode
-    // selected still means the reader is watching this work.
+    // The episode NUMBER is recorded, not the list index: `wantedEpisode` is
+    // already derived through `episodeNumberFor`, and sending the index would
+    // be off by one on every entry. Recorded even without a number: watching a
+    // release with no episode selected still means the reader is watching this
+    // work.
     progress.record(id, wantedEpisode);
 
     // Separately, remember this as the work the reader last OPENED. The resume
@@ -782,6 +825,11 @@
       // Swallowed deliberately: this is a convenience hint, and the disc falls
       // back to the list when it is missing.
     });
+  }
+
+  /** Close the picker without opening a player. */
+  function closePicker(): void {
+    pickerOpen = false;
   }
 
   /**
@@ -1287,3 +1335,12 @@
     </aside>
   </div>
 {/if}
+
+
+<PlayerPicker
+  open={pickerOpen}
+  url={streamUrl}
+  torrentId={torrentId ?? undefined}
+  onClose={closePicker}
+  onLaunched={noteLaunched}
+/>

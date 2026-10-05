@@ -23,7 +23,8 @@ vi.mock("$lib/api/auth", () => ({
 }));
 
 vi.mock("$lib/api/settings", () => ({
-  getSettings: vi.fn().mockResolvedValue({ readyFraction: 0.05 }),
+  getSettings: vi.fn().mockResolvedValue({ readyFraction: 0.05, askEveryTime: true }),
+  onSettingsChanged: vi.fn(async () => () => {}),
   setSettings: vi.fn(),
 }));
 

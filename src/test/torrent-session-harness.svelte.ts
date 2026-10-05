@@ -22,7 +22,17 @@ export interface Harness {
   destroy(): void;
 }
 
-export function harness(options: { episode?: number; offset?: number; launched?: () => void } = {}): Harness {
+export function harness(options: {
+  episode?: number;
+  offset?: number;
+  launched?: () => void;
+  /**
+   * Whether the session should prompt for a player, mirroring the setting.
+   *
+   * Defaults to `true` (prompt), so tests that do not care get the picker.
+   */
+  askEveryTime?: boolean;
+} = {}): Harness {
   let episode = $state<number | undefined>(options.episode);
   let offset = $state(options.offset ?? 0);
   let session!: TorrentSession;
@@ -33,6 +43,7 @@ export function harness(options: { episode?: number; offset?: number; launched?:
       getEpisode: () => episode,
       getEpisodeOffset: () => offset,
       onLaunched: options.launched,
+      getAskEveryTime: () => options.askEveryTime ?? true,
     });
   });
 

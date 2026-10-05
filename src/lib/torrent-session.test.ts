@@ -12,6 +12,8 @@ const getStreamUrlMock = vi.hoisted(() => vi.fn());
 const getTorrentStatsMock = vi.hoisted(() => vi.fn());
 const openInPlayerMock = vi.hoisted(() => vi.fn());
 const chooseAndOpenPlayerMock = vi.hoisted(() => vi.fn());
+const openInPlayerChoiceMock = vi.hoisted(() => vi.fn());
+const listPlayersMock = vi.hoisted(() => vi.fn());
 /**
  * Captures the handler `createTorrentSession` subscribes with, so a test can
  * simulate the backend emitting a player exit. Each subscribe replaces it, as
@@ -41,6 +43,8 @@ vi.mock("$lib/api/player", () => ({
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
   chooseAndOpenPlayer: chooseAndOpenPlayerMock,
+  openInPlayerChoice: openInPlayerChoiceMock,
+  listPlayers: listPlayersMock,
   onPlayerExit: onPlayerExitMock,
 }));
 
@@ -106,6 +110,10 @@ beforeEach(() => {
   resumeTorrentMock.mockReset();
   getStreamUrlMock.mockReset();
   getTorrentStatsMock.mockReset();
+  openInPlayerChoiceMock.mockReset();
+  listPlayersMock.mockReset();
+  openInPlayerChoiceMock.mockResolvedValue("mpv");
+  listPlayersMock.mockResolvedValue([]);
   openInPlayerMock.mockReset();
   chooseAndOpenPlayerMock.mockReset();
   // `mockClear`, not `mockReset`: the implementation that captures the handler
@@ -317,25 +325,7 @@ describe("play", () => {
 });
 
 describe("auto-launch", () => {
-  it("opens the player once enough of the file is present", async () => {
-    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
-    getTorrentStatsMock.mockResolvedValue(statsReady());
-    const launched = vi.fn();
-    const h = harness({ episode: 3, launched });
-    current = h;
-
-    await h.session.playRelease(release());
-    await settle();
-
-    expect(chooseAndOpenPlayerMock).toHaveBeenCalledWith(
-      "http://127.0.0.1/stream/0",
-      7,
-    );
-    expect(h.session.launched).toBe(true);
-    expect(launched).toHaveBeenCalled();
-  });
-
-  it("records progress only after launching", async () => {
+  it("offers the picker once enough of the file is present", async () => {
     addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
     getTorrentStatsMock.mockResolvedValue(statsReady());
     const h = harness({ episode: 3 });
@@ -344,35 +334,108 @@ describe("auto-launch", () => {
     await h.session.playRelease(release());
     await settle();
 
+    // The threshold OPENS the picker; it does not launch a player itself.
+    expect(h.session.pickerOpen).toBe(true);
+    expect(h.session.launched).toBe(false);
+  });
+
+  it("launches the stored player directly when always is set", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    const h = harness({ episode: 3, askEveryTime: false });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // No picker: the stored player is opened straight away.
+    expect(h.session.pickerOpen).toBe(false);
+    expect(openInPlayerMock).toHaveBeenCalledWith(
+      "http://127.0.0.1/stream/0",
+      undefined,
+      7,
+    );
+    expect(h.session.launched).toBe(true);
+  });
+
+  it("choosePlayer launches the stored player when always is set", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    const h = harness({ episode: 3, askEveryTime: false });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // The button means "play now": it opens the default, not the picker.
+    h.session.choosePlayer();
+    await settle();
+
+    expect(h.session.pickerOpen).toBe(false);
+    expect(openInPlayerMock).toHaveBeenCalled();
+  });
+
+  it("choosePlayer opens the picker when no default is set", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    const h = harness({ episode: 3, askEveryTime: true });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+    h.session.closePicker();
+
+    h.session.choosePlayer();
+    expect(h.session.pickerOpen).toBe(true);
+  });
+
+  it("does not offer the picker again while it is already open", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // Several more polls past the threshold must not change the state.
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(h.session.pickerOpen).toBe(true);
+    expect(h.session.launched).toBe(false);
+  });
+
+  it("records progress only when noteLaunched is called", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // Offering the picker records nothing...
+    expect(setListEntryMock).not.toHaveBeenCalled();
+
+    // ...only the picker's confirmation does.
+    h.session.noteLaunched();
+    await settle();
+    expect(h.session.launched).toBe(true);
+    expect(h.session.pickerOpen).toBe(false);
     expect(setListEntryMock).toHaveBeenCalledWith(42, "current", 3);
     expect(recordLastPlayedMock).toHaveBeenCalledWith(42, 3);
   });
 
-  it("launches only once even though the poll keeps running", async () => {
+  it("opens nothing when the picker is closed without a pick", async () => {
     addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
     getTorrentStatsMock.mockResolvedValue(statsReady());
-    const h = harness({ episode: 3 });
-    current = h;
-
-    await h.session.playRelease(release());
-    await settle();
-    // Let several poll intervals elapse.
-    await vi.advanceTimersByTimeAsync(2000);
-    await settle();
-
-    expect(chooseAndOpenPlayerMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not open anything when the chooser is cancelled", async () => {
-    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
-    getTorrentStatsMock.mockResolvedValue(statsReady());
-    // An empty program name is the backend's "cancelled" signal.
-    chooseAndOpenPlayerMock.mockResolvedValue("");
     const launched = vi.fn();
     const h = harness({ episode: 3, launched });
     current = h;
 
     await h.session.playRelease(release());
+    await settle();
+    h.session.closePicker();
     await settle();
 
     // Nothing opened, so playback did NOT start and nothing is recorded.
@@ -381,25 +444,18 @@ describe("auto-launch", () => {
     expect(setListEntryMock).not.toHaveBeenCalled();
   });
 
-  it("does not re-open the chooser after a cancel, until asked again", async () => {
+  it("can reopen the picker on demand after a cancel", async () => {
     addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
     getTorrentStatsMock.mockResolvedValue(statsReady());
-    chooseAndOpenPlayerMock.mockResolvedValue("");
     const h = harness({ episode: 3 });
     current = h;
 
     await h.session.playRelease(release());
     await settle();
+    h.session.closePicker();
 
-    // Several more polls past the threshold must NOT stack more dialogs.
-    await vi.advanceTimersByTimeAsync(2000);
-    await settle();
-    expect(chooseAndOpenPlayerMock).toHaveBeenCalledTimes(1);
-
-    // The reader can try again on demand.
     h.session.choosePlayer();
-    await settle();
-    expect(chooseAndOpenPlayerMock).toHaveBeenCalledTimes(2);
+    expect(h.session.pickerOpen).toBe(true);
   });
 });
 
@@ -429,6 +485,9 @@ describe("reset", () => {
 
     await h.session.playRelease(release());
     await settle();
+    // Simulate the picker's confirmation, so playback is marked started.
+    h.session.noteLaunched();
+    await settle();
     // Sanity: the play actually populated the session before we reset it, or
     // the assertions below would pass on an empty session too.
     expect(h.session.launched).toBe(true);
@@ -456,6 +515,8 @@ describe("player exit", () => {
 
     await h.session.playRelease(release());
     await settle();
+    h.session.noteLaunched();
+    await settle();
     expect(h.session.launched).toBe(true);
 
     // The backend reports the player for torrent 7 closed.
@@ -480,6 +541,8 @@ describe("player exit", () => {
     current = h;
 
     await h.session.playRelease(release());
+    await settle();
+    h.session.noteLaunched();
     await settle();
 
     // An exit for a torrent this session does not track must not tear it down.

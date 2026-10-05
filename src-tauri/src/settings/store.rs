@@ -39,6 +39,13 @@ pub struct Settings {
     /// The fraction of the chosen file that must be present before the player
     /// is launched. Clamped to a sane range on read.
     pub ready_fraction: f64,
+    /// Whether to ask which player to use before launching.
+    ///
+    /// `true` (the default) shows the picker at the threshold. `false` launches
+    /// the stored [`Settings::player`] straight away, which is what the
+    /// picker's "Always" button sets. The reader can still open the picker by
+    /// hand, so this only controls the automatic prompt.
+    pub ask_every_time: bool,
     /// `"light"`, `"dark"` or `"system"`.
     pub theme: String,
 }
@@ -53,6 +60,9 @@ impl Default for Settings {
             preferred_resolutions: vec![Resolution::R1080p, Resolution::R720p],
             min_seeders: 0,
             ready_fraction: 0.05,
+            // Ask by default: the picker is opt-out, so an existing reader sees
+            // no change and a new one gets the choice.
+            ask_every_time: true,
             theme: "system".to_string(),
         }
     }
@@ -187,6 +197,7 @@ mod tests {
             preferred_resolutions: vec![Resolution::R2160p],
             min_seeders: 5,
             ready_fraction: 0.1,
+            ask_every_time: false,
             theme: "dark".into(),
         };
 
@@ -226,5 +237,11 @@ mod tests {
 
         settings.ready_fraction = f64::NAN;
         assert_eq!(settings.ready_fraction(), 0.05);
+    }
+
+    #[test]
+    fn ask_every_time_defaults_to_true() {
+        // The prompt is opt-out, so an existing reader sees no change.
+        assert!(Settings::default().ask_every_time);
     }
 }

@@ -52,3 +52,31 @@ pub fn set_settings(
     let _ = app.emit(SETTINGS_CHANGED_EVENT, &stored);
     Ok(stored)
 }
+
+/// Remember `program` as the default player and stop asking which to use.
+///
+/// The picker's "Always" action. It is a read-modify-write rather than a
+/// whole-object replace so the caller does not have to fetch and round-trip
+/// every other preference just to change one: the fields it does not name are
+/// left exactly as they were.
+///
+/// Also clears `ask_every_time`, so the next launch goes straight to this
+/// player -- which is the whole point of the button. The picker can still be
+/// opened by hand, so this only silences the AUTOMATIC prompt.
+#[tauri::command]
+pub fn set_default_player(
+    app: AppHandle,
+    store: State<'_, SharedSettings>,
+    program: String,
+    extra_args: Option<Vec<String>>,
+) -> Result<Settings, String> {
+    let mut settings = store.read();
+    settings.player = program;
+    settings.player_args = extra_args.unwrap_or_default();
+    settings.ask_every_time = false;
+
+    store.write(&settings).map_err(|err| err.to_string())?;
+    let stored = store.read();
+    let _ = app.emit(SETTINGS_CHANGED_EVENT, &stored);
+    Ok(stored)
+}

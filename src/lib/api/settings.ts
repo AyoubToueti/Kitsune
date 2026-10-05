@@ -14,6 +14,7 @@ import type { Settings } from "$lib/types";
 export const SETTINGS_COMMANDS = {
   get: "get_settings",
   set: "set_settings",
+  setDefaultPlayer: "set_default_player",
 } as const;
 
 /**
@@ -43,6 +44,24 @@ export async function getSettings(): Promise<Settings> {
  */
 export async function setSettings(settings: Settings): Promise<Settings> {
   return invoke<Settings>(SETTINGS_COMMANDS.set, { settings });
+}
+
+/**
+ * Remember `program` as the default player and stop asking which to use.
+ *
+ * The picker's "Always" action. A focused command rather than a whole-object
+ * `setSettings` call, so the picker does not have to fetch and round-trip every
+ * other preference to change one. Resolves to the stored settings, and the
+ * backend emits `SETTINGS_CHANGED_EVENT` as for any other write.
+ */
+export async function setDefaultPlayer(
+  program: string,
+  extraArgs: string[] = [],
+): Promise<Settings> {
+  return invoke<Settings>(SETTINGS_COMMANDS.setDefaultPlayer, {
+    program,
+    extraArgs,
+  });
 }
 
 /**

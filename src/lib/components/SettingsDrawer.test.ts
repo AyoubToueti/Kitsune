@@ -68,6 +68,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     preferredResolutions: ["1080p"],
     minSeeders: 0,
     readyFraction: 0.05,
+    askEveryTime: true,
     theme: "system",
     ...overrides,
   };
@@ -88,7 +89,7 @@ describe("SettingsDrawer", () => {
     render(SettingsDrawer, { props: { open: true, onClose: () => {} } });
 
     expect(await screen.findByText(/anilist account/i)).toBeInTheDocument();
-    expect(screen.getByText(/^player$/i)).toBeInTheDocument();
+    expect(screen.getByText(/player configuration/i)).toBeInTheDocument();
     expect(screen.getByRole("group", { name: /theme/i })).toBeInTheDocument();
   });
 
@@ -96,7 +97,7 @@ describe("SettingsDrawer", () => {
     getSettingsMock.mockResolvedValue(settings({ player: "vlc" }));
     render(SettingsDrawer, { props: { open: true, onClose: () => {} } });
 
-    const input = (await screen.findByLabelText(/program/i)) as HTMLInputElement;
+    const input = (await screen.findByLabelText(/executable/i)) as HTMLInputElement;
     expect(input.value).toBe("vlc");
   });
 

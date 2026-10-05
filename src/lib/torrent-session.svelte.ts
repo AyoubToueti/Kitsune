@@ -13,10 +13,10 @@
 import {
   addMagnet,
   addTorrent,
-  chooseAndOpenPlayer,
   getStreamUrl,
   getTorrentStats,
   onPlayerExit,
+  openInPlayer,
   pauseTorrent,
   removeTorrent,
   resumeTorrent,
@@ -60,6 +60,13 @@ export interface TorrentSessionConfig {
    */
   getReadyFraction?: () => number;
   /**
+   * Whether to prompt for a player at the threshold, or launch the stored one.
+   *
+   * Optional: defaults to `true` (prompt) when the caller has no preference, so
+   * the picker stays the default behavior.
+   */
+  getAskEveryTime?: () => boolean;
+  /**
    * Called once playback has actually begun, after the player is opened.
    *
    * Lets the caller react (close the modal, say) without the session having to
@@ -95,6 +102,8 @@ export interface TorrentSession {
    * [`choosePlayer`].
    */
   readonly prompted: boolean;
+  /** True while the in-app player picker is showing. */
+  readonly pickerOpen: boolean;
   /**
    * True while the reader has paused the buffering download.
    *
@@ -124,8 +133,17 @@ export interface TorrentSession {
   pause(): Promise<void>;
   /** Resume a paused download, allowing auto-launch again. */
   resume(): Promise<void>;
-  /** Show the player chooser for the current selection, on demand. */
+  /** Show the player picker for the current selection, on demand. */
   choosePlayer(): void;
+  /** Close the picker without opening a player. */
+  closePicker(): void;
+  /**
+   * Record that a player was opened, from the picker.
+   *
+   * The picker calls this once the backend confirms the spawn; the session
+   * then marks playback started and writes progress.
+   */
+  noteLaunched(): void;
   /** Switch the playing file to whatever matches `number`. */
   selectEpisodeNumber(number: number | undefined): void;
   /** Return to the initial state, releasing the torrent. Safe to call twice. */
@@ -164,6 +182,13 @@ export function createTorrentSession(
    * asks to choose again.
    */
   let prompted = $state(false);
+  /**
+   * True while the in-app player picker is showing.
+   *
+   * Owned by the session so both the modal and the watch page can render the
+   * same picker without either one owning the torrent state.
+   */
+  let pickerOpen = $state(false);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let magnetError = $state<string | null>(null);
@@ -284,8 +309,10 @@ export function createTorrentSession(
 
     // A new file is a new wait: clear the previous file's numbers so the panel
     // does not briefly show the last episode's progress as if it were this
-    // one's.
-    progress = null;
+    // one's, and allow the picker to open again for it even if the reader
+    // cancelled it for the previous file.
+    prompted = false;
+    pickerOpen = false;
     fileFraction = 0;
     torrentFraction = 0;
     launched = false;
@@ -413,53 +440,61 @@ export function createTorrentSession(
    * player. The progress writes happen here rather than in `play` because this
    * is the moment playback actually begins.
    */
-  async function launch(): Promise<void> {
+  function launch(): void {
     if (launched || launching || prompted) return;
     if (streamUrl === undefined || torrentId === null) return;
 
-    // Mark prompted BEFORE awaiting. The chooser is modal and the poll runs
-    // every half second, so without this the next tick would open a second
-    // dialog on top of the first.
+    // Mark prompted BEFORE showing the picker. The picker is a modal and the
+    // poll runs every half second, so without this the next tick would open a
+    // second one on top of the first.
     prompted = true;
-    launching = true;
 
-    let program: string;
-    try {
-      // The OS "Open With" chooser: the reader picks the player, so the stored
-      // preference is not consulted for this launch.
-      program = await chooseAndOpenPlayer(streamUrl, torrentId);
-    } catch (err) {
-      error = errorMessage(err);
-      launching = false;
-      // A failed launch must not wedge the reader: allow a later retry (from
-      // the poll, since readiness may still hold, or the manual button).
-      prompted = false;
+    // "Always" is on (or was never set): skip the prompt and open the stored
+    // player directly. This is the pre-picker behavior, chosen deliberately by
+    // the reader, so there is nothing to ask.
+    if (config.getAskEveryTime?.() === false) {
+      launching = true;
+      void openInPlayer(streamUrl, undefined, torrentId)
+        .then(() => noteLaunched())
+        .catch((err) => {
+          error = errorMessage(err);
+          launching = false;
+          // Allow a retry on the next tick, since readiness may still hold.
+          prompted = false;
+        });
       return;
     }
 
-    launching = false;
+    // Opening the picker, not a player: the picker's own `pick` records the
+    // launch through `noteLaunched` once a player is actually chosen.
+    pickerOpen = true;
+  }
 
-    // An empty result means the reader cancelled the chooser. Nothing opened,
-    // so playback has NOT started -- `launched` stays false. `prompted` stays
-    // true on purpose: re-opening the dialog every poll would trap the reader
-    // in a loop they cannot dismiss. The manual "Choose player" action clears
-    // it when they want to try again.
-    if (program === "") return;
+  /**
+   * Record that a player was opened for the current selection.
+   *
+   * Called by the picker once the backend confirms the spawn. Kept apart from
+   * [`launch`] because the picker, not the poll, now owns the moment of
+   * playback -- the poll only decides when to OFFER the choice.
+   */
+  function noteLaunched(): void {
+    if (launched) return;
 
     launched = true;
+    launching = false;
+    pickerOpen = false;
 
-    // Only now that playback has started. The episode NUMBER is recorded, not
-    // a list index: the caller derives it through `episodeNumber`, and sending
-    // an index would be off by one on every entry. Recorded even without a
-    // number: watching a release with no episode selected still means the
-    // reader is watching this work.
+    // The episode NUMBER is recorded, not a list index: the caller derives it
+    // through `episodeNumber`, and sending an index would be off by one on
+    // every entry. Recorded even without a number: watching a release with no
+    // episode selected still means the reader is watching this work.
     const animeId = config.getId();
     const episode = config.getEpisode();
     recorder.record(animeId, episode);
 
     // Separately, remember this as the work the reader last OPENED. The resume
     // disc reads this rather than the list, because the list only reorders on a
-    // CHANGE — re-watching the current episode would not move it. Fire and
+    // CHANGE -- re-watching the current episode would not move it. Fire and
     // forget: a failed record must never affect playback.
     void recordLastPlayed(animeId, episode).catch(() => {
       // Swallowed deliberately: this is a convenience hint, and the disc falls
@@ -611,6 +646,7 @@ export function createTorrentSession(
     torrentFraction = 0;
     launching = false;
     launched = false;
+    pickerOpen = false;
     prompted = false;
     paused = false;
     loading = false;
@@ -626,19 +662,36 @@ export function createTorrentSession(
   }
 
   /**
-   * Show the player chooser for the current selection, on demand.
+   * Play the current selection, on demand.
    *
-   * Clears `prompted` first so a cancelled auto-prompt can be retried by hand,
-   * then runs the same launch the poll would: if the file is still ready, the
-   * chooser opens; otherwise the next poll tick past the threshold does it.
+   * A default player has been chosen ("Always"): launch it directly, which is
+   * what the button means once a choice is remembered. No default yet: open
+   * the picker so the reader can choose one.
    */
   function choosePlayer(): void {
     if (torrentId === null || streamUrl === undefined) return;
     if (launched) return;
 
-    prompted = false;
-    launching = false;
-    void launch();
+    prompted = true;
+
+    if (config.getAskEveryTime?.() === false) {
+      launching = true;
+      void openInPlayer(streamUrl, undefined, torrentId)
+        .then(() => noteLaunched())
+        .catch((err) => {
+          error = errorMessage(err);
+          launching = false;
+          prompted = false;
+        });
+      return;
+    }
+
+    pickerOpen = true;
+  }
+
+  /** Close the picker without opening a player. */
+  function closePicker(): void {
+    pickerOpen = false;
   }
 
   /** Drop the current torrent and clear the selection. Safe to call twice. */
@@ -705,6 +758,9 @@ export function createTorrentSession(
     get launching() {
       return launching;
     },
+    get pickerOpen() {
+      return pickerOpen;
+    },
     get paused() {
       return paused;
     },
@@ -733,6 +789,8 @@ export function createTorrentSession(
     loadTorrentFile,
     reset,
     play,
+    closePicker,
+    noteLaunched,
     pause,
     resume,
     choosePlayer,

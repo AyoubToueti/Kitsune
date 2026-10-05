@@ -19,19 +19,10 @@
   import Modal from "./Modal.svelte";
   import Select, { type SelectOption } from "./Select.svelte";
 
-  /** The resolution choices for the "add" dropdown, highest first. */
   const resolutionChoices: SelectOption[] = RESOLUTION_ORDER.map(
     (resolution) => ({ value: resolution, label: resolution }),
   );
 
-  /**
-   * The settings surface, opened from the NavBar avatar.
-   *
-   * Loads the whole `Settings` object, edits it locally, and saves the whole
-   * object back on each change -- the backend owns the file, so there is no
-   * partial-update surface. The theme is applied immediately (not only on
-   * save), so a toggle feels instant even if the write is slow.
-   */
   let { open = false, onClose }: { open?: boolean; onClose: () => void } =
     $props();
 
@@ -40,11 +31,8 @@
   let players = $state<string[]>([]);
   let error = $state<string | null>(null);
   let saving = $state(false);
-  /** New resolution picked in the "add" dropdown. */
   let pendingResolution = $state<Resolution>("1080p");
 
-  // Load once when the drawer first opens: nothing here changes server-side
-  // except through this panel, so re-reading on every open is unnecessary.
   $effect(() => {
     if (!open || settings !== null) return;
     load();
@@ -63,12 +51,9 @@
   }
 
   onMount(() => {
-    // A sign-in completing while the drawer is open updates the button.
     const unlisten = onAuthChanged((next) => {
       signedIn = next;
     });
-    // Settings changed by another surface (a second window, or the player
-    // picker) re-read, so the drawer never shows stale values.
     const unlistenSettings = onSettingsChanged((next) => {
       settings = next;
     });
@@ -82,7 +67,6 @@
     return value === "light" || value === "dark" ? value : "system";
   }
 
-  /** Save the current settings, optionally after applying a local change. */
   async function persist(patch: Partial<Settings>): Promise<void> {
     if (settings === null) return;
     const next = { ...settings, ...patch };
@@ -90,7 +74,6 @@
     saving = true;
     error = null;
     try {
-      // The backend may clamp a value (the ready fraction); keep its answer.
       settings = await setSettings(next);
     } catch (err) {
       error = errorMessage(err);
@@ -99,7 +82,6 @@
     }
   }
 
-  /** Theme changes apply immediately, then persist. */
   function chooseTheme(choice: ThemeChoice): void {
     applyTheme(choice);
     void persist({ theme: choice });
@@ -129,7 +111,6 @@
     await persist({ downloadDir: picked });
   }
 
-  /** Toggle a resolution's presence in the preferred list. */
   function toggleResolution(resolution: Resolution): void {
     if (settings === null) return;
     const current = settings.preferredResolutions;
@@ -141,36 +122,54 @@
 </script>
 
 <Modal {open} {onClose} label="Settings">
-  <header class="flex items-center gap-3 border-b border-border-subtle p-5">
-    <h2 class="text-lg font-semibold tracking-tight">Settings</h2>
+  <!-- Header -->
+  <header class="flex items-center justify-between gap-3 border-b border-border-subtle p-5">
+    <div class="flex items-center gap-2.5 min-w-0">
+      <h2 class="text-lg font-bold tracking-tight text-ink">Settings</h2>
+      {#if saving}
+        <span class="inline-flex items-center gap-1.5 rounded-full bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
+          <span class="size-1.5 animate-pulse rounded-full bg-accent"></span>
+          Saving…
+        </span>
+      {/if}
+    </div>
     <button
       type="button"
       onclick={onClose}
-      aria-label="Close"
-      class="ml-auto size-8 rounded-lg border border-border-subtle bg-surface-hover text-ink-muted transition-colors hover:border-accent hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      aria-label="Close settings"
+      class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-hover text-ink-muted transition-colors hover:border-accent hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
     >
-      ✕
+      <svg class="size-4 fill-none stroke-current stroke-2" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+      </svg>
     </button>
   </header>
 
-  <div class="min-h-0 flex-1 overflow-y-auto p-5">
+  <!-- Body -->
+  <div class="min-h-0 flex-1 overflow-y-auto p-5 space-y-6">
     {#if settings === null}
-      <p class="py-10 text-center text-sm text-ink-muted">Loading…</p>
+      <div class="py-12 text-center">
+        <div class="mx-auto size-6 animate-spin rounded-full border-2 border-border-subtle border-t-accent"></div>
+        <p class="mt-3 text-xs text-ink-muted">Loading preferences…</p>
+      </div>
     {:else}
       <!-- Account -->
-      <section class="mb-6">
-        <h3 class="mb-2 text-xs font-semibold tracking-wide text-ink-faint uppercase">
-          AniList account
+      <section class="rounded-xl border border-border-subtle bg-surface-raised p-4">
+        <h3 class="mb-3 text-xs font-bold tracking-wider text-ink-faint uppercase">
+          AniList Account
         </h3>
-        <div class="flex items-center justify-between rounded-lg border border-border-subtle bg-surface-hover px-4 py-3">
-          <span class="text-sm text-ink-muted">
-            {signedIn ? "Connected to AniList" : "Not connected"}
-          </span>
+        <div class="flex items-center justify-between gap-3 rounded-lg border border-border-subtle bg-surface p-3">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <span class="size-2 shrink-0 rounded-full {signedIn ? 'bg-health-green' : 'bg-ink-faint'}"></span>
+            <span class="truncate text-xs font-medium text-ink">
+              {signedIn ? "Connected to AniList" : "Not connected"}
+            </span>
+          </div>
           {#if signedIn}
             <button
               type="button"
               onclick={disconnect}
-              class="rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-danger hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="shrink-0 rounded-lg border border-border-subtle bg-surface px-3 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-danger hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
               Disconnect
             </button>
@@ -178,7 +177,7 @@
             <button
               type="button"
               onclick={connect}
-              class="rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              class="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
               Connect
             </button>
@@ -186,15 +185,16 @@
         </div>
       </section>
 
-      <!-- Player -->
-      <section class="mb-6">
-        <h3 class="mb-2 text-xs font-semibold tracking-wide text-ink-faint uppercase">
-          Player
+      <!-- Player Options -->
+      <section class="rounded-xl border border-border-subtle bg-surface-raised p-4 space-y-3">
+        <h3 class="text-xs font-bold tracking-wider text-ink-faint uppercase">
+          Player Configuration
         </h3>
-        <label for="settings-player" class="mb-1 block text-xs text-ink-muted">
-          Program
-        </label>
-        <div class="mb-3 flex gap-2">
+
+        <div>
+          <label for="settings-player" class="mb-1 block text-xs font-medium text-ink">
+            Executable / Command
+          </label>
           <input
             id="settings-player"
             list="player-suggestions"
@@ -202,8 +202,8 @@
             oninput={(event) =>
               (settings = { ...settings!, player: event.currentTarget.value })}
             onchange={(event) => persist({ player: event.currentTarget.value })}
-            placeholder="mpv"
-            class="min-w-0 flex-1 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            placeholder="e.g. mpv, vlc"
+            class="w-full rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
           />
           <datalist id="player-suggestions">
             {#each players as name (name)}
@@ -211,46 +211,74 @@
             {/each}
           </datalist>
         </div>
-        <label for="settings-player-args" class="mb-1 block text-xs text-ink-muted">
-          Extra arguments (before the stream URL)
-        </label>
-        <input
-          id="settings-player-args"
-          value={settings.playerArgs.join(" ")}
-          oninput={(event) =>
-            (settings = {
-              ...settings!,
-              playerArgs: event.currentTarget.value.trim().split(/\s+/).filter(Boolean),
-            })}
-          onchange={(event) =>
-            persist({
-              playerArgs: event.currentTarget.value.trim().split(/\s+/).filter(Boolean),
-            })}
-          placeholder="e.g. run io.mpv.Mpv"
-          class="w-full rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        />
-        <p class="mt-1 text-[11px] text-ink-faint">
-          The URL is appended after these. Not shell-parsed — each word is one
-          argument.
-        </p>
+
+        <div>
+          <label for="settings-player-args" class="mb-1 block text-xs font-medium text-ink">
+            Extra Arguments
+          </label>
+          <input
+            id="settings-player-args"
+            value={settings.playerArgs.join(" ")}
+            oninput={(event) =>
+              (settings = {
+                ...settings!,
+                playerArgs: event.currentTarget.value.trim().split(/\s+/).filter(Boolean),
+              })}
+            onchange={(event) =>
+              persist({
+                playerArgs: event.currentTarget.value.trim().split(/\s+/).filter(Boolean),
+              })}
+            placeholder="e.g. --fs --force-media-title"
+            class="w-full rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+          />
+          <p class="mt-1 text-[11px] text-ink-faint">
+            Passed directly to player before stream URL.
+          </p>
+        </div>
+
+        <!-- Switch Button for Prompting Player -->
+        <div class="pt-2 border-t border-border-subtle/50">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={settings.askEveryTime}
+            onclick={() =>
+              settings && persist({ askEveryTime: !settings.askEveryTime })}
+            class="flex items-center justify-between gap-3 w-full text-left group cursor-pointer"
+          >
+            <span class="text-xs font-medium text-ink">
+              Always prompt for media player choice before streaming
+            </span>
+            <span
+              class="relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {settings.askEveryTime
+                ? 'bg-accent'
+                : 'bg-border-subtle'}"
+            >
+              <span
+                class="pointer-events-none inline-block size-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out {settings.askEveryTime
+                  ? 'translate-x-4'
+                  : 'translate-x-0'}"
+              ></span>
+            </span>
+          </button>
+        </div>
       </section>
 
       <!-- Appearance -->
-      <section class="mb-6">
-        <h3 class="mb-2 text-xs font-semibold tracking-wide text-ink-faint uppercase">
+      <section class="rounded-xl border border-border-subtle bg-surface-raised p-4">
+        <h3 class="mb-3 text-xs font-bold tracking-wider text-ink-faint uppercase">
           Appearance
         </h3>
-        <div class="flex gap-2" role="group" aria-label="Theme">
+        <div class="grid grid-cols-3 gap-2" role="group" aria-label="Theme selection">
           {#each ["system", "light", "dark"] as const as choice (choice)}
+            {@const isSelected = themeChoice(settings.theme) === choice}
             <button
               type="button"
               onclick={() => chooseTheme(choice)}
-              aria-pressed={themeChoice(settings.theme) === choice}
-              class="flex-1 rounded-lg border px-3 py-2 text-xs font-medium capitalize transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {themeChoice(
-                settings.theme,
-              ) === choice
-                ? 'border-accent bg-accent/15 text-accent'
-                : 'border-border-subtle text-ink-muted hover:border-accent hover:text-ink'}"
+              aria-pressed={isSelected}
+              class="rounded-lg border px-3 py-2 text-xs font-semibold capitalize transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent {isSelected
+                ? 'border-accent bg-accent/10 text-accent ring-1 ring-accent/30'
+                : 'border-border-subtle bg-surface text-ink-muted hover:border-accent/60 hover:text-ink'}"
             >
               {choice}
             </button>
@@ -259,109 +287,145 @@
       </section>
 
       <!-- Playback -->
-      <section class="mb-6">
-        <h3 class="mb-2 text-xs font-semibold tracking-wide text-ink-faint uppercase">
-          Playback
+      <section class="rounded-xl border border-border-subtle bg-surface-raised p-4 space-y-4">
+        <h3 class="text-xs font-bold tracking-wider text-ink-faint uppercase">
+          Playback & Downloads
         </h3>
 
-        <p class="mb-1 block text-xs text-ink-muted">Download folder</p>
-        <div class="mb-3 flex items-center gap-2">
-          <span class="min-w-0 flex-1 truncate rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs text-ink-muted">
-            {settings.downloadDir ?? "System default"}
-          </span>
-          <button
-            type="button"
-            onclick={pickDownloadDir}
-            class="shrink-0 rounded-lg border border-border-subtle px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            Browse…
-          </button>
-          {#if settings.downloadDir}
+        <div>
+          <span class="mb-1 block text-xs font-medium text-ink">Download Directory</span>
+          <div class="flex items-center gap-2">
+            <span class="min-w-0 flex-1 truncate rounded-lg border border-border-subtle bg-surface px-3 py-2 text-xs text-ink-muted">
+              {settings.downloadDir ?? "Default Downloads Directory"}
+            </span>
             <button
               type="button"
-              onclick={() => persist({ downloadDir: null })}
-              class="shrink-0 rounded-lg border border-border-subtle px-3 py-1.5 text-xs text-ink-muted transition-colors hover:border-danger hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              onclick={pickDownloadDir}
+              class="shrink-0 rounded-lg border border-border-subtle bg-surface px-3 py-1.5 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
-              Reset
+              Browse…
             </button>
-          {/if}
+            {#if settings.downloadDir}
+              <button
+                type="button"
+                onclick={() => persist({ downloadDir: null })}
+                class="shrink-0 rounded-lg border border-border-subtle bg-surface px-3 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:border-danger hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                Reset
+              </button>
+            {/if}
+          </div>
         </div>
 
-        <label for="settings-fraction" class="mb-1 block text-xs text-ink-muted">
-          Buffer before playing: {Math.round(settings.readyFraction * 100)}%
-        </label>
-        <input
-          id="settings-fraction"
-          type="range"
-          min="1"
-          max="50"
-          value={Math.round(settings.readyFraction * 100)}
-          onchange={(event) =>
-            persist({ readyFraction: Number(event.currentTarget.value) / 100 })}
-          class="w-full accent-accent"
-        />
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label for="settings-fraction" class="text-xs font-medium text-ink">
+              Playback Buffer Threshold
+            </label>
+            <span class="text-xs font-bold text-accent">
+              {Math.round(settings.readyFraction * 100)}%
+            </span>
+          </div>
+          <input
+            id="settings-fraction"
+            type="range"
+            min="1"
+            max="50"
+            value={Math.round(settings.readyFraction * 100)}
+            onchange={(event) =>
+              persist({ readyFraction: Number(event.currentTarget.value) / 100 })}
+            class="w-full accent-accent cursor-pointer"
+          />
+        </div>
       </section>
 
-      <!-- Release preference -->
-      <section>
-        <h3 class="mb-2 text-xs font-semibold tracking-wide text-ink-faint uppercase">
-          Releases
+      <!-- Releases & Filtering -->
+      <section class="rounded-xl border border-border-subtle bg-surface-raised p-4 space-y-3">
+        <h3 class="text-xs font-bold tracking-wider text-ink-faint uppercase">
+          Release Preferences
         </h3>
-        <p class="mb-1 block text-xs text-ink-muted">
-          Preferred resolutions (in order)
-        </p>
-        <div class="mb-3 flex flex-wrap gap-1.5">
-          {#if settings.preferredResolutions.length === 0}
-            <span class="text-xs text-ink-faint">No preference</span>
-          {/if}
-          {#each settings.preferredResolutions as resolution (resolution)}
+
+        <div>
+          <span class="mb-1.5 block text-xs font-medium text-ink">
+            Preferred Resolutions (Prioritized)
+          </span>
+          <div class="mb-3 flex flex-wrap gap-1.5">
+            {#if settings.preferredResolutions.length === 0}
+              <span class="text-xs text-ink-faint italic">No resolution filters set</span>
+            {/if}
+            {#each settings.preferredResolutions as resolution (resolution)}
+              <button
+                type="button"
+                onclick={() => toggleResolution(resolution)}
+                title="Remove {resolution}"
+                class="group flex items-center gap-1.5 rounded-full border border-accent bg-accent/10 px-3 py-0.5 text-xs font-semibold text-accent transition-colors hover:border-danger hover:bg-danger/10 hover:text-danger focus:outline-none"
+              >
+                <span>{resolution}</span>
+                <svg class="size-3 stroke-current stroke-2 fill-none" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            {/each}
+          </div>
+
+          <div class="flex gap-2">
+            <div class="flex-1 min-w-0">
+              <Select
+                label="Add resolution"
+                value={pendingResolution}
+                options={resolutionChoices}
+                onchange={(next) => (pendingResolution = next as Resolution)}
+              />
+            </div>
             <button
               type="button"
-              onclick={() => toggleResolution(resolution)}
-              class="rounded-full border border-accent bg-accent/15 px-3 py-1 text-xs text-accent transition-colors hover:border-danger hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              onclick={() => toggleResolution(pendingResolution)}
+              class="shrink-0 rounded-lg border border-border-subtle bg-surface px-4 py-2 text-xs font-semibold text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
-              {resolution} ✕
+              Add
             </button>
-          {/each}
-        </div>
-        <div class="flex gap-2">
-          <div class="flex-1">
-            <Select
-              label="Add preferred resolution"
-              value={pendingResolution}
-              options={resolutionChoices}
-              onchange={(next) => (pendingResolution = next as Resolution)}
-            />
           </div>
-          <button
-            type="button"
-            onclick={() => toggleResolution(pendingResolution)}
-            class="rounded-lg border border-border-subtle px-4 py-2 text-xs font-medium text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            Add
-          </button>
         </div>
 
-        <label for="settings-seeders" class="mt-3 mb-1 block text-xs text-ink-muted">
-          Minimum seeders
-        </label>
-        <input
-          id="settings-seeders"
-          type="number"
-          min="0"
-          value={settings.minSeeders}
-          onchange={(event) =>
-            persist({ minSeeders: Math.max(0, Number(event.currentTarget.value)) })}
-          class="w-24 rounded-lg border border-border-subtle bg-surface px-3 py-2 text-sm text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        />
+        <div class="pt-2">
+          <label for="settings-seeders" class="mb-1 block text-xs font-medium text-ink">
+            Minimum Seeders Count
+          </label>
+          <input
+            id="settings-seeders"
+            type="number"
+            min="0"
+            value={settings.minSeeders}
+            onchange={(event) =>
+              persist({ minSeeders: Math.max(0, Number(event.currentTarget.value)) })}
+            class="w-28 rounded-lg border border-border-subtle bg-surface px-3 py-1.5 text-xs text-ink focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+          />
+        </div>
       </section>
 
       <!-- Diagnostics -->
-      <DiagnosticsPanel />
+      <section class="rounded-xl border border-border-subtle bg-surface-raised p-4">
+        <DiagnosticsPanel />
+      </section>
 
       {#if error}
-        <p class="mt-4 text-xs text-danger" role="status">{error}</p>
+        <div class="rounded-xl border border-danger/30 bg-danger/5 p-3 text-center">
+          <p class="text-xs font-medium text-danger" role="status">{error}</p>
+        </div>
       {/if}
     {/if}
   </div>
+
+  <!-- Footer -->
+  {#snippet footer()}
+    <div class="flex justify-end border-t border-border-subtle bg-surface-raised px-5 py-3.5">
+      <button
+        type="button"
+        onclick={onClose}
+        class="rounded-lg bg-accent px-4 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-accent-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        Done
+      </button>
+    </div>
+  {/snippet}
 </Modal>

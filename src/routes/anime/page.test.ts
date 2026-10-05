@@ -33,9 +33,11 @@ vi.mock("$lib/api/settings", () => ({
     preferredResolutions: ["1080p"],
     minSeeders: 0,
     readyFraction: 0.05,
+    askEveryTime: true,
     theme: "system",
   })),
   setSettings: vi.fn(),
+  onSettingsChanged: vi.fn(async () => () => {}),
 }));
 
 import Page from "./[id]/+page.svelte";

@@ -17,7 +17,8 @@ vi.mock("$lib/api/auth", () => ({
   recordLastPlayed: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("$lib/api/settings", () => ({
-  getSettings: vi.fn().mockResolvedValue({ readyFraction: 0.05 }),
+  getSettings: vi.fn().mockResolvedValue({ readyFraction: 0.05, askEveryTime: true }),
+  onSettingsChanged: vi.fn(async () => () => {}),
   setSettings: vi.fn(),
 }));
 
