@@ -92,6 +92,23 @@ pub async fn resume_torrent(
 }
 
 /// The loopback URL that streams one file of one torrent.
+/// Restrict a torrent's download to a single file index.
+///
+/// Called when a file is picked: librqbit otherwise downloads the torrent's
+/// first files in order, so a season pack would fetch episode 1 while the
+/// reader waits on episode 21 with no visible progress.
+#[tauri::command]
+pub async fn set_only_files(
+    state: State<'_, PlayerState>,
+    torrent_id: usize,
+    only_files: Vec<usize>,
+) -> Result<(), String> {
+    state
+        .set_only_files(torrent_id, only_files)
+        .await
+        .map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 pub async fn get_stream_url(
     state: State<'_, PlayerState>,

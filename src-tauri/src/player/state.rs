@@ -441,6 +441,19 @@ impl PlayerState {
         session.engine.resume_torrent(id).await
     }
 
+    /// Restrict a torrent's download to a single file index.
+    ///
+    /// Called when a file is picked, so a season pack fetches only the episode
+    /// being watched rather than its first file. Same cell-read rule as the
+    /// pause/resume calls.
+    pub async fn set_only_files(&self, id: usize, only: Vec<usize>) -> Result<()> {
+        let Some(session) = self.inner.session.get() else {
+            return Ok(());
+        };
+
+        session.engine.set_only_files(id, &only).await
+    }
+
     /// Open a URL in an external player, holding `torrent_id` while it runs.
     ///
     /// `player` overrides the stored preference for this one call; passing

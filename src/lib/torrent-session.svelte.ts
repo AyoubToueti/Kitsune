@@ -20,6 +20,7 @@ import {
   pauseTorrent,
   removeTorrent,
   resumeTorrent,
+  setOnlyFiles,
 } from "./api/player";
 import { errorMessage } from "./api/anime";
 import { recordLastPlayed, setListEntry } from "./api/auth";
@@ -259,6 +260,16 @@ export function createTorrentSession(
       launching = false;
     }
 
+    // Tell librqbit to fetch only this file. Without it a season pack downloads
+    // its files in order, so the episode the reader picked sits at 0 B while an
+    // earlier one is fetched -- which reads as "stuck" on the progress bar.
+    try {
+      await setOnlyFiles(torrentId, [file.idx]);
+    } catch (err) {
+      error = errorMessage(err);
+      return;
+    }
+
     // A new file is a new wait: clear the previous file's numbers so the panel
     // does not briefly show the last episode's progress as if it were this
     // one's.
@@ -462,11 +473,7 @@ export function createTorrentSession(
     torrentId = handle.id;
     files = handle.files;
 
-    const target = firstTargetFile(
-      handle.files,
-      config.getEpisode(),
-      config.getEpisodeOffset(),
-    );
+    const target = firstTargetFile(handle.files);
 
     if (target) {
       await play(target);
@@ -514,13 +521,9 @@ export function createTorrentSession(
       torrentId = handle.id;
       files = handle.files;
 
-      // Same rule as a release: an exact match or a lone video starts, a
-      // multi-video torrent with no match waits for the reader to pick.
-      const target = firstTargetFile(
-        handle.files,
-        config.getEpisode(),
-        config.getEpisodeOffset(),
-      );
+      // Same rule as a release: a lone video starts, a multi-video torrent
+      // waits for the reader to pick rather than guessing.
+      const target = firstTargetFile(handle.files);
 
       if (target) {
         await play(target);

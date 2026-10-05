@@ -38,12 +38,14 @@ const onPlayerExitMock = vi.hoisted(() =>
 );
 const pauseTorrentMock = vi.hoisted(() => vi.fn());
 const resumeTorrentMock = vi.hoisted(() => vi.fn());
+const setOnlyFilesMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/player", () => ({
   addMagnet: addMagnetMock,
   addTorrent: addTorrentMock,
   removeTorrent: removeTorrentMock,
   pauseTorrent: pauseTorrentMock,
   resumeTorrent: resumeTorrentMock,
+  setOnlyFiles: setOnlyFilesMock,
   getStreamUrl: getStreamUrlMock,
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
@@ -114,6 +116,7 @@ beforeEach(() => {
   onProbeResultMock.mockReset().mockResolvedValue(() => {});
   pauseTorrentMock.mockReset().mockResolvedValue(undefined);
   resumeTorrentMock.mockReset().mockResolvedValue(undefined);
+  setOnlyFilesMock.mockReset().mockResolvedValue(undefined);
   downloadTorrentMock.mockReset().mockResolvedValue("/tmp/x.torrent");
   addMagnetMock.mockReset();
   addTorrentMock.mockReset();
@@ -402,14 +405,11 @@ describe("EpisodeWatchModal", () => {
     );
   });
 
-  it("marks the auto-matched file as playing", async () => {
+  it("marks the auto-started file as playing", async () => {
     searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
     addMagnetMock.mockResolvedValue({
       id: 7,
-      files: [
-        { idx: 0, name: "Show - 01.mkv", lengthBytes: 1_400_000_000 },
-        { idx: 1, name: "Show - 02.mkv", lengthBytes: 1_400_000_000 },
-      ],
+      files: [{ idx: 0, name: "Show - 01.mkv", lengthBytes: 1_400_000_000 }],
     } as TorrentHandle);
 
     render(EpisodeWatchModal, {

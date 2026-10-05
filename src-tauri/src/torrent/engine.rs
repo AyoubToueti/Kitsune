@@ -326,6 +326,26 @@ impl TorrentEngine {
             .with_context(|| format!("failed to resume torrent {id}"))
     }
 
+    /// Restrict a torrent's download to a single file index.
+    ///
+    /// librqbit otherwise downloads every file from the start in order, so a
+    /// season pack spends its time on episode 1 while the reader waits on
+    /// episode 21 and sees no progress. Picking a file calls this so only that
+    /// file's pieces are fetched.
+    ///
+    /// An unknown id is a no-op, like the other per-torrent calls.
+    pub async fn set_only_files(&self, id: usize, only: &[usize]) -> Result<()> {
+        let Some(handle) = self.session.get(id.into()) else {
+            return Ok(());
+        };
+
+        let set: std::collections::HashSet<usize> = only.iter().copied().collect();
+        self.session
+            .update_only_files(&handle, &set)
+            .await
+            .with_context(|| format!("failed to restrict torrent {id} to {only:?}"))
+    }
+
     /// Stop the session and all managed tasks.
     pub async fn stop(&self) {
         self.session.stop().await;

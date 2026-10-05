@@ -27,6 +27,7 @@ export const PLAYER_COMMANDS = {
   removeTorrent: "remove_torrent",
   pauseTorrent: "pause_torrent",
   resumeTorrent: "resume_torrent",
+  setOnlyFiles: "set_only_files",
   streamUrl: "get_stream_url",
   torrentStats: "get_torrent_stats",
   openInPlayer: "open_in_player",
@@ -88,6 +89,21 @@ export async function pauseTorrent(torrentId: number): Promise<void> {
  */
 export async function resumeTorrent(torrentId: number): Promise<void> {
   return invoke<void>(PLAYER_COMMANDS.resumeTorrent, { torrentId });
+}
+
+/**
+ * Restrict a torrent's download to the given file indices.
+ *
+ * librqbit downloads a torrent's files in order, so a season pack would spend
+ * its time on episode 1 while the reader waits on the one they picked. Calling
+ * this with the chosen index makes only that file's pieces get fetched, which
+ * is what turns the file-progress bar into real movement.
+ */
+export async function setOnlyFiles(
+  torrentId: number,
+  onlyFiles: number[],
+): Promise<void> {
+  return invoke<void>(PLAYER_COMMANDS.setOnlyFiles, { torrentId, onlyFiles });
 }
 
 /** The loopback URL that streams one file of one torrent. */

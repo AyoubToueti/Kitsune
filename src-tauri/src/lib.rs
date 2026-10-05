@@ -202,6 +202,7 @@ pub fn run() {
                 player::commands::remove_torrent,
                 player::commands::pause_torrent,
                 player::commands::resume_torrent,
+                player::commands::set_only_files,
                 player::commands::get_stream_url,
                 player::commands::get_torrent_stats,
                 player::commands::open_in_player,

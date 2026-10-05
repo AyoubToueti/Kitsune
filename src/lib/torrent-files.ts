@@ -81,22 +81,15 @@ export function playableCount(files: TorrentFile[]): number {
 /**
  * The file to start automatically, or `null` to wait for the reader's pick.
  *
- * The rule that keeps a batch from downloading an arbitrary guess: an exact
- * episode match always wins, but when nothing matches and there is more than
- * one video to choose from, nothing is started — the reader picks, and the
- * torrent is held paused until they do. A single video with no match still
- * starts, since there is no choice to make.
+ * The rule that keeps a batch from downloading an arbitrary guess: whenever
+ * there is more than one video to choose from, NOTHING is started — the reader
+ * picks, and the torrent is held paused until they do. Even an apparent episode
+ * match is not trusted here: a pack's `S01E21` matches episode 1 through the
+ * season number, so auto-selecting it downloads the wrong file. A single video
+ * always starts, since there is no choice to make.
+ *
  */
-export function firstTargetFile(
-  files: TorrentFile[],
-  number: number | undefined,
-  offset: number,
-): TorrentFile | null {
-  if (number !== undefined) {
-    const exact = fileForEpisode(files, number, offset);
-    if (exact !== null) return exact;
-  }
-
+export function firstTargetFile(files: TorrentFile[]): TorrentFile | null {
   if (playableCount(files) > 1) return null;
 
   return bestEffortFile(files);

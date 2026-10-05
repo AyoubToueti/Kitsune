@@ -7,6 +7,7 @@ const addTorrentMock = vi.hoisted(() => vi.fn());
 const removeTorrentMock = vi.hoisted(() => vi.fn());
 const pauseTorrentMock = vi.hoisted(() => vi.fn());
 const resumeTorrentMock = vi.hoisted(() => vi.fn());
+const setOnlyFilesMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
 const getTorrentStatsMock = vi.hoisted(() => vi.fn());
 const openInPlayerMock = vi.hoisted(() => vi.fn());
@@ -34,6 +35,7 @@ vi.mock("$lib/api/player", () => ({
   removeTorrent: removeTorrentMock,
   pauseTorrent: pauseTorrentMock,
   resumeTorrent: resumeTorrentMock,
+  setOnlyFiles: setOnlyFilesMock,
   getStreamUrl: getStreamUrlMock,
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
@@ -98,6 +100,7 @@ beforeEach(() => {
   addTorrentMock.mockReset();
   removeTorrentMock.mockReset();
   pauseTorrentMock.mockReset();
+  setOnlyFilesMock.mockReset();
   resumeTorrentMock.mockReset();
   getStreamUrlMock.mockReset();
   getTorrentStatsMock.mockReset();
@@ -112,6 +115,7 @@ beforeEach(() => {
 
   removeTorrentMock.mockResolvedValue(undefined);
   pauseTorrentMock.mockResolvedValue(undefined);
+  setOnlyFilesMock.mockResolvedValue(undefined);
   resumeTorrentMock.mockResolvedValue(undefined);
   getStreamUrlMock.mockResolvedValue("http://127.0.0.1/stream/0");
   openInPlayerMock.mockResolvedValue("mpv");
@@ -128,10 +132,8 @@ afterEach(() => {
 });
 
 describe("playRelease", () => {
-  it("adds the magnet and plays the file matching the episode", async () => {
-    addMagnetMock.mockResolvedValue(
-      handle(7, [file("Show - 03.mkv"), file("Show - 04.mkv")]),
-    );
+  it("adds the magnet and starts a lone video", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv")]));
     const h = harness({ episode: 3 });
     current = h;
 
@@ -143,7 +145,23 @@ describe("playRelease", () => {
     expect(h.session.chosen?.name).toBe("Show - 03.mkv");
   });
 
-  it("falls back to the largest playable file when nothing matches", async () => {
+  it("waits, paused, on a multi-video release", async () => {
+    addMagnetMock.mockResolvedValue(
+      handle(7, [file("Show - 03.mkv"), file("Show - 04.mkv")]),
+    );
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // A batch never auto-picks; the reader chooses.
+    expect(h.session.chosen).toBeNull();
+    expect(h.session.paused).toBe(true);
+    expect(pauseTorrentMock).toHaveBeenCalledWith(7);
+  });
+
+  it("starts the largest video when a torrent holds exactly one", async () => {
     addMagnetMock.mockResolvedValue(
       handle(7, [file("cover.jpg", 9_000_000), file("episode.mkv", 1_000_000)]),
     );
@@ -232,18 +250,20 @@ describe("loadTorrentFile", () => {
     expect(pauseTorrentMock).toHaveBeenCalledWith(9);
   });
 
-  it("still auto-plays an exact episode match among many files", async () => {
+  it("waits even when one name looks like the episode", async () => {
     addTorrentMock.mockResolvedValue(
-      handle(9, [file("Show - 01.mkv"), file("Show - 03.mkv")]),
+      handle(9, [file("Show.S01E21.1080p.mkv"), file("Show.S01E22.1080p.mkv")]),
     );
-    const h = harness({ episode: 3 });
+    const h = harness({ episode: 1 });
     current = h;
 
     await h.session.loadTorrentFile("/tmp/x.torrent");
     await settle();
 
-    expect(h.session.chosen?.name).toBe("Show - 03.mkv");
-    expect(pauseTorrentMock).not.toHaveBeenCalled();
+    // "S01E21" contains "01", which must not be taken for episode 1.
+    expect(h.session.chosen).toBeNull();
+    expect(h.session.paused).toBe(true);
+    expect(pauseTorrentMock).toHaveBeenCalledWith(9);
   });
 });
 
@@ -260,6 +280,19 @@ describe("play", () => {
     expect(h.session.streamUrl).toBe("http://127.0.0.1/stream/0");
     expect(h.session.fileFraction).toBe(0);
     expect(h.session.launched).toBe(false);
+  });
+
+  it("restricts the download to the chosen file", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv")]));
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // Without this a pack downloads its files in order and the chosen one
+    // sits at 0 B, which reads as a stuck progress bar.
+    expect(setOnlyFilesMock).toHaveBeenCalledWith(7, [0]);
   });
 
   it("reports a stream failure and leaves the URL unset", async () => {

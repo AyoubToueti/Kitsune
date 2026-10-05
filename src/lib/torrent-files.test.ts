@@ -33,28 +33,29 @@ describe("playableCount", () => {
 });
 
 describe("firstTargetFile", () => {
-  it("prefers an exact episode match even among many files", () => {
-    const files = [
-      file("Show - 01.mkv"),
-      file("Show - 03.mkv"),
-      file("Show - 04.mkv"),
-    ];
-    expect(firstTargetFile(files, 3, 0)?.name).toBe("Show - 03.mkv");
-  });
-
-  it("waits when there is no match and more than one video", () => {
+  it("waits on any torrent with more than one video", () => {
     const files = [file("Show - 01.mkv"), file("Show - 02.mkv")];
-    expect(firstTargetFile(files, 9, 0)).toBeNull();
+    expect(firstTargetFile(files)).toBeNull();
   });
 
-  it("starts the lone video when nothing matches", () => {
+  it("waits even when one name looks like the episode", () => {
+    // A pack's "S01E21" contains "01", which must not be taken for episode 1.
+    const files = [
+      file("Show.S01E21.1080p.mkv"),
+      file("Show.S01E22.1080p.mkv"),
+    ];
+    expect(firstTargetFile(files)).toBeNull();
+  });
+
+  it("starts the lone video", () => {
     const files = [file("something-else.mkv"), file("notes.nfo")];
-    expect(firstTargetFile(files, 3, 0)?.name).toBe("something-else.mkv");
+    expect(firstTargetFile(files)?.name).toBe("something-else.mkv");
   });
 
-  it("waits when the number is unknown and there is a choice", () => {
-    const files = [file("a.mkv"), file("b.mkv")];
-    expect(firstTargetFile(files, undefined, 0)).toBeNull();
+  it("starts a torrent whose only playable file is one video", () => {
+    // Episode + subtitle is one video, not a choice to make.
+    const files = [file("Show - 03.mkv"), file("Show - 03.ass")];
+    expect(firstTargetFile(files)?.name).toBe("Show - 03.mkv");
   });
 });
 
