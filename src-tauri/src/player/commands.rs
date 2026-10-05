@@ -249,6 +249,53 @@ pub async fn choose_player_preview(app: AppHandle) -> Result<String, String> {
         .unwrap_or_default())
 }
 
+/// Build a player entry from a path or command the reader typed or pasted.
+///
+/// The escape hatch for when discovery comes up empty: the reader knows they
+/// have a player and can name it directly. Accepts either an absolute path
+/// (`C:\...\vlc.exe`, `/usr/bin/mpv`) or a bare command name resolved on
+/// `PATH`, so both the "Copy as path" and the "which mpv" workflows work.
+///
+/// Fails with a message the reader can act on when nothing exists at the path,
+/// rather than adding a row that would fail to launch later.
+#[tauri::command]
+pub fn player_from_path(path: String) -> Result<super::chooser::PlayerOption, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Enter a path to your video player.".to_string());
+    }
+
+    // Resolve a bare command name on PATH; an absolute path is used as-is.
+    // `find_on_path` returns `None` when nothing exists, which is the error.
+    let program = super::chooser::find_on_path(trimmed)
+        .ok_or_else(|| format!("No file found at \"{trimmed}\"."))?;
+
+    let name = std::path::Path::new(&program)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| program.clone());
+    let icon = super::chooser::icon_for_program(&program);
+
+    Ok(super::chooser::PlayerOption {
+        id: program.clone(),
+        name,
+        program,
+        extra_args: Vec::new(),
+        is_default: false,
+        icon,
+    })
+}
+
+/// The OS this build runs on: `"windows"`, `"linux"` or `"macos"`.
+///
+/// Lets the picker show the right hint for finding a player's path, rather
+/// than a generic one. Read once when the picker opens.
+#[tauri::command]
+pub fn platform_name() -> String {
+    std::env::consts::OS.to_string()
+}
+
 /// Run the GTK chooser on the main thread and await the pick.
 ///
 /// `run_on_main_thread` takes a `Send + 'static` closure, and the GTK dialog is

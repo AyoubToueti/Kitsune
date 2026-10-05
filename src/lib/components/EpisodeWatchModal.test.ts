@@ -55,6 +55,8 @@ vi.mock("$lib/api/player", () => ({
   chooseAndOpenPlayer: chooseAndOpenPlayerMock,
   openInPlayerChoice: openInPlayerChoiceMock,
   listPlayers: listPlayersMock,
+  playerFromPath: vi.fn(),
+  platformName: vi.fn(async () => "linux"),
   onPlayerExit: onPlayerExitMock,
 }));
 

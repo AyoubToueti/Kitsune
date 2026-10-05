@@ -3,9 +3,13 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 
 const listPlayersMock = vi.hoisted(() => vi.fn());
 const openInPlayerChoiceMock = vi.hoisted(() => vi.fn());
+const playerFromPathMock = vi.hoisted(() => vi.fn());
+const platformNameMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/player", () => ({
   listPlayers: listPlayersMock,
   openInPlayerChoice: openInPlayerChoiceMock,
+  playerFromPath: playerFromPathMock,
+  platformName: platformNameMock,
 }));
 
 const setDefaultPlayerMock = vi.hoisted(() => vi.fn());
@@ -42,6 +46,8 @@ beforeEach(() => {
   listPlayersMock.mockReset().mockResolvedValue([]);
   openInPlayerChoiceMock.mockReset().mockResolvedValue("/usr/bin/vlc");
   setDefaultPlayerMock.mockReset().mockResolvedValue(undefined);
+  playerFromPathMock.mockReset().mockResolvedValue(withoutIcon());
+  platformNameMock.mockReset().mockResolvedValue("linux");
 });
 
 describe("PlayerPicker", () => {
@@ -127,5 +133,71 @@ describe("PlayerPicker", () => {
       3,
     );
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("offers a manual path field when nothing was found", async () => {
+    listPlayersMock.mockResolvedValue([]);
+    render(PlayerPicker, {
+      props: { open: true, url: "http://x", onClose: () => {} },
+    });
+
+    expect(await screen.findByTestId("player-path-input")).toBeInTheDocument();
+    // The hint is platform-specific; linux is the mocked platform.
+    expect(await screen.findByTestId("player-path-hint")).toHaveTextContent(
+      /which mpv/i,
+    );
+  });
+
+  it("launches a manually entered player once", async () => {
+    listPlayersMock.mockResolvedValue([]);
+    const onClose = vi.fn();
+    render(PlayerPicker, {
+      props: { open: true, url: "http://x", torrentId: 2, onClose },
+    });
+
+    const input = await screen.findByTestId("player-path-input");
+    await fireEvent.input(input, { target: { value: "/opt/mpv" } });
+    await fireEvent.click(screen.getByTestId("player-path-open"));
+
+    await waitFor(() =>
+      expect(playerFromPathMock).toHaveBeenCalledWith("/opt/mpv"),
+    );
+    expect(openInPlayerChoiceMock).toHaveBeenCalledWith(
+      "http://x",
+      "/usr/bin/mpv",
+      [],
+      2,
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("saves a manually entered player as the default with Always", async () => {
+    listPlayersMock.mockResolvedValue([]);
+    render(PlayerPicker, {
+      props: { open: true, url: "http://x", onClose: () => {} },
+    });
+
+    const input = await screen.findByTestId("player-path-input");
+    await fireEvent.input(input, { target: { value: "/opt/mpv" } });
+    await fireEvent.click(screen.getByTestId("player-path-always"));
+
+    await waitFor(() =>
+      expect(setDefaultPlayerMock).toHaveBeenCalledWith("/usr/bin/mpv", []),
+    );
+  });
+
+  it("shows the failure when a manual path does not exist", async () => {
+    listPlayersMock.mockResolvedValue([]);
+    playerFromPathMock.mockRejectedValue('No file found at "/nope".');
+
+    render(PlayerPicker, {
+      props: { open: true, url: "http://x", onClose: () => {} },
+    });
+
+    const input = await screen.findByTestId("player-path-input");
+    await fireEvent.input(input, { target: { value: "/nope" } });
+    await fireEvent.click(screen.getByTestId("player-path-open"));
+
+    expect(await screen.findByTestId("player-path-error")).toBeInTheDocument();
   });
 });

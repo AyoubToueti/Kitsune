@@ -34,6 +34,8 @@ export const PLAYER_COMMANDS = {
   chooseAndOpenPlayer: "choose_and_open_player",
   choosePlayerPreview: "choose_player_preview",
   listPlayers: "list_players",
+  playerFromPath: "player_from_path",
+  platformName: "platform_name",
   openInPlayerChoice: "open_in_player_choice",
   getPlayer: "get_player",
   setPlayer: "set_player",
@@ -219,6 +221,26 @@ export interface PlayerOption {
  */
 export async function listPlayers(): Promise<PlayerOption[]> {
   return invoke<PlayerOption[]>(PLAYER_COMMANDS.listPlayers);
+}
+
+/**
+ * Build a player entry from a path or command the reader typed.
+ *
+ * The escape hatch when discovery finds nothing: the reader names their player
+ * directly. Accepts an absolute path or a bare command resolved on `PATH`, and
+ * rejects with a message naming the path when nothing exists there.
+ */
+export async function playerFromPath(path: string): Promise<PlayerOption> {
+  return invoke<PlayerOption>(PLAYER_COMMANDS.playerFromPath, { path });
+}
+
+/**
+ * The OS this build runs on: `"windows"`, `"linux"` or `"macos"`.
+ *
+ * Lets the picker show a platform-specific hint for finding a player's path.
+ */
+export async function platformName(): Promise<string> {
+  return invoke<string>(PLAYER_COMMANDS.platformName);
 }
 
 /**

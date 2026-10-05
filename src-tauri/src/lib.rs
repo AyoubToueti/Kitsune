@@ -209,6 +209,8 @@ pub fn run() {
                 player::commands::choose_and_open_player,
                 player::commands::choose_player_preview,
                 player::commands::list_players,
+                player::commands::player_from_path,
+                player::commands::platform_name,
                 player::commands::open_in_player_choice,
                 player::commands::get_player,
                 player::commands::set_player,
