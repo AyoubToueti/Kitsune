@@ -171,6 +171,39 @@ describe("EpisodeWatchModal", () => {
         expect.arrayContaining(["Attack on Titan"]),
         3,
         undefined,
+        "episodes",
+      ),
+    );
+  });
+
+  it("re-searches in packs mode when the toggle is flipped", async () => {
+    render(EpisodeWatchModal, {
+      props: {
+        open: true,
+        anime: anime(),
+        episodes: episodes(),
+        episodeIndex: 2,
+        onClose: () => {},
+      },
+    });
+
+    await waitFor(() =>
+      expect(searchReleasesMock).toHaveBeenCalledWith(
+        expect.any(Array),
+        3,
+        undefined,
+        "episodes",
+      ),
+    );
+
+    await fireEvent.click(screen.getByText("Packs"));
+
+    await waitFor(() =>
+      expect(searchReleasesMock).toHaveBeenCalledWith(
+        expect.any(Array),
+        3,
+        undefined,
+        "packs",
       ),
     );
   });

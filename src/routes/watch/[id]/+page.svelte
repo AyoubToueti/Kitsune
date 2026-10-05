@@ -44,6 +44,7 @@
     type ProbeOutcome,
     type Release,
     type Resolution,
+    type SearchMode,
     type TorrentFile,
     type TorrentHandle,
     type TorrentProgress,
@@ -51,6 +52,7 @@
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import ExternalPlayerButton from "$lib/components/ExternalPlayerButton.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
+  import ReleaseModeToggle from "$lib/components/ReleaseModeToggle.svelte";
   import ResolutionFilter from "$lib/components/ResolutionFilter.svelte";
   import StreamStatus from "$lib/components/StreamStatus.svelte";
 
@@ -184,6 +186,14 @@
   let searching = $state(false);
   let loadingRelease = $state(false);
   let releaseError = $state<string | null>(null);
+  /**
+   * Whether the reader wants the one episode or the packs that contain it.
+   *
+   * A pack is a whole-season or batch upload; the torrent session already picks
+   * the chosen episode's file out of one, so flipping this only changes which
+   * releases the search returns.
+   */
+  let releaseMode = $state<SearchMode>("episodes");
   /**
    * Failure from handing a magnet to the OS.
    *
@@ -489,6 +499,9 @@
   $effect(() => {
     const work = anime;
     const episode = wantedEpisode;
+    // Read the mode so flipping the toggle re-runs the search. It is part of
+    // the request key for the same reason the episode is.
+    const mode = releaseMode;
 
     if (work === null) return;
 
@@ -501,7 +514,7 @@
     searching = true;
     releaseError = null;
 
-    searchReleases(forms, episode, wantedAbsoluteEpisode)
+    searchReleases(forms, episode, wantedAbsoluteEpisode, mode)
       .then((found) => {
         if (cancelled) return;
         releases = found;
@@ -1017,7 +1030,10 @@
       {/if}
 
       <div class="mt-6">
-        <h2 class="mb-2 text-sm font-semibold tracking-tight">Releases</h2>
+        <div class="mb-2 flex items-center justify-between gap-2">
+          <h2 class="text-sm font-semibold tracking-tight">Releases</h2>
+          <ReleaseModeToggle mode={releaseMode} onChange={(m) => (releaseMode = m)} />
+        </div>
 
         {#if searching}
           <p class="text-sm text-ink-muted" data-testid="releases-loading">
@@ -1027,7 +1043,9 @@
           <p class="text-sm text-ink-faint">{releaseError}</p>
         {:else if releases.length === 0}
           <p class="text-sm text-ink-muted" data-testid="releases-empty">
-            No releases found. Load a torrent by hand instead.
+            {releaseMode === "packs"
+              ? "No packs found. Load a torrent by hand instead."
+              : "No releases found. Load a torrent by hand instead."}
           </p>
         {:else}
           <!-- The box sits outside ResolutionFilter's own guard, which hides

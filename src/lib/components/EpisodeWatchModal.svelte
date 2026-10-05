@@ -4,7 +4,10 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
 
   import { downloadTorrent } from "$lib/api/releases";
-  import { absoluteOffset, episodeNumber as episodeNumberFor } from "$lib/episode";
+  import {
+    absoluteOffset,
+    episodeNumber as episodeNumberFor,
+  } from "$lib/episode";
   import { matchesQuery } from "$lib/release-filter";
   import { clarityLabel, clarityTitle, matchClarity } from "$lib/release-match";
   import {
@@ -19,10 +22,17 @@
   import { fileKind, type FileKind } from "$lib/torrent-files";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
   import { nowPlayingSession, startPlaying } from "$lib/now-playing.svelte";
-  import { titleForms, type Anime, type Release, type Resolution } from "$lib/types";
+  import {
+    titleForms,
+    type Anime,
+    type Release,
+    type Resolution,
+    type SearchMode,
+  } from "$lib/types";
   import type { Episode } from "$lib/episodes";
 
   import Modal from "./Modal.svelte";
+  import ReleaseModeToggle from "./ReleaseModeToggle.svelte";
   import ResolutionFilter from "./ResolutionFilter.svelte";
   import StreamStatus from "./StreamStatus.svelte";
 
@@ -31,13 +41,7 @@
    *
    * Opened from an episode card on the detail page, it searches the indexers,
    * lets the reader pick a release, lists the files inside it, and launches the
-   * external player -- all without leaving the page. The heavy lifting lives in
-   * two composables shared with the watch page, so the torrent teardown and the
-   * add race are handled once.
-   *
-   * The composables are created here at initialisation, NOT inside an effect: a
-   * `$effect` callback cannot create further effects. The search simply yields
-   * nothing while the modal is closed, and closing it tears the torrent down.
+   * external player -- all without leaving the page.
    */
   let {
     open: isOpen,
@@ -55,9 +59,6 @@
   } = $props();
 
   // --- the episode ---------------------------------------------------------
-  //
-  // Read through the same helpers the episode list uses, so the number the
-  // search runs for and the number the file matcher looks for cannot disagree.
 
   const episode = $derived(
     episodeIndex !== undefined ? episodes[episodeIndex] : undefined,
@@ -78,13 +79,8 @@
 
   // --- the shared state machines -------------------------------------------
 
-  /**
-   * The release search.
-   *
-   * The request is a function so the composable reads it reactively and re-runs
-   * when the episode changes. It returns `null` while the modal is closed, which
-   * is how a closed modal avoids searching at all.
-   */
+  let releaseMode = $state<SearchMode>("episodes");
+
   const search = createReleaseSearch(() => {
     if (!isOpen) return null;
     const forms = titleForms(anime.title);
@@ -93,41 +89,22 @@
       titles: forms,
       episode: wantedEpisode,
       absoluteEpisode: wantedAbsoluteEpisode,
+      mode: releaseMode,
     };
   });
 
-  /**
-   * The torrent session, owned app-wide by the now-playing store.
-   *
-   * It is NOT created here any more: the store owns the single session so the
-   * NowPlaying disc can keep reading it after this modal closes. Closing the
-   * modal no longer tears the torrent down -- the player exiting, or a new
-   * episode starting, does.
-   */
   const session = nowPlayingSession();
 
-  /**
-   * The internet speed test, for the footer.
-   *
-   * Shared logic with the Settings panel; this renders the compact form. The
-   * progress listener is subscribed only while the modal is open, via the
-   * effect below.
-   */
   const speed = createSpeedTest();
-  const speedResult = $derived(speed.result ? compactResult(speed.result) : null);
+  const speedResult = $derived(
+    speed.result ? compactResult(speed.result) : null,
+  );
 
-  // Subscribe to speed-test progress while the modal is open, and unsubscribe
-  // when it closes. `$effect` can return a teardown, and `start()` returns one
-  // synchronously, so this is the whole lifecycle.
   $effect(() => {
     if (!isOpen) return;
     return speed.start();
   });
 
-  // Hand the episode to the store whenever the selection changes, so the disc
-  // knows what is playing. Read `anime` and `episodes` untracked: only the
-  // episode index is the key, and re-running on a late catalogue load would
-  // reset a session the reader had already started.
   $effect(() => {
     if (!isOpen) return;
     const index = episodeIndex;
@@ -148,21 +125,16 @@
       : [...resolutionFilter, resolution];
   }
 
-  /**
-   * Releases ordered by the best knowledge available.
-   *
-   * The original index is carried through the filter and the sort: it is the key
-   * into `probeOutcomes`, so a surviving row keeps ITS OWN badge rather than the
-   * one belonging to whatever release used to sit at that position.
-   */
   const rankedReleases = $derived.by(() => {
     return search.releases
       .map((release, index) => ({ release, index }))
       .filter(({ release }) => matchesQuery(release, releaseQuery))
       .filter(({ release }) => matchesResolution(release, resolutionFilter))
       .sort((a, b) => {
-        const scoreA = search.badgeFor(a.index)?.combinedScore ?? a.release.score;
-        const scoreB = search.badgeFor(b.index)?.combinedScore ?? b.release.score;
+        const scoreA =
+          search.badgeFor(a.index)?.combinedScore ?? a.release.score;
+        const scoreB =
+          search.badgeFor(b.index)?.combinedScore ?? b.release.score;
         return scoreB - scoreA;
       });
   });
@@ -187,14 +159,6 @@
     await session.loadTorrentFile(picked);
   }
 
-  /**
-   * The footer's primary action.
-   *
-   * With a torrent already loaded, "change torrent" means going back to the
-   * release list to pick a different one -- not opening the file picker, which
-   * is what "load a torrent by hand" is for. The session is reset so the stage
-   * returns to the search results and the old torrent is released.
-   */
   function changeTorrent(): void {
     if (session.files.length > 0) {
       session.reset();
@@ -203,17 +167,14 @@
     void loadTorrentByHand();
   }
 
-  /** Open a release's magnet in the reader's own torrent client. */
   async function openMagnet(release: Release): Promise<void> {
     try {
       await openUrl(release.magnetUri);
     } catch {
-      // A machine with no magnet handler registered rejects here; the OS's own
-      // failure is the signal, and it must not break the modal.
+      // Ignored
     }
   }
 
-  /** Save a release's `.torrent` to a path the reader picks. */
   async function downloadReleaseTorrent(release: Release): Promise<void> {
     const url = release.torrentUrl;
     if (url === undefined) return;
@@ -227,11 +188,10 @@
     try {
       await downloadTorrent(url, path);
     } catch {
-      // Non-fatal: the save dialog already confirmed the intent.
+      // Non-fatal
     }
   }
 
-  /** A safe default file name for a release's torrent. */
   function torrentFileName(release: Release): string {
     const safe = release.title.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
     return `${safe || "release"}.torrent`;
@@ -239,7 +199,6 @@
 
   // --- file-row presentation ----------------------------------------------
 
-  /** The glyph shown in a file row's type tile. */
   function kindIcon(kind: FileKind): string {
     switch (kind) {
       case "video":
@@ -253,7 +212,6 @@
     }
   }
 
-  /** The colour class for a file row's type tile. */
   function kindClass(kind: FileKind): string {
     switch (kind) {
       case "video":
@@ -267,7 +225,6 @@
     }
   }
 
-  /** A human word for a file's kind, e.g. "Video". */
   function kindLabel(kind: FileKind): string {
     switch (kind) {
       case "video":
@@ -281,28 +238,18 @@
     }
   }
 
-  // --- which stage to show --------------------------------------------------
-  //
-  // Ordered by progress: a launched player wins, then a file being waited on,
-  // then the file list, then the search. That way the modal always shows the
-  // furthest point the reader has reached.
+  // --- stage derivation ----------------------------------------------------
+  // Only toggles between "files" and "releases". Searching is rendered in-place
+  // inside the releases view so persistent controls like the mode toggle stay mounted.
 
   const stage = $derived.by(() => {
-    // No dedicated "playing" stage: once the player opens, the file view stays
-    // up so the live status panel keeps reporting while the episode plays. The
-    // playing state is a banner within that view, not a screen of its own.
     if (session.files.length > 0) return "files";
-    if (search.searching) return "searching";
     return "releases";
   });
 
-  /** Whether a file is selected and its stream URL is resolved. */
   const showStatus = $derived(
     session.chosen !== null && session.streamUrl !== undefined,
   );
-
-  /** Waiting for enough of the file, i.e. selected but not yet playing. */
-  const waitingOnFile = $derived(showStatus && !session.launched);
 </script>
 
 <Modal open={isOpen} {onClose} label="Watch episode">
@@ -312,13 +259,19 @@
       <div
         class="relative aspect-video w-48 shrink-0 overflow-hidden rounded-lg border border-border-subtle"
       >
-        <img src={episode.thumbnail} alt="" class="h-full w-full object-cover" />
+        <img
+          src={episode.thumbnail}
+          alt=""
+          class="h-full w-full object-cover"
+        />
       </div>
     {/if}
 
     <div class="min-w-0 flex-1">
       {#if displayNumber !== undefined}
-        <p class="text-[0.7rem] font-bold tracking-[0.12em] text-accent uppercase">
+        <p
+          class="text-[0.7rem] font-bold tracking-[0.12em] text-accent uppercase"
+        >
           Episode {displayNumber}
         </p>
       {/if}
@@ -330,12 +283,16 @@
       {/if}
       <div class="mt-2 flex flex-wrap gap-1.5">
         {#if episode?.filler}
-          <span class="rounded bg-danger/20 px-1.5 py-0.5 text-[0.65rem] font-semibold text-danger">
+          <span
+            class="rounded bg-danger/20 px-1.5 py-0.5 text-[0.65rem] font-semibold text-danger"
+          >
             Filler
           </span>
         {/if}
         {#if episode?.recap}
-          <span class="rounded bg-health-yellow/20 px-1.5 py-0.5 text-[0.65rem] font-semibold text-health-yellow">
+          <span
+            class="rounded bg-health-yellow/20 px-1.5 py-0.5 text-[0.65rem] font-semibold text-health-yellow"
+          >
             Recap
           </span>
         {/if}
@@ -403,12 +360,11 @@
               <button
                 type="button"
                 onclick={() => session.play(file)}
-                class="flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left text-xs transition-colors {session.chosen?.idx ===
-                file.idx
+                class="flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left text-xs transition-colors {session
+                  .chosen?.idx === file.idx
                   ? 'border-accent bg-surface-hover text-ink ring-1 ring-accent/30'
                   : 'border-border-subtle bg-surface-raised text-ink-muted hover:border-accent hover:text-ink'}"
               >
-                <!-- Type tile: a glanceable "what is this file" marker. -->
                 <span
                   aria-hidden="true"
                   class="grid size-8 shrink-0 place-items-center rounded-lg border border-border-subtle bg-surface-hover text-sm {kindClass(
@@ -432,8 +388,8 @@
                 </span>
 
                 <span
-                  class="shrink-0 rounded-lg border border-border-subtle px-3 py-1 text-[11px] font-semibold {session.chosen?.idx ===
-                  file.idx
+                  class="shrink-0 rounded-lg border border-border-subtle px-3 py-1 text-[11px] font-semibold {session
+                    .chosen?.idx === file.idx
                     ? 'border-accent bg-accent text-white'
                     : 'text-ink-muted'}"
                 >
@@ -444,24 +400,43 @@
           {/each}
         </ul>
       </div>
-    {:else if stage === "searching"}
-      <div class="py-12 text-center" data-testid="stage-searching">
-        <div
-          class="mx-auto size-6 animate-spin rounded-full border-2 border-border-subtle border-t-accent"
-        ></div>
-        <p class="mt-4 text-sm text-ink-muted">
-          Searching indexers{displayNumber !== undefined
-            ? ` for episode ${displayNumber}`
-            : ""}…
-        </p>
-      </div>
     {:else}
       <div data-testid="stage-releases">
-        {#if search.error}
+        <!-- Persistent Header: Stays rendered during search and results -->
+        <div class="mb-3 flex items-center justify-between gap-2">
+          <h3 class="text-xs font-semibold tracking-tight text-ink-muted">
+            Releases
+          </h3>
+          <ReleaseModeToggle
+            mode={releaseMode}
+            disabled={search.searching || session.loadingRelease}
+            onChange={(m) => (releaseMode = m)}
+          />
+        </div>
+
+        {#if search.searching}
+          <div class="py-12 text-center" data-testid="stage-searching">
+            <div
+              class="mx-auto size-6 animate-spin rounded-full border-2 border-border-subtle border-t-accent"
+            ></div>
+            <p class="mt-4 text-sm text-ink-muted">
+              Searching indexers for {releaseMode === "packs"
+                ? "packs"
+                : "episodes"}{displayNumber !== undefined
+                ? ` (Episode ${displayNumber})`
+                : ""}…
+            </p>
+          </div>
+        {:else if search.error}
           <p class="py-8 text-center text-sm text-ink-faint">{search.error}</p>
         {:else if search.releases.length === 0}
-          <p class="py-8 text-center text-sm text-ink-muted" data-testid="releases-empty">
-            No releases found. Load a torrent by hand instead.
+          <p
+            class="py-8 text-center text-sm text-ink-muted"
+            data-testid="releases-empty"
+          >
+            {releaseMode === "packs"
+              ? "No packs found. Load a torrent by hand instead."
+              : "No releases found. Load a torrent by hand instead."}
           </p>
         {:else}
           <div class="mb-3 flex flex-wrap items-center gap-2">
@@ -481,7 +456,10 @@
           </div>
 
           {#if queryMatches === 0}
-            <p class="py-6 text-center text-sm text-ink-muted" data-testid="releases-no-match">
+            <p
+              class="py-6 text-center text-sm text-ink-muted"
+              data-testid="releases-no-match"
+            >
               No releases match "{releaseQuery.trim()}".
             </p>
           {:else}
@@ -572,7 +550,7 @@
     {/if}
   </div>
 
-  <!-- Footer: actions that stay available whatever the stage. -->
+  <!-- Footer -->
   {#snippet footer()}
     <div
       class="flex flex-wrap items-center gap-2 border-t border-border-subtle bg-surface-raised px-5 py-3.5"
@@ -587,10 +565,9 @@
           ? "Loading…"
           : session.files.length > 0
             ? "Change torrent"
-            : "Load torrent by hand"}
+            : "Load local torrent file"}
       </button>
 
-      <!-- A quick connection check before committing to a download. -->
       <button
         type="button"
         onclick={speed.run}
@@ -609,7 +586,10 @@
       </button>
 
       {#if speedResult}
-        <span class="text-[11px] text-ink-muted" data-testid="modal-speed-result">
+        <span
+          class="text-[11px] text-ink-muted"
+          data-testid="modal-speed-result"
+        >
           {speedResult}
         </span>
       {/if}

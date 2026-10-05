@@ -275,6 +275,23 @@ describe("watch page", () => {
       ["Attack on Titan"],
       undefined,
       undefined,
+      "episodes",
+    );
+  });
+
+  it("re-searches in packs mode when the toggle is flipped", async () => {
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+
+    await screen.findByTestId("releases-empty");
+
+    await fireEvent.click(screen.getByText("Packs"));
+
+    expect(searchReleasesMock).toHaveBeenCalledWith(
+      ["Attack on Titan"],
+      undefined,
+      undefined,
+      "packs",
     );
   });
 
@@ -297,6 +314,7 @@ describe("watch page", () => {
       ["Attack on Titan", "Shingeki no Kyojin"],
       undefined,
       undefined,
+      "episodes",
     );
   });
 
@@ -492,6 +510,7 @@ describe("watch page", () => {
       ["Attack on Titan"],
       2,
       undefined,
+      "episodes",
     );
   });
 

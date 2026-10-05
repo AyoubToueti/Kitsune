@@ -77,7 +77,7 @@ static UNCONDITIONAL_PACK_WORDS: Lazy<Regex> =
 /// So this only counts as a pack when the name states no episode of its own --
 /// see [`is_pack`].
 static SEASON_PACK_WORDS: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\bseason\s*\d+\b").unwrap());
+    Lazy::new(|| Regex::new(r"(?i)\b(?:season|s\d{1,2}\s*p|part|cour)\s*\d+\b").unwrap());
 
 /// A bare `S01`/`S1` season marker with no episode or range after it.
 ///
