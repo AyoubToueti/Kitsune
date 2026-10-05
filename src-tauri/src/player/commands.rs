@@ -62,6 +62,35 @@ pub async fn remove_torrent(
         .map_err(|err| err.to_string())
 }
 
+/// Pause a torrent's transfer, keeping its partial data.
+///
+/// The buffering panel's pause button: the reader stops the download without
+/// giving up what has already been fetched, so resuming continues from there.
+#[tauri::command]
+pub async fn pause_torrent(
+    state: State<'_, PlayerState>,
+    torrent_id: usize,
+) -> Result<(), String> {
+    state
+        .pause_torrent(torrent_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+/// Resume a paused torrent's transfer.
+///
+/// The counterpart of [`pause_torrent`].
+#[tauri::command]
+pub async fn resume_torrent(
+    state: State<'_, PlayerState>,
+    torrent_id: usize,
+) -> Result<(), String> {
+    state
+        .resume_torrent(torrent_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
 /// The loopback URL that streams one file of one torrent.
 #[tauri::command]
 pub async fn get_stream_url(

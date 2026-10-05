@@ -293,6 +293,39 @@ impl TorrentEngine {
             .with_context(|| format!("failed to remove torrent {id}"))
     }
 
+    /// Pause a torrent's transfer, keeping its partial data.
+    ///
+    /// Used by the buffering panel's pause button: the reader stops the
+    /// download without giving up the pieces already fetched, so resuming
+    /// continues from where it left off. An unknown id is not an error -- the
+    /// torrent may already have been removed, and a removed torrent is not a
+    /// failure to pause.
+    pub async fn pause_torrent(&self, id: usize) -> Result<()> {
+        let Some(handle) = self.session.get(id.into()) else {
+            return Ok(());
+        };
+
+        self.session
+            .pause(&handle)
+            .await
+            .with_context(|| format!("failed to pause torrent {id}"))
+    }
+
+    /// Resume a paused torrent's transfer.
+    ///
+    /// The counterpart of [`Self::pause_torrent`]. An unknown id is a no-op for
+    /// the same reason; a torrent that is not paused is left as it is.
+    pub async fn resume_torrent(&self, id: usize) -> Result<()> {
+        let Some(handle) = self.session.get(id.into()) else {
+            return Ok(());
+        };
+
+        self.session
+            .unpause(&handle)
+            .await
+            .with_context(|| format!("failed to resume torrent {id}"))
+    }
+
     /// Stop the session and all managed tasks.
     pub async fn stop(&self) {
         self.session.stop().await;
@@ -473,6 +506,47 @@ mod tests {
             "a removed torrent should report no files"
         );
 
+        engine.stop().await;
+    }
+
+    /// Adds a torrent, pauses and resumes it, then removes it. Ignored for the
+    /// same reason as the test below: it binds sockets and joins the DHT.
+    #[tokio::test]
+    #[ignore = "binds sockets and joins the DHT; run explicitly"]
+    async fn torrent_can_be_paused_and_resumed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = TorrentEngine::start(EngineConfig::new(tmp.path()))
+            .await
+            .expect("engine should start");
+
+        // A well-formed hash with no swarm behind it: enough to register the
+        // torrent so pause/resume have something real to act on.
+        let id = engine
+            .add_magnet("magnet:?xt=urn:btih:cab507494d02ebb1178b38f2e9d7be299c86b862")
+            .await
+            .expect("a well-formed magnet should be accepted");
+
+        engine
+            .pause_torrent(id)
+            .await
+            .expect("pausing an added torrent should succeed");
+        engine
+            .resume_torrent(id)
+            .await
+            .expect("resuming a paused torrent should succeed");
+
+        // An unknown id is a no-op, not an error: the torrent may already be
+        // gone, and that is not a failure to pause or resume.
+        engine
+            .pause_torrent(999_999)
+            .await
+            .expect("pausing an unknown torrent should be a no-op");
+        engine
+            .resume_torrent(999_999)
+            .await
+            .expect("resuming an unknown torrent should be a no-op");
+
+        engine.remove_torrent(id).await.expect("cleanup");
         engine.stop().await;
     }
 

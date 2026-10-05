@@ -416,6 +416,31 @@ impl PlayerState {
         self.inner.session.get()?.engine.progress(torrent_id)
     }
 
+    /// Pause a torrent's transfer, keeping its partial data.
+    ///
+    /// Reads the session cell rather than going through [`Self::session`], for
+    /// the same reason as [`Self::torrent_progress`]: pausing a torrent that
+    /// was never added must not START a session merely to pause nothing.
+    pub async fn pause_torrent(&self, id: usize) -> Result<()> {
+        let Some(session) = self.inner.session.get() else {
+            return Ok(());
+        };
+
+        session.engine.pause_torrent(id).await
+    }
+
+    /// Resume a paused torrent's transfer.
+    ///
+    /// The counterpart of [`Self::pause_torrent`], with the same cell-read
+    /// rule so resuming nothing cannot start a session.
+    pub async fn resume_torrent(&self, id: usize) -> Result<()> {
+        let Some(session) = self.inner.session.get() else {
+            return Ok(());
+        };
+
+        session.engine.resume_torrent(id).await
+    }
+
     /// Open a URL in an external player, holding `torrent_id` while it runs.
     ///
     /// `player` overrides the stored preference for this one call; passing
