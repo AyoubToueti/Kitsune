@@ -33,8 +33,11 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
   openUrl: vi.fn(),
   revealItemInDir: vi.fn(),
 }));
-// The drawer mounts DiagnosticsPanel, which polls this. Stub it so the drawer
-// test stays about the drawer.
+// The drawer mounts DiagnosticsPanel, which polls the stats and subscribes to
+// speed-test progress on open. Stub both so the drawer test stays about the
+// drawer. The progress stub never fires and resolves to an unlisten, matching
+// the real shape: the panel installs its listener on mount even though nothing
+// in this file drives the speed test.
 vi.mock("$lib/api/diagnostics", () => ({
   getSystemStats: vi.fn(async () => ({
     cpuPercent: 1,
@@ -49,6 +52,10 @@ vi.mock("$lib/api/diagnostics", () => ({
     systemAvailableBytes: 7,
   })),
   getLogPath: vi.fn(async () => "/data/kitsune/logs/kitsune.log"),
+  runSpeedTest: vi.fn(async () => {
+    throw new Error("the speed test is not driven in this file");
+  }),
+  onSpeedTestProgress: vi.fn(async () => () => {}),
 }));
 
 import SettingsDrawer from "./SettingsDrawer.svelte";
