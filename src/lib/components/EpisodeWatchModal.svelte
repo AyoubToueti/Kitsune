@@ -322,7 +322,30 @@
               speedHistory={session.speedHistory}
               staleSeconds={session.staleSeconds}
               empty={false}
-            />
+              paused={session.paused}
+            >
+              {#snippet actions()}
+                <button
+                  type="button"
+                  onclick={() =>
+                    session.paused ? session.resume() : session.pause()}
+                  disabled={session.loading}
+                  data-testid="buffer-pause"
+                  class="rounded-lg border border-border-subtle bg-surface px-3 py-1 text-[11px] font-medium text-ink transition-colors hover:border-accent hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {session.paused ? "Resume" : "Pause"}
+                </button>
+                <button
+                  type="button"
+                  onclick={() => session.reset()}
+                  disabled={session.loading}
+                  data-testid="buffer-cancel"
+                  class="rounded-lg border border-border-subtle bg-surface px-3 py-1 text-[11px] font-medium text-ink-muted transition-colors hover:border-danger hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+              {/snippet}
+            </StreamStatus>
             {#if session.launched}
               <p
                 class="mt-2 flex items-center justify-center gap-2 text-xs text-ink-muted"

@@ -50,6 +50,13 @@ describe("streamWarning", () => {
     expect(streamWarning(progress(), 5)).toBeNull();
   });
 
+  it("reports a paused download as info, not a stall", () => {
+    // No bytes arrive while paused, so the stall check would otherwise fire.
+    const warning = streamWarning(progress({ state: "paused" }), 30);
+    expect(warning?.level).toBe("info");
+    expect(warning?.message).toMatch(/paused/i);
+  });
+
   it("reports searching while peers are connecting", () => {
     const warning = streamWarning(
       progress({ peersLive: 0, peersConnecting: 2 }),
@@ -139,5 +146,9 @@ describe("healthLabel", () => {
     expect(
       healthLabel(progress({ peersLive: 0, peersConnecting: 0, peersQueued: 0 })),
     ).toBe("Searching");
+  });
+
+  it("is Paused while the download is paused", () => {
+    expect(healthLabel(progress({ state: "paused" }))).toBe("Paused");
   });
 });

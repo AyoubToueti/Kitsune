@@ -243,4 +243,14 @@ describe("StreamStatus", () => {
     expect(screen.getByTestId("file-percent")).toHaveTextContent("100%");
     expect(screen.getByTestId("torrent-percent")).toHaveTextContent("100%");
   });
+
+  it("shows a Paused headline and connection when paused", () => {
+    render(StreamStatus, {
+      props: { progress: progress(), paused: true },
+    });
+
+    // Both the headline and the connection line read "Paused", so match all.
+    expect(screen.getAllByText(/paused/i).length).toBeGreaterThan(0);
+    expect(screen.getByTestId("connection")).toHaveTextContent(/paused/i);
+  });
 });

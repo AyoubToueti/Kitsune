@@ -1,4 +1,6 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
+
   import type { TorrentProgress } from "$lib/types";
   import { healthLabel, streamWarning } from "$lib/stream-health";
 
@@ -27,6 +29,8 @@
     speedHistory = [],
     staleSeconds = 0,
     playedFraction = 0,
+    paused = false,
+    actions,
   }: {
     /** Latest snapshot, or `null` before the first poll has answered. */
     progress?: TorrentProgress | null;
@@ -48,6 +52,21 @@
     speedHistory?: number[];
     /** Seconds since the byte count last changed, for the stall warning. */
     staleSeconds?: number;
+    /**
+     * True while the reader has paused the buffering download.
+     *
+     * Only changes presentation: the connection line reads "Paused" and the
+     * status dot stops pulsing, so a deliberate pause does not look like a
+     * download still working.
+     */
+    paused?: boolean;
+    /**
+     * Extra controls for the header row, when a caller wants them.
+     *
+     * A snippet rather than fixed buttons so only the episode modal shows
+     * pause/cancel; the watch page passes nothing and is unchanged.
+     */
+    actions?: Snippet;
     /**
      * How far into the chosen file the player has got, 0..1.
      *
@@ -129,6 +148,10 @@
   const connection = $derived.by(() => {
     if (progress === null) return "Waiting for stats…";
     if (progress.state === "error") return "Error";
+    // The prop wins: the reader just pressed pause and the next poll may not
+    // have landed yet, so trusting the snapshot alone would show "Connected"
+    // for up to a poll interval after the button was pressed.
+    if (paused || progress.state === "paused") return "Paused";
     if (progress.peersLive > 0) return `Connected (${progress.peersLive} peers)`;
     if (progress.peersConnecting > 0 || progress.peersQueued > 0) {
       return "Connecting…";
@@ -159,10 +182,12 @@
         aria-hidden="true"
         class="size-2 shrink-0 rounded-full {complete
           ? 'bg-health-green'
-          : 'bg-accent motion-safe:animate-pulse'}"
+          : paused
+            ? 'bg-ink-faint'
+            : 'bg-accent motion-safe:animate-pulse'}"
       ></span>
       <span class="text-sm font-semibold {complete ? 'text-health-green' : 'text-ink'}"
-        >{complete ? "Fully buffered" : title}</span
+        >{complete ? "Fully buffered" : paused ? "Paused" : title}</span
       >
       <span
         class="ml-auto text-sm font-bold {complete
@@ -170,6 +195,9 @@
           : 'text-accent-hover'}"
         data-testid="file-percent">{percent(fileFraction)}%</span
       >
+      {#if actions}
+        <div class="flex items-center gap-1.5">{@render actions()}</div>
+      {/if}
     </div>
 
     <!-- The chosen file's bar, the thing the reader is actually waiting on. -->

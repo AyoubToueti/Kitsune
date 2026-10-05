@@ -81,6 +81,17 @@ export function streamWarning(
     };
   }
 
+  // A paused download is not a stall: no bytes are supposed to be arriving.
+  // Reported as info rather than a warning, so a deliberate pause does not
+  // read as a fault the reader needs to fix.
+  if (progress.state === "paused") {
+    return {
+      level: "info",
+      icon: "⏸",
+      message: "Paused — the download continues when you resume.",
+    };
+  }
+
   // A live torrent that has stopped moving. Bytes arriving are the definition
   // of progress; if none have for a while, the swarm has gone quiet on us.
   if (progress.state === "live" && staleSeconds >= STALL_SECONDS) {
@@ -132,6 +143,7 @@ export function streamWarning(
 export function healthLabel(progress: TorrentProgress | null): string {
   if (progress === null) return "Waiting";
   if (progress.state === "error") return "Error";
+  if (progress.state === "paused") return "Paused";
   if (progress.peersLive > 0) {
     return progress.downloadMbps < SLOW_MBPS && progress.peersLive <= FEW_PEERS
       ? "Slow"

@@ -36,10 +36,14 @@ const openInPlayerMock = vi.hoisted(() => vi.fn());
 const onPlayerExitMock = vi.hoisted(() =>
   vi.fn(async () => () => {}),
 );
+const pauseTorrentMock = vi.hoisted(() => vi.fn());
+const resumeTorrentMock = vi.hoisted(() => vi.fn());
 vi.mock("$lib/api/player", () => ({
   addMagnet: addMagnetMock,
   addTorrent: addTorrentMock,
   removeTorrent: removeTorrentMock,
+  pauseTorrent: pauseTorrentMock,
+  resumeTorrent: resumeTorrentMock,
   getStreamUrl: getStreamUrlMock,
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
@@ -108,6 +112,8 @@ beforeEach(() => {
   searchReleasesMock.mockReset().mockResolvedValue([]);
   probeReleasesMock.mockReset().mockResolvedValue([]);
   onProbeResultMock.mockReset().mockResolvedValue(() => {});
+  pauseTorrentMock.mockReset().mockResolvedValue(undefined);
+  resumeTorrentMock.mockReset().mockResolvedValue(undefined);
   downloadTorrentMock.mockReset().mockResolvedValue("/tmp/x.torrent");
   addMagnetMock.mockReset();
   addTorrentMock.mockReset();
@@ -297,6 +303,36 @@ describe("EpisodeWatchModal", () => {
     // wall of filenames.
     expect(within(list).getByText(/^Video · /)).toBeInTheDocument();
     expect(within(list).getByText(/^Subtitle · /)).toBeInTheDocument();
+  });
+
+  it("offers pause and cancel on the status panel", async () => {
+    searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
+    addMagnetMock.mockResolvedValue({
+      id: 7,
+      files: [{ idx: 0, name: "Show - 01.mkv", lengthBytes: 1000 }],
+    } as TorrentHandle);
+
+    render(EpisodeWatchModal, {
+      props: {
+        open: true,
+        anime: anime(),
+        episodes: episodes(),
+        episodeIndex: 0,
+        onClose: () => {},
+      },
+    });
+
+    await fireEvent.click(await screen.findByTestId("release-play"));
+
+    // The controls live in the StreamStatus header via its actions snippet.
+    const pause = await screen.findByTestId("buffer-pause");
+    expect(pause).toHaveTextContent(/pause/i);
+    expect(screen.getByTestId("buffer-cancel")).toBeInTheDocument();
+
+    await fireEvent.click(pause);
+    await waitFor(() =>
+      expect(screen.getByTestId("buffer-pause")).toHaveTextContent(/resume/i),
+    );
   });
 
   it("marks the auto-matched file as Matched", async () => {
