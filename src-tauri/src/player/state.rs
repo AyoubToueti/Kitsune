@@ -482,7 +482,44 @@ impl PlayerState {
             // live so a change in settings applies to the very next launch.
             None => self.resolved_player(),
         };
+        let extra = self.player_args();
 
+        self.launch(url, &name, &extra, torrent_id, on_exit).await
+    }
+
+    /// Open a URL in the player the reader picked from the app chooser.
+    ///
+    /// The counterpart of [`Self::open_in_player`] for a desktop application
+    /// chosen at launch time: it uses the program and arguments the chooser
+    /// resolved, ignoring the stored preference entirely. Everything after the
+    /// choice -- the hold, the exit watcher, the torrent release -- is shared
+    /// with the default path, so a picked player cannot leak the torrent any
+    /// more than the default can.
+    pub async fn open_in_player_choice(
+        &self,
+        url: &str,
+        choice: &super::chooser::PlayerChoice,
+        torrent_id: Option<usize>,
+        on_exit: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    ) -> Result<String> {
+        self.launch(url, &choice.program, &choice.extra_args, torrent_id, on_exit)
+            .await
+    }
+
+    /// The shared launch path: hold, spawn, watch for exit, release.
+    ///
+    /// Both public entry points differ only in which program and arguments
+    /// they pass. Keeping the rest in one place is what guarantees the
+    /// picked-player path holds and releases the torrent exactly like the
+    /// default path. Returns the program name so the caller knows what opened.
+    async fn launch(
+        &self,
+        url: &str,
+        program: &str,
+        extra_args: &[String],
+        torrent_id: Option<usize>,
+        on_exit: Option<Arc<dyn Fn(usize) + Send + Sync>>,
+    ) -> Result<String> {
         if let Some(id) = torrent_id {
             self.inner
                 .holds
@@ -491,7 +528,7 @@ impl PlayerState {
                 .hold(id);
         }
 
-        let child = match spawn_player(&name, &self.player_args(), url) {
+        let child = match spawn_player(program, extra_args, url) {
             Ok(child) => child,
             Err(err) => {
                 // The hold must not outlive a launch that never happened, or
@@ -499,7 +536,7 @@ impl PlayerState {
                 if let Some(id) = torrent_id {
                     let _ = self.release_torrent(id).await;
                 }
-                return Err(err).with_context(|| format!("failed to launch {name}"));
+                return Err(err).with_context(|| format!("failed to launch {program}"));
             }
         };
 
@@ -525,7 +562,7 @@ impl PlayerState {
             });
         }
 
-        Ok(name)
+        Ok(program.to_string())
     }
 }
 

@@ -206,6 +206,8 @@ pub fn run() {
                 player::commands::get_stream_url,
                 player::commands::get_torrent_stats,
                 player::commands::open_in_player,
+                player::commands::choose_and_open_player,
+                player::commands::choose_player_preview,
                 player::commands::get_player,
                 player::commands::set_player,
                 player::commands::suggested_players,
