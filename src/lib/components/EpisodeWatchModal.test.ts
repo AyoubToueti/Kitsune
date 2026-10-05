@@ -299,10 +299,39 @@ describe("EpisodeWatchModal", () => {
     await fireEvent.click(await screen.findByTestId("release-play"));
     const list = await screen.findByTestId("torrent-files");
 
-    // Each row names what the file is, so the list is scannable rather than a
-    // wall of filenames.
-    expect(within(list).getByText(/^Video · /)).toBeInTheDocument();
-    expect(within(list).getByText(/^Subtitle · /)).toBeInTheDocument();
+    // Each row shows the file's size, so the list is scannable rather than a
+    // wall of bare filenames.
+    expect(within(list).getByText(/1\.3 GB/)).toBeInTheDocument();
+    expect(within(list).getByText(/41 KB/)).toBeInTheDocument();
+  });
+
+  it("waits for a pick when a multi-video torrent has no match", async () => {
+    searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
+    addMagnetMock.mockResolvedValue({
+      id: 7,
+      files: [
+        { idx: 0, name: "Movie part A.mkv", lengthBytes: 1_000 },
+        { idx: 1, name: "Movie part B.mkv", lengthBytes: 1_000 },
+      ],
+    } as TorrentHandle);
+
+    render(EpisodeWatchModal, {
+      props: {
+        open: true,
+        anime: anime(),
+        episodes: episodes(),
+        episodeIndex: 0,
+        onClose: () => {},
+      },
+    });
+
+    await fireEvent.click(await screen.findByTestId("release-play"));
+
+    // No file is auto-chosen, and the hint tells the reader to pick one.
+    expect(
+      await screen.findByTestId("pick-file-hint"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("torrent-files")).toBeInTheDocument();
   });
 
   it("filters the file list when there are more than four files", async () => {
@@ -359,17 +388,21 @@ describe("EpisodeWatchModal", () => {
     await fireEvent.click(await screen.findByTestId("release-play"));
 
     // The controls live in the StreamStatus header via its actions snippet.
+    // They are icon buttons, so their accessible names carry the meaning.
     const pause = await screen.findByTestId("buffer-pause");
-    expect(pause).toHaveTextContent(/pause/i);
+    expect(pause).toHaveAttribute("aria-label", "Pause playback");
     expect(screen.getByTestId("buffer-cancel")).toBeInTheDocument();
 
     await fireEvent.click(pause);
     await waitFor(() =>
-      expect(screen.getByTestId("buffer-pause")).toHaveTextContent(/resume/i),
+      expect(screen.getByTestId("buffer-pause")).toHaveAttribute(
+        "aria-label",
+        "Resume playback",
+      ),
     );
   });
 
-  it("marks the auto-matched file as Matched", async () => {
+  it("marks the auto-matched file as playing", async () => {
     searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
     addMagnetMock.mockResolvedValue({
       id: 7,
@@ -392,7 +425,8 @@ describe("EpisodeWatchModal", () => {
     await fireEvent.click(await screen.findByTestId("release-play"));
     const list = await screen.findByTestId("torrent-files");
 
-    expect(within(list).getByText("Matched")).toBeInTheDocument();
+    // The auto-chosen file's action reads "Playing..." rather than "Play".
+    expect(within(list).getByText("Playing...")).toBeInTheDocument();
   });
 
   it("keeps the live status panel after the player opens", async () => {
@@ -451,7 +485,7 @@ describe("EpisodeWatchModal", () => {
       },
     });
 
-    await fireEvent.click(screen.getByLabelText("Close"));
+    await fireEvent.click(screen.getByLabelText("Close modal"));
     expect(onClose).toHaveBeenCalled();
   });
 
