@@ -17,7 +17,9 @@ import {
   getTorrentStats,
   onPlayerExit,
   openInPlayer,
+  pauseTorrent,
   removeTorrent,
+  resumeTorrent,
 } from "./api/player";
 import { errorMessage } from "./api/anime";
 import { recordLastPlayed, setListEntry } from "./api/auth";
@@ -84,6 +86,14 @@ export interface TorrentSession {
   readonly launching: boolean;
   /** True once the player has been opened for the current selection. */
   readonly launched: boolean;
+  /**
+   * True while the reader has paused the buffering download.
+   *
+   * While paused the poll keeps running so the panel still shows the frozen
+   * progress, but the auto-launch is suspended: opening a player against a
+   * paused torrent would stall immediately.
+   */
+  readonly paused: boolean;
   /** A failure from adding a torrent, resolving a stream or launching. */
   readonly error: string | null;
   /** A failure from opening a magnet in the OS, kept apart from `error`. */
@@ -101,6 +111,10 @@ export interface TorrentSession {
   loadTorrentFile(path: string): Promise<void>;
   /** Select a file and resolve its stream URL. */
   play(file: TorrentFile): Promise<void>;
+  /** Pause the buffering download, suspending auto-launch. */
+  pause(): Promise<void>;
+  /** Resume a paused download, allowing auto-launch again. */
+  resume(): Promise<void>;
   /** Switch the playing file to whatever matches `number`. */
   selectEpisodeNumber(number: number | undefined): void;
   /** Return to the initial state, releasing the torrent. Safe to call twice. */
@@ -125,6 +139,7 @@ export function createTorrentSession(
   let chosen = $state<TorrentFile | null>(null);
   let streamUrl = $state<string | undefined>(undefined);
   let progress = $state<TorrentProgress | null>(null);
+  let paused = $state(false);
   let fileFraction = $state(0);
   let torrentFraction = $state(0);
   let launching = $state(false);
@@ -234,7 +249,7 @@ export function createTorrentSession(
     torrentFraction = 0;
     launched = false;
     launching = false;
-
+    paused = false;
     try {
       streamUrl = await getStreamUrl(torrentId, file.idx);
     } catch (err) {
@@ -246,6 +261,50 @@ export function createTorrentSession(
     // The progress is NOT recorded here. Nothing has played yet — the reader is
     // still waiting for bytes — so marking the episode watched would be a lie.
     // It is written by `launch` once a player is actually opened.
+  }
+
+  /**
+   * Pause the buffering download.
+   *
+   * The flag is set BEFORE the backend call so the auto-launch guard reads it
+   * on the very next poll: a torrent that crosses the ready threshold during
+   * the round-trip must not open a player the reader just asked to hold. A
+   * failure is surfaced but leaves the flag set -- the download may or may not
+   * have paused, and showing "paused" is the safer of the two wrong states
+   * because the reader can always press resume.
+   */
+  async function pause(): Promise<void> {
+    if (torrentId === null || paused) return;
+
+    paused = true;
+    error = null;
+    try {
+      await pauseTorrent(torrentId);
+    } catch (err) {
+      error = errorMessage(err);
+    }
+  }
+
+  /**
+   * Resume a paused download.
+   *
+   * Clears `launching` as well as `paused`: a launch that was interrupted by
+   * the pause must be allowed to run again, or the reader would be stuck
+   * waiting for a player that can no longer open.
+   */
+  async function resume(): Promise<void> {
+    if (torrentId === null || !paused) return;
+
+    error = null;
+    try {
+      await resumeTorrent(torrentId);
+    } catch (err) {
+      error = errorMessage(err);
+      return;
+    }
+
+    paused = false;
+    launching = false;
   }
 
   /**
@@ -362,6 +421,9 @@ export function createTorrentSession(
     const tick = () =>
       pollProgress().then(() => {
         if (launched) return;
+        // A paused download must not open a player: the reader asked to hold,
+        // and an external player against a paused torrent would stall at once.
+        if (paused) return;
         const threshold = config.getReadyFraction?.() ?? READY_FRACTION;
         if (fileFraction >= threshold) void launch();
       });
@@ -474,6 +536,7 @@ export function createTorrentSession(
     torrentFraction = 0;
     launching = false;
     launched = false;
+    paused = false;
     loading = false;
     error = null;
     magnetError = null;
@@ -546,6 +609,9 @@ export function createTorrentSession(
     get launching() {
       return launching;
     },
+    get paused() {
+      return paused;
+    },
     get launched() {
       return launched;
     },
@@ -568,6 +634,8 @@ export function createTorrentSession(
     loadTorrentFile,
     reset,
     play,
+    pause,
+    resume,
     selectEpisodeNumber,
     teardown,
   };

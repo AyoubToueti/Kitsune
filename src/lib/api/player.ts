@@ -25,6 +25,8 @@ export const PLAYER_COMMANDS = {
   addTorrent: "add_torrent",
   addMagnet: "add_magnet",
   removeTorrent: "remove_torrent",
+  pauseTorrent: "pause_torrent",
+  resumeTorrent: "resume_torrent",
   streamUrl: "get_stream_url",
   torrentStats: "get_torrent_stats",
   openInPlayer: "open_in_player",
@@ -65,6 +67,27 @@ export async function addMagnet(magnetUri: string): Promise<TorrentHandle> {
  */
 export async function removeTorrent(torrentId: number): Promise<void> {
   return invoke<void>(PLAYER_COMMANDS.removeTorrent, { torrentId });
+}
+
+/**
+ * Pause a torrent's transfer, keeping the pieces it has already fetched.
+ *
+ * Not cached, and deliberately fire-and-forget at the call site: a pause that
+ * races a teardown is harmless, because the torrent is about to be removed
+ * anyway.
+ */
+export async function pauseTorrent(torrentId: number): Promise<void> {
+  return invoke<void>(PLAYER_COMMANDS.pauseTorrent, { torrentId });
+}
+
+/**
+ * Resume a paused torrent's transfer.
+ *
+ * The counterpart of [`pauseTorrent`]; the backend continues from the partial
+ * data rather than restarting the download.
+ */
+export async function resumeTorrent(torrentId: number): Promise<void> {
+  return invoke<void>(PLAYER_COMMANDS.resumeTorrent, { torrentId });
 }
 
 /** The loopback URL that streams one file of one torrent. */

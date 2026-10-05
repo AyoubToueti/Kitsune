@@ -11,7 +11,9 @@ import {
   getPlayer,
   getStreamUrl,
   openInPlayer,
+  pauseTorrent,
   removeTorrent,
+  resumeTorrent,
   setPlayer,
   suggestedPlayers,
 } from "./player";
@@ -47,6 +49,26 @@ describe("player command wrappers", () => {
     await removeTorrent(3);
 
     expect(invokeMock).toHaveBeenCalledWith(PLAYER_COMMANDS.removeTorrent, {
+      torrentId: 3,
+    });
+  });
+
+  it("pauseTorrent passes the id", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await pauseTorrent(3);
+
+    expect(invokeMock).toHaveBeenCalledWith(PLAYER_COMMANDS.pauseTorrent, {
+      torrentId: 3,
+    });
+  });
+
+  it("resumeTorrent passes the id", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await resumeTorrent(3);
+
+    expect(invokeMock).toHaveBeenCalledWith(PLAYER_COMMANDS.resumeTorrent, {
       torrentId: 3,
     });
   });

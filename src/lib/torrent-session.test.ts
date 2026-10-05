@@ -5,6 +5,8 @@ import { harness, settle, type Harness } from "../test/torrent-session-harness.s
 const addMagnetMock = vi.hoisted(() => vi.fn());
 const addTorrentMock = vi.hoisted(() => vi.fn());
 const removeTorrentMock = vi.hoisted(() => vi.fn());
+const pauseTorrentMock = vi.hoisted(() => vi.fn());
+const resumeTorrentMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
 const getTorrentStatsMock = vi.hoisted(() => vi.fn());
 const openInPlayerMock = vi.hoisted(() => vi.fn());
@@ -30,6 +32,8 @@ vi.mock("$lib/api/player", () => ({
   addMagnet: addMagnetMock,
   addTorrent: addTorrentMock,
   removeTorrent: removeTorrentMock,
+  pauseTorrent: pauseTorrentMock,
+  resumeTorrent: resumeTorrentMock,
   getStreamUrl: getStreamUrlMock,
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
@@ -93,6 +97,8 @@ beforeEach(() => {
   addMagnetMock.mockReset();
   addTorrentMock.mockReset();
   removeTorrentMock.mockReset();
+  pauseTorrentMock.mockReset();
+  resumeTorrentMock.mockReset();
   getStreamUrlMock.mockReset();
   getTorrentStatsMock.mockReset();
   openInPlayerMock.mockReset();
@@ -105,6 +111,8 @@ beforeEach(() => {
   recordLastPlayedMock.mockReset();
 
   removeTorrentMock.mockResolvedValue(undefined);
+  pauseTorrentMock.mockResolvedValue(undefined);
+  resumeTorrentMock.mockResolvedValue(undefined);
   getStreamUrlMock.mockResolvedValue("http://127.0.0.1/stream/0");
   openInPlayerMock.mockResolvedValue("mpv");
   setListEntryMock.mockResolvedValue(undefined);
@@ -365,5 +373,74 @@ describe("player exit", () => {
 
     expect(h.session.torrentId).toBe(7);
     expect(h.session.launched).toBe(true);
+  });
+});
+
+describe("pause and resume", () => {
+  it("pauses the torrent and exposes the paused flag", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    await h.session.pause();
+    await settle();
+
+    expect(pauseTorrentMock).toHaveBeenCalledWith(7);
+    expect(h.session.paused).toBe(true);
+  });
+
+  it("suppresses auto-launch while paused", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    // Ready from the very first poll, so only the paused guard can stop it.
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // Launch already fired; reset the spy and pause, then let more polls run.
+    openInPlayerMock.mockClear();
+    await h.session.pause();
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+
+    expect(openInPlayerMock).not.toHaveBeenCalled();
+  });
+
+  it("resumes the torrent and clears the paused flag", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+    await h.session.pause();
+    await settle();
+
+    await h.session.resume();
+    await settle();
+
+    expect(resumeTorrentMock).toHaveBeenCalledWith(7);
+    expect(h.session.paused).toBe(false);
+  });
+
+  it("clears the paused flag on reset", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+    await h.session.pause();
+    await settle();
+
+    h.session.reset();
+    await settle();
+
+    expect(h.session.paused).toBe(false);
   });
 });
