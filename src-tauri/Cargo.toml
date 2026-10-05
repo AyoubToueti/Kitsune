@@ -65,6 +65,12 @@ dirs = "6"
 [target."cfg(any(target_os = \"macos\", windows, target_os = \"linux\"))".dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
+# Linux only: the native "Open With" app chooser. GTK 3 is already linked by
+# WebKitGTK through wry, so this adds a direct dependency on a crate that is
+# already in the graph -- no new version, no flake change.
+[target."cfg(target_os = \"linux\")".dependencies]
+gtk = "0.18.2"
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

@@ -2629,6 +2629,7 @@ dependencies = [
  "async-trait",
  "dirs",
  "fancy-regex",
+ "gtk",
  "librqbit",
  "librqbit-dualstack-sockets",
  "once_cell",
