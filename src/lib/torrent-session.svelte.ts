@@ -260,16 +260,6 @@ export function createTorrentSession(
       launching = false;
     }
 
-    // Tell librqbit to fetch only this file. Without it a season pack downloads
-    // its files in order, so the episode the reader picked sits at 0 B while an
-    // earlier one is fetched -- which reads as "stuck" on the progress bar.
-    try {
-      await setOnlyFiles(torrentId, [file.idx]);
-    } catch (err) {
-      error = errorMessage(err);
-      return;
-    }
-
     // A new file is a new wait: clear the previous file's numbers so the panel
     // does not briefly show the last episode's progress as if it were this
     // one's.
@@ -284,6 +274,18 @@ export function createTorrentSession(
       streamUrl = undefined;
       error = errorMessage(err);
       return;
+    }
+
+    // Tell librqbit to fetch only this file, so a season pack does not spend its
+    // time on an earlier episode while the chosen one sits at 0 B.
+    //
+    // Deliberately NON-FATAL: librqbit rejects this while the torrent is still
+    // initializing, and that must not take the status panel away -- the reader
+    // can still stream, they just get the whole-torrent download order for now.
+    try {
+      await setOnlyFiles(torrentId, [file.idx]);
+    } catch {
+      // Ignored: it is an optimisation, not a requirement for playback.
     }
 
     // The progress is NOT recorded here. Nothing has played yet — the reader is
