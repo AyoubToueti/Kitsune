@@ -32,6 +32,8 @@ const getStreamUrlMock = vi.hoisted(() => vi.fn());
 const getTorrentStatsMock = vi.hoisted(() => vi.fn());
 const openInPlayerMock = vi.hoisted(() => vi.fn());
 const chooseAndOpenPlayerMock = vi.hoisted(() => vi.fn());
+const openInPlayerChoiceMock = vi.hoisted(() => vi.fn());
+const listPlayersMock = vi.hoisted(() => vi.fn());
 // The session subscribes to player exits; a never-firing stub is enough here,
 // and returning an unlisten function matches the real shape so cleanup works.
 const onPlayerExitMock = vi.hoisted(() =>
@@ -51,6 +53,8 @@ vi.mock("$lib/api/player", () => ({
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
   chooseAndOpenPlayer: chooseAndOpenPlayerMock,
+  openInPlayerChoice: openInPlayerChoiceMock,
+  listPlayers: listPlayersMock,
   onPlayerExit: onPlayerExitMock,
 }));
 
@@ -125,6 +129,18 @@ beforeEach(() => {
   removeTorrentMock.mockReset().mockResolvedValue(undefined);
   getStreamUrlMock.mockReset().mockResolvedValue("http://127.0.0.1/stream/0");
   getTorrentStatsMock.mockReset().mockResolvedValue(null);
+  openInPlayerChoiceMock.mockReset().mockResolvedValue("mpv");
+  // One installed player by default, so any test that reaches the threshold can
+  // pick one.
+  listPlayersMock.mockReset().mockResolvedValue([
+    {
+      id: "/usr/bin/mpv",
+      name: "mpv",
+      program: "/usr/bin/mpv",
+      extraArgs: [],
+      isDefault: true,
+    },
+  ]);
   openInPlayerMock.mockReset().mockResolvedValue("mpv");
   chooseAndOpenPlayerMock.mockReset().mockResolvedValue("mpv");
   setListEntryMock.mockReset().mockResolvedValue(undefined);
@@ -491,6 +507,10 @@ describe("EpisodeWatchModal", () => {
     });
 
     await fireEvent.click(await screen.findByTestId("release-play"));
+
+    // Playback starts only once the reader picks a player from the picker.
+    const option = await screen.findByTestId("player-option");
+    await fireEvent.click(option);
 
     // The playing banner appears, but the download panel and file list stay.
     await waitFor(() =>

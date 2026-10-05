@@ -33,6 +33,8 @@ export const PLAYER_COMMANDS = {
   openInPlayer: "open_in_player",
   chooseAndOpenPlayer: "choose_and_open_player",
   choosePlayerPreview: "choose_player_preview",
+  listPlayers: "list_players",
+  openInPlayerChoice: "open_in_player_choice",
   getPlayer: "get_player",
   setPlayer: "set_player",
   suggestedPlayers: "suggested_players",
@@ -185,6 +187,59 @@ export async function chooseAndOpenPlayer(
  */
 export async function choosePlayerPreview(): Promise<string> {
   return invoke<string>(PLAYER_COMMANDS.choosePlayerPreview);
+}
+
+/** A player offered in the in-app picker. Mirrors `PlayerOption` in Rust. */
+export interface PlayerOption {
+  /** Stable identity: the resolved executable path. */
+  id: string;
+  /** Human name for the row. */
+  name: string;
+  /** The program to spawn. */
+  program: string;
+  /** The program's own arguments, minus any URL placeholder. */
+  extraArgs: string[];
+  /** True for the reader's stored preference. */
+  isDefault: boolean;
+  /**
+   * The player's icon as a `data:` URL, or undefined when none was found.
+   *
+   * The picker falls back to its own glyph when this is absent, which is the
+   * normal case off Linux.
+   */
+  icon?: string;
+}
+
+/**
+ * The players the in-app picker should offer, in display order.
+ *
+ * Discovered, not hardcoded: the desktop's registered apps for the content
+ * type, plus known players that are installed. The stored preference is marked
+ * via `isDefault`.
+ */
+export async function listPlayers(): Promise<PlayerOption[]> {
+  return invoke<PlayerOption[]>(PLAYER_COMMANDS.listPlayers);
+}
+
+/**
+ * Open `url` in a specific player the picker named.
+ *
+ * The frontend already chose the program, so there is no dialog here -- just
+ * the launch. `torrentId` is held for the player's lifetime, as in
+ * [`openInPlayer`].
+ */
+export async function openInPlayerChoice(
+  url: string,
+  program: string,
+  extraArgs: string[] = [],
+  torrentId?: number,
+): Promise<string> {
+  return invoke<string>(PLAYER_COMMANDS.openInPlayerChoice, {
+    url,
+    program,
+    extraArgs,
+    torrentId,
+  });
 }
 
 /** The chosen external player. */

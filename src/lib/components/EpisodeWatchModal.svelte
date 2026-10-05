@@ -37,6 +37,7 @@
 
   import FileFilter from "./FileFilter.svelte";
   import Modal from "./Modal.svelte";
+  import PlayerPicker from "./PlayerPicker.svelte";
   import ReleaseModeToggle from "./ReleaseModeToggle.svelte";
   import ResolutionFilter from "./ResolutionFilter.svelte";
   import StreamStatus from "./StreamStatus.svelte";
@@ -743,3 +744,11 @@
     </div>
   {/snippet}
 </Modal>
+
+<PlayerPicker
+  open={session.pickerOpen}
+  url={session.streamUrl}
+  torrentId={session.torrentId ?? undefined}
+  onClose={() => session.closePicker()}
+  onLaunched={() => session.noteLaunched()}
+/>

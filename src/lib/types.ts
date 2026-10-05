@@ -548,6 +548,13 @@ export interface Settings {
   minSeeders: number;
   /** Fraction of the file to buffer before launching the player, 0..1. */
   readyFraction: number;
+  /**
+   * Whether to ask which player to use before launching.
+   *
+   * `true` (the default) shows the picker at the threshold; `false` launches
+   * the stored player straight away. Set to false by the picker's "Always".
+   */
+  askEveryTime: boolean;
   /** `"light"`, `"dark"` or `"system"`. */
   theme: string;
 }
