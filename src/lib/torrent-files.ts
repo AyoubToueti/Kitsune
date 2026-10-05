@@ -66,6 +66,24 @@ export function isPlayable(file: TorrentFile): boolean {
   return /\.(mkv|mp4|avi|webm|mov|m4v)$/i.test(file.name);
 }
 
+/**
+ * Whether a file's name contains `query`, case-insensitively.
+ *
+ * The file list's filter box. A plain substring match rather than a token
+ * search: the names are long and the reader is usually typing a fragment of
+ * one (an extension, a release group, an episode number), so anything
+ * stricter would fight them. An empty query matches everything, so the box
+ * being cleared restores the full list.
+ */
+export function matchesFileQuery(
+  file: TorrentFile,
+  query: string,
+): boolean {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return true;
+  return file.name.toLowerCase().includes(needle);
+}
+
 /** What a file is, for the type icon and label in a file row. */
 export type FileKind = "video" | "subtitle" | "image" | "other";
 

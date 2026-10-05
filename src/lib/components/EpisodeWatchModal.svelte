@@ -19,7 +19,11 @@
   import { createReleaseSearch } from "$lib/release-search.svelte";
   import { createSpeedTest } from "$lib/speed-test.svelte";
   import { compactResult } from "$lib/speed-test";
-  import { fileKind, type FileKind } from "$lib/torrent-files";
+  import {
+    fileKind,
+    matchesFileQuery,
+    type FileKind,
+  } from "$lib/torrent-files";
   import { availableResolutions, matchesResolution } from "$lib/resolution";
   import { nowPlayingSession, startPlaying } from "$lib/now-playing.svelte";
   import {
@@ -31,6 +35,7 @@
   } from "$lib/types";
   import type { Episode } from "$lib/episodes";
 
+  import FileFilter from "./FileFilter.svelte";
   import Modal from "./Modal.svelte";
   import ReleaseModeToggle from "./ReleaseModeToggle.svelte";
   import ResolutionFilter from "./ResolutionFilter.svelte";
@@ -112,10 +117,25 @@
     untrack(() => startPlaying(anime, index, episodes));
   });
 
+
   // --- filtering the release list ------------------------------------------
 
   let releaseQuery = $state("");
   let resolutionFilter = $state<Resolution[]>([]);
+
+  /**
+   * The text typed into the file-list filter.
+   *
+   * Owned here rather than by the session: it is view state, and the session's
+   * file list is replaced wholesale when a new torrent is loaded, which would
+   * lose a query the reader was still editing.
+   */
+  let fileQuery = $state("");
+
+  /** The files matching the filter, in torrent order. */
+  const filteredFiles = $derived(
+    session.files.filter((file) => matchesFileQuery(file, fileQuery)),
+  );
 
   const resolutionOptions = $derived(availableResolutions(search.releases));
 
@@ -376,8 +396,12 @@
           </span>
         </div>
 
+        {#if session.files.length > 4}
+          <FileFilter value={fileQuery} onInput={(next) => (fileQuery = next)} />
+        {/if}
+
         <ul class="flex flex-col gap-1.5" data-testid="torrent-files">
-          {#each session.files as file (file.idx)}
+          {#each filteredFiles as file (file.idx)}
             {@const kind = fileKind(file)}
             <li>
               <button

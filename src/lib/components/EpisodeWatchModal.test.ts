@@ -305,6 +305,40 @@ describe("EpisodeWatchModal", () => {
     expect(within(list).getByText(/^Subtitle · /)).toBeInTheDocument();
   });
 
+  it("filters the file list when there are more than four files", async () => {
+    searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
+    addMagnetMock.mockResolvedValue({
+      id: 7,
+      files: Array.from({ length: 6 }, (_, i) => ({
+        idx: i,
+        name: i < 3 ? `Show - 0${i + 1}.mkv` : `Extra - 0${i + 1}.srt`,
+        lengthBytes: 1000,
+      })),
+    } as TorrentHandle);
+
+    render(EpisodeWatchModal, {
+      props: {
+        open: true,
+        anime: anime(),
+        episodes: episodes(),
+        episodeIndex: 0,
+        onClose: () => {},
+      },
+    });
+
+    await fireEvent.click(await screen.findByTestId("release-play"));
+    const list = await screen.findByTestId("torrent-files");
+
+    // Six files: the filter box appears.
+    const filter = screen.getByTestId("file-filter");
+    await fireEvent.input(filter, { target: { value: "extra" } });
+
+    await waitFor(() =>
+      expect(within(list).queryByText(/Show - 01/)).toBeNull(),
+    );
+    expect(within(list).getByText(/Extra - 04/)).toBeInTheDocument();
+  });
+
   it("offers pause and cancel on the status panel", async () => {
     searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
     addMagnetMock.mockResolvedValue({

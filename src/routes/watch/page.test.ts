@@ -527,6 +527,30 @@ describe("watch page", () => {
     expect(within(files).getAllByRole("button")).toHaveLength(2);
   });
 
+  it("filters the file list when there are more than four files", async () => {
+    addTorrentMock.mockResolvedValue({
+      id: 5,
+      files: Array.from({ length: 6 }, (_, i) => ({
+        idx: i,
+        name: i < 3 ? `[Group] Show - 0${i + 1} [1080p].mkv` : `Extra - 0${i}.srt`,
+        lengthBytes: 1_000,
+      })),
+    });
+
+    render(Page);
+    await screen.findByRole("heading", { name: /attack on titan/i });
+    await fireEvent.click(screen.getByRole("button", { name: /load torrent/i }));
+
+    const list = await screen.findByTestId("torrent-files");
+    const filter = screen.getByTestId("file-filter");
+    await fireEvent.input(filter, { target: { value: "extra" } });
+
+    await waitFor(() =>
+      expect(within(list).queryByText(/Show - 01/)).toBeNull(),
+    );
+    expect(within(list).getByText(/Extra - 03/)).toBeInTheDocument();
+  });
+
   it("does nothing when the file picker is cancelled", async () => {
     openDialogMock.mockResolvedValue(null);
 

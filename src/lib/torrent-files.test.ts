@@ -6,12 +6,31 @@ import {
   fileKind,
   isPlayable,
   matchNumber,
+  matchesFileQuery,
 } from "./torrent-files";
 import type { TorrentFile } from "./types";
 
 function file(name: string, lengthBytes = 1_000_000): TorrentFile {
   return { idx: 0, name, lengthBytes };
 }
+
+describe("matchesFileQuery", () => {
+  it("matches an empty query", () => {
+    expect(matchesFileQuery(file("Show - 01.mkv"), "")).toBe(true);
+  });
+
+  it("matches a case-insensitive substring", () => {
+    expect(matchesFileQuery(file("Show - 01.MKV"), "01.mkv")).toBe(true);
+  });
+
+  it("ignores surrounding whitespace in the query", () => {
+    expect(matchesFileQuery(file("Show - 01.mkv"), "  01  ")).toBe(true);
+  });
+
+  it("rejects a non-match", () => {
+    expect(matchesFileQuery(file("Show - 01.mkv"), "extra")).toBe(false);
+  });
+});
 
 describe("matchNumber", () => {
   it("matches a delimited episode number", () => {

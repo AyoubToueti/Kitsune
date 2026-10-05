@@ -33,6 +33,7 @@
     episodeNumber as episodeNumberFor,
   } from "$lib/episode";
   import { episodesFor } from "$lib/episodes";
+  import { matchesFileQuery } from "$lib/torrent-files";
   import { createProgressRecorder } from "$lib/progress";
   import { recordLastPlayed, setListEntry } from "$lib/api/auth";
   import {
@@ -51,6 +52,7 @@
   } from "$lib/types";
   import EpisodeList from "$lib/components/EpisodeList.svelte";
   import ExternalPlayerButton from "$lib/components/ExternalPlayerButton.svelte";
+  import FileFilter from "$lib/components/FileFilter.svelte";
   import RelatedAnimeList from "$lib/components/RelatedAnimeList.svelte";
   import ReleaseModeToggle from "$lib/components/ReleaseModeToggle.svelte";
   import ResolutionFilter from "$lib/components/ResolutionFilter.svelte";
@@ -94,6 +96,13 @@
   let torrentId = $state<number | null>(null);
   let files = $state<TorrentFile[]>([]);
   let chosen = $state<TorrentFile | null>(null);
+
+  /** The text typed into the file-list filter. View state, not torrent state. */
+  let fileQuery = $state("");
+  /** The files matching the filter, in torrent order. */
+  const filteredFiles = $derived(
+    files.filter((file) => matchesFileQuery(file, fileQuery)),
+  );
 
   /**
    * Which add is the current one, bumped by every new add AND by teardown.
@@ -1005,12 +1014,15 @@
              copy and its naming may not match AniList's episode list. -->
         <div class="mt-4">
           <h2 class="mb-2 text-sm font-semibold tracking-tight">Files</h2>
+          {#if files.length > 4}
+            <FileFilter value={fileQuery} onInput={(next) => (fileQuery = next)} />
+          {/if}
           <div
             data-testid="file-scroller"
             class="max-h-55 overflow-y-auto pr-1"
           >
             <ul class="flex flex-col gap-1" data-testid="torrent-files">
-              {#each files as file (file.idx)}
+              {#each filteredFiles as file (file.idx)}
                 <li>
                   <button
                     type="button"
