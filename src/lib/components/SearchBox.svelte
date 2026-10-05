@@ -1,26 +1,43 @@
 <script lang="ts">
-  let query = $state("");
+  let {
+    value = $bindable(""),
+  }: {
+    value?: string;
+  } = $props();
+
+  let inputEl = $state<HTMLInputElement | null>(null);
 
   function clearQuery() {
-    query = "";
+    value = "";
+    inputEl?.focus();
+  }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      inputEl?.focus();
+      inputEl?.select();
+    }
   }
 </script>
+
+<svelte:window onkeydown={handleKeydown} />
 
 <form
   action="/search"
   method="GET"
   role="search"
-  class="relative flex w-full max-w-md items-center"
+  class="group relative flex w-full max-w-md items-center"
 >
   <label for="site-search" class="sr-only">Search anime</label>
 
   <!-- Magnifying Glass Icon (Left) -->
   <div
-    class="pointer-events-none absolute left-3.5 flex items-center text-ink-muted"
+    class="pointer-events-none absolute left-3.5 flex items-center text-ink-muted transition-colors group-focus-within:text-accent"
     aria-hidden="true"
   >
     <svg
-      class="h-4 w-4 fill-none stroke-current stroke-2 transition-colors group-focus-within:text-accent"
+      class="h-4 w-4 fill-none stroke-current stroke-2"
       viewBox="0 0 24 24"
     >
       <path
@@ -33,10 +50,11 @@
 
   <!-- Search Input -->
   <input
+    bind:this={inputEl}
     id="site-search"
     name="q"
     type="search"
-    bind:value={query}
+    bind:value
     placeholder="Search anime..."
     autocomplete="off"
     class="h-9 w-full rounded-full border border-border-subtle bg-surface-raised pl-10 pr-10 text-xs font-medium text-ink placeholder:text-ink-faint shadow-inner transition-all hover:border-border focus:border-accent focus:bg-surface-base focus:outline-none focus:ring-2 focus:ring-accent/20"
@@ -44,13 +62,13 @@
 
   <!-- Right Actions: Clear Button or Keyboard Hint -->
   <div class="absolute right-3 flex items-center gap-1">
-    {#if query.length > 0}
+    {#if value.length > 0}
       <!-- Clear Button -->
       <button
         type="button"
         onclick={clearQuery}
         aria-label="Clear search input"
-        class="flex h-4 w-4 items-center justify-center rounded-full text-ink-muted transition-colors hover:bg-surface-hover hover:text-ink focus:outline-none"
+        class="flex h-4 w-4 items-center justify-center rounded-full text-ink-muted transition-colors hover:bg-surface-hover hover:text-ink focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
       >
         <svg
           class="h-3 w-3 fill-none stroke-current stroke-2"

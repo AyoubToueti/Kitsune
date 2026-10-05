@@ -7,8 +7,22 @@
   /** Whether the settings drawer is open. */
   let settingsOpen = $state(false);
 
-  /** Helper to mark active link states based on route path */
-  const isActive = (path: string) => page.url.pathname === path;
+  /** Search value state to allow clearing on navigation */
+  let searchQuery = $state("");
+
+  /** Active navigation check */
+  const currentPath = $derived(page.url.pathname);
+  const isListActive = $derived(currentPath === "/list");
+  const isFilterActive = $derived(currentPath === "/filter");
+  const hasActiveNavPill = $derived(isListActive || isFilterActive);
+
+  /** Clear search input whenever navigating away from the search page */
+  $effect(() => {
+    // If we're no longer on the search page/route, reset the search input
+    if (currentPath !== "/search") {
+      searchQuery = "";
+    }
+  });
 </script>
 
 <header
@@ -38,24 +52,34 @@
         Kitsune
       </span>
     </a>
+
     <!-- Center Search Container -->
     <div class="flex-1 max-w-md mx-2">
-      <SearchBox />
+      <SearchBox bind:value={searchQuery} />
     </div>
 
     <!-- Navigation Links & Profile Action -->
     <div class="flex items-center gap-1.5 sm:gap-2">
-      <!-- Nav Pill Links -->
+      <!-- Nav Pill Links (Sliding Segmented Control) -->
       <div
-        class="flex items-center gap-1 rounded-full border border-border-subtle bg-surface-base/50 p-1 shadow-inner"
+        class="relative flex items-center rounded-full border border-border-subtle bg-surface-base/50 p-1 shadow-inner"
       >
+        <!-- Animated Active Indicator Pill -->
+        {#if hasActiveNavPill}
+          <div
+            class="absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-full bg-accent shadow-sm transition-transform duration-300 ease-out"
+            style="transform: translateX({isFilterActive ? '100%' : '0%'});"
+            aria-hidden="true"
+          ></div>
+        {/if}
+
         <a
           href="/list"
-          aria-current={isActive("/list") ? "page" : undefined}
-          class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
-            {isActive('/list')
-            ? 'bg-accent text-white shadow-sm'
-            : 'text-ink-muted hover:text-ink hover:bg-surface-hover'}"
+          aria-current={isListActive ? "page" : undefined}
+          class="relative z-10 flex w-20 sm:w-24 items-center justify-center gap-1.5 rounded-full py-1.5 text-xs font-semibold transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
+            {isListActive
+            ? 'text-white'
+            : 'text-ink-muted hover:text-ink'}"
         >
           <!-- Bookmark Icon -->
           <svg
@@ -74,11 +98,11 @@
 
         <a
           href="/filter"
-          aria-current={isActive("/filter") ? "page" : undefined}
-          class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
-            {isActive('/filter')
-            ? 'bg-accent text-white shadow-sm'
-            : 'text-ink-muted hover:text-ink hover:bg-surface-hover'}"
+          aria-current={isFilterActive ? "page" : undefined}
+          class="relative z-10 flex w-20 sm:w-24 items-center justify-center gap-1.5 rounded-full py-1.5 text-xs font-semibold transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent
+            {isFilterActive
+            ? 'text-white'
+            : 'text-ink-muted hover:text-ink'}"
         >
           <!-- Sliders Icon -->
           <svg
