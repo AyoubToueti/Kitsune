@@ -250,11 +250,14 @@ export function createTorrentSession(
     // so the "wait for a pick" hold no longer applies. `launching` is cleared
     // too, so a launch interrupted by the pause may run again.
     if (paused) {
+      // Best-effort: a failed resume (librqbit rejects `unpause` when it
+      // already considers the torrent live) must NOT abort the rest of `play`,
+      // or the stream URL is never resolved and the status panel never appears.
+      // The stats poll reports the real state either way.
       try {
         await resumeTorrent(torrentId);
-      } catch (err) {
-        error = errorMessage(err);
-        return;
+      } catch {
+        // Ignored; the panel reflects the download state from the poll.
       }
       paused = false;
       launching = false;

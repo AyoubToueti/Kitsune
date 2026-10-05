@@ -308,6 +308,31 @@ describe("EpisodeWatchModal", () => {
     expect(within(list).getByText(/41 KB/)).toBeInTheDocument();
   });
 
+  it("keeps the status panel even when the stream URL fails", async () => {
+    searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
+    addMagnetMock.mockResolvedValue({
+      id: 7,
+      files: [{ idx: 0, name: "Show - 01.mkv", lengthBytes: 1000 }],
+    } as TorrentHandle);
+    // A stream resolve can fail (e.g. the file is not ready yet); the panel
+    // must stay so the reader can still see the download.
+    getStreamUrlMock.mockRejectedValue("file not ready");
+
+    render(EpisodeWatchModal, {
+      props: {
+        open: true,
+        anime: anime(),
+        episodes: episodes(),
+        episodeIndex: 0,
+        onClose: () => {},
+      },
+    });
+
+    await fireEvent.click(await screen.findByTestId("release-play"));
+
+    expect(await screen.findByTestId("stream-status")).toBeInTheDocument();
+  });
+
   it("waits for a pick when a multi-video torrent has no match", async () => {
     searchReleasesMock.mockResolvedValue([release("Show - 01 1080p")]);
     addMagnetMock.mockResolvedValue({

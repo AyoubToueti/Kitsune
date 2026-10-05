@@ -197,9 +197,10 @@
   }
 
   const stage = $derived(session.files.length > 0 ? "files" : "releases");
-  const showStatus = $derived(
-    session.chosen !== null && session.streamUrl !== undefined,
-  );
+  // The panel tracks the download, not the player. Gating it on `streamUrl`
+  // hid it entirely whenever the URL resolve failed, leaving the reader with a
+  // file list and no indication of what the torrent was doing.
+  const showStatus = $derived(session.chosen !== null);
 </script>
 
 <Modal open={isOpen} {onClose} label="Watch episode">
