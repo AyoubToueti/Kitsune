@@ -400,8 +400,9 @@
           <FileFilter value={fileQuery} onInput={(next) => (fileQuery = next)} />
         {/if}
 
-        <ul class="flex flex-col gap-1.5" data-testid="torrent-files">
-          {#each filteredFiles as file (file.idx)}
+        <div class="max-h-72 overflow-y-auto pr-1">
+          <ul class="flex flex-col gap-1.5" data-testid="torrent-files">
+            {#each filteredFiles as file (file.idx)}
             {@const kind = fileKind(file)}
             <li>
               <button
@@ -445,7 +446,8 @@
               </button>
             </li>
           {/each}
-        </ul>
+          </ul>
+        </div>
       </div>
     {:else}
       <div data-testid="stage-releases">
