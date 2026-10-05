@@ -11,6 +11,7 @@ const setOnlyFilesMock = vi.hoisted(() => vi.fn());
 const getStreamUrlMock = vi.hoisted(() => vi.fn());
 const getTorrentStatsMock = vi.hoisted(() => vi.fn());
 const openInPlayerMock = vi.hoisted(() => vi.fn());
+const chooseAndOpenPlayerMock = vi.hoisted(() => vi.fn());
 /**
  * Captures the handler `createTorrentSession` subscribes with, so a test can
  * simulate the backend emitting a player exit. Each subscribe replaces it, as
@@ -39,6 +40,7 @@ vi.mock("$lib/api/player", () => ({
   getStreamUrl: getStreamUrlMock,
   getTorrentStats: getTorrentStatsMock,
   openInPlayer: openInPlayerMock,
+  chooseAndOpenPlayer: chooseAndOpenPlayerMock,
   onPlayerExit: onPlayerExitMock,
 }));
 
@@ -105,6 +107,7 @@ beforeEach(() => {
   getStreamUrlMock.mockReset();
   getTorrentStatsMock.mockReset();
   openInPlayerMock.mockReset();
+  chooseAndOpenPlayerMock.mockReset();
   // `mockClear`, not `mockReset`: the implementation that captures the handler
   // is baked into the hoisted `vi.fn`, and resetting it would drop the seam
   // these tests fire through.
@@ -119,6 +122,10 @@ beforeEach(() => {
   resumeTorrentMock.mockResolvedValue(undefined);
   getStreamUrlMock.mockResolvedValue("http://127.0.0.1/stream/0");
   openInPlayerMock.mockResolvedValue("mpv");
+  // The auto-launch now prompts the OS chooser instead of opening the stored
+  // player directly. A non-empty result means a player was picked, which is
+  // what the launch-completed assertions rely on.
+  chooseAndOpenPlayerMock.mockResolvedValue("mpv");
   setListEntryMock.mockResolvedValue(undefined);
   recordLastPlayedMock.mockResolvedValue(undefined);
   // Never ready by default, so most tests do not trip the auto-launch.
@@ -320,9 +327,8 @@ describe("auto-launch", () => {
     await h.session.playRelease(release());
     await settle();
 
-    expect(openInPlayerMock).toHaveBeenCalledWith(
+    expect(chooseAndOpenPlayerMock).toHaveBeenCalledWith(
       "http://127.0.0.1/stream/0",
-      undefined,
       7,
     );
     expect(h.session.launched).toBe(true);
@@ -354,7 +360,46 @@ describe("auto-launch", () => {
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
 
-    expect(openInPlayerMock).toHaveBeenCalledTimes(1);
+    expect(chooseAndOpenPlayerMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open anything when the chooser is cancelled", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    // An empty program name is the backend's "cancelled" signal.
+    chooseAndOpenPlayerMock.mockResolvedValue("");
+    const launched = vi.fn();
+    const h = harness({ episode: 3, launched });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // Nothing opened, so playback did NOT start and nothing is recorded.
+    expect(h.session.launched).toBe(false);
+    expect(launched).not.toHaveBeenCalled();
+    expect(setListEntryMock).not.toHaveBeenCalled();
+  });
+
+  it("does not re-open the chooser after a cancel, until asked again", async () => {
+    addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
+    getTorrentStatsMock.mockResolvedValue(statsReady());
+    chooseAndOpenPlayerMock.mockResolvedValue("");
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.playRelease(release());
+    await settle();
+
+    // Several more polls past the threshold must NOT stack more dialogs.
+    await vi.advanceTimersByTimeAsync(2000);
+    await settle();
+    expect(chooseAndOpenPlayerMock).toHaveBeenCalledTimes(1);
+
+    // The reader can try again on demand.
+    h.session.choosePlayer();
+    await settle();
+    expect(chooseAndOpenPlayerMock).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -473,12 +518,12 @@ describe("pause and resume", () => {
     await settle();
 
     // Launch already fired; reset the spy and pause, then let more polls run.
-    openInPlayerMock.mockClear();
+    chooseAndOpenPlayerMock.mockClear();
     await h.session.pause();
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
 
-    expect(openInPlayerMock).not.toHaveBeenCalled();
+    expect(chooseAndOpenPlayerMock).not.toHaveBeenCalled();
   });
 
   it("resumes the torrent and clears the paused flag", async () => {

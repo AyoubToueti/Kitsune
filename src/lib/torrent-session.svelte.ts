@@ -13,10 +13,10 @@
 import {
   addMagnet,
   addTorrent,
+  chooseAndOpenPlayer,
   getStreamUrl,
   getTorrentStats,
   onPlayerExit,
-  openInPlayer,
   pauseTorrent,
   removeTorrent,
   resumeTorrent,
@@ -88,6 +88,14 @@ export interface TorrentSession {
   /** True once the player has been opened for the current selection. */
   readonly launched: boolean;
   /**
+   * True once the player chooser has been shown for the current selection.
+   *
+   * A cancel sets this without setting `launched`: nothing opened, but the
+   * poll must not keep re-opening the dialog. Cleared by a new file pick or by
+   * [`choosePlayer`].
+   */
+  readonly prompted: boolean;
+  /**
    * True while the reader has paused the buffering download.
    *
    * While paused the poll keeps running so the panel still shows the frozen
@@ -116,6 +124,8 @@ export interface TorrentSession {
   pause(): Promise<void>;
   /** Resume a paused download, allowing auto-launch again. */
   resume(): Promise<void>;
+  /** Show the player chooser for the current selection, on demand. */
+  choosePlayer(): void;
   /** Switch the playing file to whatever matches `number`. */
   selectEpisodeNumber(number: number | undefined): void;
   /** Return to the initial state, releasing the torrent. Safe to call twice. */
@@ -145,6 +155,15 @@ export function createTorrentSession(
   let torrentFraction = $state(0);
   let launching = $state(false);
   let launched = $state(false);
+  /**
+   * True once the player chooser has been shown for the current selection.
+   *
+   * Kept apart from `launched` because cancelling the chooser must NOT count as
+   * launched (nothing opened) yet must still stop the poll from re-opening the
+   * dialog every half second. Cleared when a new file is picked or the reader
+   * asks to choose again.
+   */
+  let prompted = $state(false);
   let loading = $state(false);
   let error = $state<string | null>(null);
   let magnetError = $state<string | null>(null);
@@ -271,6 +290,9 @@ export function createTorrentSession(
     torrentFraction = 0;
     launched = false;
     launching = false;
+    // A new file is a new choice: allow the chooser to open for it even if the
+    // reader cancelled it for the previous file.
+    prompted = false;
     try {
       streamUrl = await getStreamUrl(torrentId, file.idx);
     } catch (err) {
@@ -392,22 +414,39 @@ export function createTorrentSession(
    * is the moment playback actually begins.
    */
   async function launch(): Promise<void> {
-    if (launched || launching) return;
+    if (launched || launching || prompted) return;
     if (streamUrl === undefined || torrentId === null) return;
 
+    // Mark prompted BEFORE awaiting. The chooser is modal and the poll runs
+    // every half second, so without this the next tick would open a second
+    // dialog on top of the first.
+    prompted = true;
     launching = true;
+
+    let program: string;
     try {
-      // No player argument: the backend uses the reader's stored preference,
-      // falling back to its default when none was ever chosen.
-      await openInPlayer(streamUrl, undefined, torrentId);
+      // The OS "Open With" chooser: the reader picks the player, so the stored
+      // preference is not consulted for this launch.
+      program = await chooseAndOpenPlayer(streamUrl, torrentId);
     } catch (err) {
       error = errorMessage(err);
       launching = false;
+      // A failed launch must not wedge the reader: allow a later retry (from
+      // the poll, since readiness may still hold, or the manual button).
+      prompted = false;
       return;
     }
 
-    launched = true;
     launching = false;
+
+    // An empty result means the reader cancelled the chooser. Nothing opened,
+    // so playback has NOT started -- `launched` stays false. `prompted` stays
+    // true on purpose: re-opening the dialog every poll would trap the reader
+    // in a loop they cannot dismiss. The manual "Choose player" action clears
+    // it when they want to try again.
+    if (program === "") return;
+
+    launched = true;
 
     // Only now that playback has started. The episode NUMBER is recorded, not
     // a list index: the caller derives it through `episodeNumber`, and sending
@@ -572,6 +611,7 @@ export function createTorrentSession(
     torrentFraction = 0;
     launching = false;
     launched = false;
+    prompted = false;
     paused = false;
     loading = false;
     error = null;
@@ -583,6 +623,22 @@ export function createTorrentSession(
     staleSeconds = 0;
     lastBytes = 0;
     addGeneration += 1;
+  }
+
+  /**
+   * Show the player chooser for the current selection, on demand.
+   *
+   * Clears `prompted` first so a cancelled auto-prompt can be retried by hand,
+   * then runs the same launch the poll would: if the file is still ready, the
+   * chooser opens; otherwise the next poll tick past the threshold does it.
+   */
+  function choosePlayer(): void {
+    if (torrentId === null || streamUrl === undefined) return;
+    if (launched) return;
+
+    prompted = false;
+    launching = false;
+    void launch();
   }
 
   /** Drop the current torrent and clear the selection. Safe to call twice. */
@@ -655,6 +711,9 @@ export function createTorrentSession(
     get launched() {
       return launched;
     },
+    get prompted() {
+      return prompted;
+    },
     get error() {
       return error;
     },
@@ -676,6 +735,7 @@ export function createTorrentSession(
     play,
     pause,
     resume,
+    choosePlayer,
     selectEpisodeNumber,
     teardown,
   };
