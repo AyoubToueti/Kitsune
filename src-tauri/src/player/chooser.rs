@@ -187,28 +187,90 @@ fn name_for(program: &str) -> String {
         .unwrap_or_else(|| program.to_string())
 }
 
+/// The file names to try for a bare program name.
+///
+/// On Unix a program's file name is exactly its command name (`mpv`), so there
+/// is one candidate. On Windows the command `mpv` resolves to `mpv.exe`, so the
+/// executable extensions must be appended -- without this, `PATH\mpv` is
+/// checked, not found, and the player is reported as missing.
+///
+/// `extensions` is passed in rather than read from the environment so the list
+/// is testable on every platform. A name that already ends in a known
+/// extension is not doubled up.
+pub fn path_candidates(name: &str, extensions: &[String]) -> Vec<String> {
+    if extensions.is_empty() {
+        return vec![name.to_string()];
+    }
+
+    let lower = name.to_ascii_lowercase();
+    let mut candidates: Vec<String> = Vec::with_capacity(extensions.len() + 1);
+    // The name as-is first: a name that already carries `.exe` must not become
+    // `mpv.exe.exe`.
+    candidates.push(name.to_string());
+    for ext in extensions {
+        let ext_lower = ext.to_ascii_lowercase();
+        if !lower.ends_with(&ext_lower) {
+            candidates.push(format!("{name}{ext}"));
+        }
+    }
+    candidates
+}
+
+/// The executable extensions to append when probing `PATH`.
+///
+/// Windows reads these from `PATHEXT`; the fallback covers the rare case where
+/// it is unset. Every other platform has no such concept, so the list is empty
+/// and [`path_candidates`] returns the bare name.
+fn executable_extensions() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        match std::env::var("PATHEXT") {
+            Ok(value) => value
+                .split(';')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| part.to_string())
+                .collect(),
+            // `.exe` is the one that matters; the rest are a courtesy.
+            Err(_) => vec![".exe".to_string(), ".cmd".to_string(), ".bat".to_string()],
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
 /// Find a program on `PATH`, returning its absolute path.
 ///
 /// The same lookup a shell does, without spawning one. `None` means the
 /// program is not installed, which is what keeps an absent known player out of
 /// the list.
 pub fn find_on_path(name: &str) -> Option<String> {
-    // An absolute or relative path is used as-is: the reader may have typed a
-    // full path in settings, and `PATH` lookup would miss it.
-    if name.contains('/') {
-        let path = std::path::Path::new(name);
-        return if path.is_file() {
-            Some(name.to_string())
-        } else {
-            None
-        };
+    // An absolute path is used as-is: the reader may have typed a full path in
+    // settings, and a `PATH` lookup would miss it. `is_absolute` is what makes
+    // this correct on Windows, where a `C:\...` path is absolute but contains
+    // no forward slash.
+    let as_path = std::path::Path::new(name);
+    if as_path.is_absolute() {
+        return as_path
+            .is_file()
+            .then(|| as_path.to_string_lossy().into_owned());
     }
 
     let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
+    let extensions = executable_extensions();
+
+    for dir in std::env::split_paths(&paths) {
+        for candidate in path_candidates(name, &extensions) {
+            let full = dir.join(candidate);
+            if full.is_file() {
+                return Some(full.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    None
 }
 
 /// Whether an argument is a desktop-entry field code we must not pass through.
@@ -219,11 +281,27 @@ pub fn find_on_path(name: &str) -> Option<String> {
 /// final argument by the launcher); leaving a literal `%U` in would make the
 /// player try to open a file named `%U`.
 fn is_placeholder(arg: &str) -> bool {
-    matches!(
+    // Freedesktop codes (`.desktop` files).
+    if matches!(
         arg,
         "%u" | "%U" | "%f" | "%F" | "%i" | "%c" | "%k" | "%d" | "%D" | "%n" | "%N"
             | "%v" | "%m"
-    )
+    ) {
+        return true;
+    }
+
+    // Windows codes: `%1`..`%9` are positional arguments, `%*` is all of them,
+    // and `%L`/`%V` are long/short paths. A Windows registry command line ends
+    // in one of these (`"...\\vlc.exe" --started-from-file "%1"`), so without
+    // this the player is handed a literal `%1` to open.
+    if arg.len() == 2 && arg.starts_with('%') {
+        let c = arg.as_bytes()[1];
+        if c.is_ascii_digit() || matches!(c, b'*' | b'L' | b'V' | b'l' | b'v') {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Turn a desktop application's argv into a launchable choice.
@@ -446,8 +524,89 @@ pub fn registered_players(content_type: &str) -> Vec<PlayerChoice> {
     players
 }
 
-/// The non-Linux stub: no app registry is consulted, so nothing is listed.
-#[cfg(not(target_os = "linux"))]
+/// The video file extensions the Windows registry is consulted for.
+///
+/// Windows associates players per EXTENSION, not per MIME type, so unlike the
+/// GIO path there is no single content type to ask about. This is the set of
+/// extensions anime releases actually ship.
+#[cfg(windows)]
+const VIDEO_EXTENSIONS: &[&str] = &[".mkv", ".mp4", ".webm", ".avi"];
+
+/// Applications Windows registers for video files, as choices.
+///
+/// Three sources, most authoritative last so a later entry wins the
+/// de-duplication in [`merge_players`]:
+///
+/// 1. Each extension's default ProgID (`HKCR\.mkv` -> `VLC.mkv`).
+/// 2. The alternatives under `HKCR\.mkv\OpenWithProgids`.
+/// 3. The user's explicit choice under `HKCU\...\FileExts\.mkv\UserChoice`,
+///    which overrides the machine default.
+///
+/// A registry read that fails is skipped, not fatal: an unreadable key just
+/// means fewer players listed, and the PATH scan still supplies any installed
+/// mpv or VLC.
+#[cfg(windows)]
+pub fn registered_players(_content_type: &str) -> Vec<PlayerChoice> {
+    use winreg::enums::{HKEY_CLASSES_ROOT, HKEY_CURRENT_USER};
+    use winreg::RegKey;
+
+    let hkcr = RegKey::predef(HKEY_CLASSES_ROOT);
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let mut players = Vec::new();
+
+    for ext in VIDEO_EXTENSIONS {
+        if let Ok(key) = hkcr.open_subkey(ext) {
+            // The machine default for this extension.
+            if let Ok(prog_id) = key.get_value::<String, _>("") {
+                if let Some(choice) = choice_for_prog_id(&hkcr, &prog_id) {
+                    players.push(choice);
+                }
+            }
+
+            // Everything else offered in "Open with".
+            if let Ok(open_with) = key.open_subkey("OpenWithProgids") {
+                for prog_id in open_with.enum_keys().flatten() {
+                    if let Some(choice) = choice_for_prog_id(&hkcr, &prog_id) {
+                        players.push(choice);
+                    }
+                }
+            }
+        }
+
+        // The user's explicit pick, which wins over the machine default.
+        let user_choice = format!(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\FileExts\\{ext}\\UserChoice"
+        );
+        if let Ok(key) = hkcu.open_subkey(&user_choice) {
+            if let Ok(prog_id) = key.get_value::<String, _>("ProgId") {
+                if let Some(choice) = choice_for_prog_id(&hkcr, &prog_id) {
+                    players.push(choice);
+                }
+            }
+        }
+    }
+
+    players
+}
+
+/// Read `HKCR\<prog_id>\shell\open\command` and turn it into a choice.
+///
+/// The stored value is a full command line -- `"C:\...\vlc.exe"
+/// --started-from-file "%1"` -- so the same tokeniser the Linux path uses
+/// applies, with the Windows `%1` placeholder now dropped by
+/// [`is_placeholder`].
+#[cfg(windows)]
+fn choice_for_prog_id(hkcr: &winreg::RegKey, prog_id: &str) -> Option<PlayerChoice> {
+    let path = format!("{prog_id}\\shell\\open\\command");
+    let key = hkcr.open_subkey(path).ok()?;
+    let command: String = key.get_value("").ok()?;
+    resolve_choice(Some(&command), None)
+}
+
+/// The remaining-platform stub: no app registry is consulted, so nothing is
+/// listed. macOS has no equivalent lookup here, and the PATH scan plus a
+/// manually pasted path are the fallbacks.
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn registered_players(_content_type: &str) -> Vec<PlayerChoice> {
     Vec::new()
 }
@@ -538,6 +697,47 @@ mod tests {
         let argv = vec!["mpv".to_string(), "--title=50%".to_string()];
         let choice = choice_from_argv(&argv).expect("a choice");
         assert_eq!(choice.extra_args, vec!["--title=50%".to_string()]);
+    }
+
+    #[test]
+    fn argv_drops_windows_field_codes() {
+        // The registry line for VLC on Windows ends in "%1"; without this the
+        // player would be asked to open a file literally named "%1".
+        for placeholder in ["%1", "%2", "%*", "%L", "%V"] {
+            let argv = vec!["C:\\vlc.exe".to_string(), placeholder.to_string()];
+            let choice = choice_from_argv(&argv).expect("a choice");
+            assert!(
+                choice.extra_args.is_empty(),
+                "{placeholder} should be dropped"
+            );
+        }
+    }
+
+    #[test]
+    fn path_candidates_adds_executable_extensions() {
+        let exts = vec![".exe".to_string(), ".cmd".to_string()];
+        let candidates = path_candidates("mpv", &exts);
+        assert_eq!(
+            candidates,
+            vec!["mpv".to_string(), "mpv.exe".to_string(), "mpv.cmd".to_string()]
+        );
+    }
+
+    #[test]
+    fn path_candidates_does_not_double_an_existing_extension() {
+        // A name already ending in .exe must not become mpv.exe.exe.
+        let exts = vec![".exe".to_string()];
+        let candidates = path_candidates("mpv.exe", &exts);
+        assert_eq!(candidates, vec!["mpv.exe".to_string()]);
+    }
+
+    #[test]
+    fn path_candidates_is_just_the_name_without_extensions() {
+        // On Unix there are no executable extensions to append.
+        assert_eq!(
+            path_candidates("mpv", &[]),
+            vec!["mpv".to_string()]
+        );
     }
 
     #[test]

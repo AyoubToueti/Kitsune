@@ -75,6 +75,12 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 [target."cfg(target_os = \"linux\")".dependencies]
 gtk = "0.18.2"
 
+# Windows only: reads HKEY_CLASSES_ROOT to find the players registered for
+# video files, which is how Windows itself decides what opens a `.mkv`. Already
+# in the graph transitively, so this promotes rather than adds to it.
+[target."cfg(windows)".dependencies]
+winreg = "0.55"
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
