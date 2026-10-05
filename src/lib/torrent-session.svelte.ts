@@ -24,7 +24,7 @@ import {
 import { errorMessage } from "./api/anime";
 import { recordLastPlayed, setListEntry } from "./api/auth";
 import { createProgressRecorder } from "./progress";
-import { bestEffortFile, fileForEpisode } from "./torrent-files";
+import { fileForEpisode, firstTargetFile } from "./torrent-files";
 import type { Release, TorrentFile, TorrentHandle, TorrentProgress } from "./types";
 
 /**
@@ -238,8 +238,26 @@ export function createTorrentSession(
   async function play(file: TorrentFile): Promise<void> {
     if (torrentId === null) return;
 
+    // Re-picking the file that is already playing must not open a second
+    // player; the external player owns playback and there is nothing to do.
+    if (launched && chosen?.idx === file.idx) return;
+
     chosen = file;
     error = null;
+
+    // Picking a file while paused resumes the download: the reader has chosen,
+    // so the "wait for a pick" hold no longer applies. `launching` is cleared
+    // too, so a launch interrupted by the pause may run again.
+    if (paused) {
+      try {
+        await resumeTorrent(torrentId);
+      } catch (err) {
+        error = errorMessage(err);
+        return;
+      }
+      paused = false;
+      launching = false;
+    }
 
     // A new file is a new wait: clear the previous file's numbers so the panel
     // does not briefly show the last episode's progress as if it were this
@@ -249,7 +267,6 @@ export function createTorrentSession(
     torrentFraction = 0;
     launched = false;
     launching = false;
-    paused = false;
     try {
       streamUrl = await getStreamUrl(torrentId, file.idx);
     } catch (err) {
@@ -434,19 +451,28 @@ export function createTorrentSession(
     return () => clearInterval(timer);
   });
 
-  /** Start the file inside a freshly-added handle that best matches the episode. */
+  /**
+   * Start the file inside a freshly-added handle, or wait for a pick.
+   *
+   * `firstTargetFile` decides: an exact episode match starts, a single video
+   * starts, but a multi-video torrent with no match waits -- paused -- for the
+   * reader to choose rather than downloading an arbitrary guess.
+   */
   async function startBestFile(handle: TorrentHandle): Promise<void> {
     torrentId = handle.id;
     files = handle.files;
 
-    const wanted = config.getEpisode();
-    const match =
-      wanted !== undefined
-        ? fileForEpisode(handle.files, wanted, config.getEpisodeOffset())
-        : null;
-    const target = match ?? bestEffortFile(handle.files);
+    const target = firstTargetFile(
+      handle.files,
+      config.getEpisode(),
+      config.getEpisodeOffset(),
+    );
 
-    if (target) await play(target);
+    if (target) {
+      await play(target);
+    } else {
+      await pause();
+    }
   }
 
   /**
@@ -488,17 +514,19 @@ export function createTorrentSession(
       torrentId = handle.id;
       files = handle.files;
 
-      // Preselect from the episode the caller says is current, so loading a
-      // torrent for episode 3 does not start at file 1. No best-effort fallback
-      // here: a hand-picked torrent with no matching file is left for the
-      // reader to choose from.
-      const wanted = config.getEpisode();
-      const match =
-        wanted !== undefined
-          ? fileForEpisode(handle.files, wanted, config.getEpisodeOffset())
-          : null;
+      // Same rule as a release: an exact match or a lone video starts, a
+      // multi-video torrent with no match waits for the reader to pick.
+      const target = firstTargetFile(
+        handle.files,
+        config.getEpisode(),
+        config.getEpisodeOffset(),
+      );
 
-      if (match) await play(match);
+      if (target) {
+        await play(target);
+      } else {
+        await pause();
+      }
     } catch (err) {
       error = errorMessage(err);
     } finally {
@@ -555,18 +583,22 @@ export function createTorrentSession(
   }
 
   /**
-   * Reset when the external player the reader was watching exits.
+   * Pause when the external player the reader was watching exits.
    *
    * The backend emits the torrent id that was playing. Matching it against the
    * current id means an exit for a torrent this session no longer tracks is
-   * ignored, and the reader is returned to the release list with the torrent
-   * released rather than left downloading behind a "playing" panel.
+   * ignored. Unlike a teardown, an exit does NOT remove the torrent or return
+   * to the release list: the files and selection are kept, the download is
+   * paused, and the reader can pick another file to resume.
    */
   $effect(() => {
     let cancelled = false;
     const unlisten = onPlayerExit((id) => {
       if (cancelled) return;
-      if (id === torrentId) reset();
+      if (id !== torrentId) return;
+      launched = false;
+      launching = false;
+      void pause();
     });
 
     return () => {

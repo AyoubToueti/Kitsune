@@ -203,7 +203,7 @@ describe("loadTorrentFile", () => {
     expect(h.session.chosen?.name).toBe("Show - 03.mkv");
   });
 
-  it("does not fall back to best-effort when nothing matches", async () => {
+  it("starts a lone video when nothing matches the episode", async () => {
     addTorrentMock.mockResolvedValue(handle(9, [file("something-else.mkv")]));
     const h = harness({ episode: 3 });
     current = h;
@@ -211,8 +211,39 @@ describe("loadTorrentFile", () => {
     await h.session.loadTorrentFile("/tmp/x.torrent");
     await settle();
 
+    expect(h.session.chosen?.name).toBe("something-else.mkv");
+  });
+
+  it("waits, paused, when a multi-video torrent has no match", async () => {
+    addTorrentMock.mockResolvedValue(
+      handle(9, [file("Show - 01.mkv"), file("Show - 02.mkv")]),
+    );
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.loadTorrentFile("/tmp/x.torrent");
+    await settle();
+
+    // Nothing chosen, no stream resolved, and the torrent held paused.
     expect(h.session.chosen).toBeNull();
-    expect(h.session.files).toHaveLength(1);
+    expect(h.session.streamUrl).toBeUndefined();
+    expect(h.session.files).toHaveLength(2);
+    expect(h.session.paused).toBe(true);
+    expect(pauseTorrentMock).toHaveBeenCalledWith(9);
+  });
+
+  it("still auto-plays an exact episode match among many files", async () => {
+    addTorrentMock.mockResolvedValue(
+      handle(9, [file("Show - 01.mkv"), file("Show - 03.mkv")]),
+    );
+    const h = harness({ episode: 3 });
+    current = h;
+
+    await h.session.loadTorrentFile("/tmp/x.torrent");
+    await settle();
+
+    expect(h.session.chosen?.name).toBe("Show - 03.mkv");
+    expect(pauseTorrentMock).not.toHaveBeenCalled();
   });
 });
 
@@ -339,7 +370,7 @@ describe("reset", () => {
 });
 
 describe("player exit", () => {
-  it("resets the session when the current torrent's player exits", async () => {
+  it("pauses and keeps the session when the current player exits", async () => {
     addMagnetMock.mockResolvedValue(handle(7, [file("Show - 03.mkv", 1000)]));
     getTorrentStatsMock.mockResolvedValue(statsReady());
     const h = harness({ episode: 3 });
@@ -353,9 +384,15 @@ describe("player exit", () => {
     playerExitHandler.current!(7);
     await settle();
 
+    // Playback stopped, but the torrent, files and selection are kept and the
+    // download is paused rather than torn down.
     expect(h.session.launched).toBe(false);
-    expect(h.session.torrentId).toBeNull();
-    expect(removeTorrentMock).toHaveBeenCalledWith(7);
+    expect(h.session.paused).toBe(true);
+    expect(h.session.torrentId).toBe(7);
+    expect(h.session.files).toHaveLength(1);
+    expect(h.session.chosen?.name).toBe("Show - 03.mkv");
+    expect(pauseTorrentMock).toHaveBeenCalledWith(7);
+    expect(removeTorrentMock).not.toHaveBeenCalled();
   });
 
   it("ignores an exit for a different torrent", async () => {
@@ -442,5 +479,26 @@ describe("pause and resume", () => {
     await settle();
 
     expect(h.session.paused).toBe(false);
+  });
+
+  it("resumes the download when a file is picked while paused", async () => {
+    addTorrentMock.mockResolvedValue(
+      handle(9, [file("Show - 01.mkv"), file("Show - 02.mkv")]),
+    );
+    const h = harness({ episode: 3 });
+    current = h;
+
+    // The multi-video torrent with no match starts paused, waiting for a pick.
+    await h.session.loadTorrentFile("/tmp/x.torrent");
+    await settle();
+    expect(h.session.paused).toBe(true);
+
+    // Picking a file resumes the download and resolves its stream.
+    await h.session.play(file("Show - 01.mkv"));
+    await settle();
+
+    expect(resumeTorrentMock).toHaveBeenCalledWith(9);
+    expect(h.session.paused).toBe(false);
+    expect(h.session.streamUrl).toBe("http://127.0.0.1/stream/0");
   });
 });
