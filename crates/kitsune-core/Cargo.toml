@@ -44,9 +44,17 @@ reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
 base64 = "0.22"
 # providers::traits declares an async trait (AnimeProvider).
 async-trait = "0.1.92"
+# indexer::parse ports Sonarr's release-name regexes, which use lookaround and
+# backreferences that the `regex` crate cannot express.
+fancy-regex = "0.14"
+# indexer::nyaa reads the Nyaa RSS feed.
+quick-xml = "0.37"
+# indexer uses process-wide lazy regexes/statics.
+once_cell = "1"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio-test = "0.4.5"
 # The torrent engine's tests need a scratch directory, the bridge tests spin a
 # real HTTP client against the loopback server, and the providers mock AniList
 # and Jikan over HTTP.
