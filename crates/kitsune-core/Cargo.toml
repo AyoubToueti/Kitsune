@@ -42,9 +42,13 @@ dirs = "6"
 reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
 # player::icons encodes an icon file as a `data:` URL for the picker.
 base64 = "0.22"
+# providers::traits declares an async trait (AnimeProvider).
+async-trait = "0.1.92"
 
 [dev-dependencies]
 tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
-# The torrent engine's tests need a scratch directory, and the bridge tests
-# spin a real HTTP client against the loopback server.
+# The torrent engine's tests need a scratch directory, the bridge tests spin a
+# real HTTP client against the loopback server, and the providers mock AniList
+# and Jikan over HTTP.
 tempfile = "3.27.0"
+wiremock = "0.6.5"
