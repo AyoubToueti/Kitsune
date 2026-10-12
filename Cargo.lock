@@ -2916,6 +2916,8 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "kitsune-core",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
