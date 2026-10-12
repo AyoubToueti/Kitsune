@@ -11,10 +11,12 @@
 //! will build on, so it can be tested without a network or a browser.
 
 pub mod commands;
-pub mod flow;
-pub mod last_played;
 pub mod list;
-pub mod store;
+
+// `flow`, `last_played` and `store` moved to `kitsune-core`; re-exported
+// under the same names so `super::flow::...`, `super::store::...` and
+// `crate::auth::store::...` paths keep resolving.
+pub use kitsune_core::auth::{flow, last_played, store};
 
 pub use commands::{apply_token, restore_token, SharedAniList, AUTH_CHANGED_EVENT};
 pub use flow::{authorize_url, parse_token, CLIENT_ID};

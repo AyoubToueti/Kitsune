@@ -9,6 +9,7 @@
 //! HARD RULE: this crate must not depend on a UI framework (tauri, slint, Qt,
 //! ...). A frontend dependency here would pull one UI stack into the other.
 
+pub mod auth;
 pub mod diagnostics;
 pub mod indexer;
 pub mod player;
