@@ -2661,14 +2661,18 @@ name = "kitsune-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "dirs",
  "librqbit",
  "librqbit-dualstack-sockets",
  "reqwest",
  "serde",
  "serde_json",
+ "sysinfo",
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
 ]
 
 [[package]]

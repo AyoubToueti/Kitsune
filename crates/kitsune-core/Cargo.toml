@@ -21,9 +21,22 @@ librqbit-dualstack-sockets = "0.7.0"
 # `net` for the bridge's TcpListener, `sync`/`time` for the engine's locks and
 # poll loops, `rt` for spawning the bridge task.
 tokio = { version = "1.53.1", features = ["rt", "sync", "time", "net"] }
-# `tracing::error!` in the bridge's accept loop. The subscriber that actually
-# captures these lives in the frontend (diagnostics::logging).
+# `tracing::error!` in the bridge's accept loop, and in diagnostics::panic.
+# The subscriber that actually captures these lives in diagnostics::logging.
 tracing = "0.1.44"
+# diagnostics::logging builds the daily-rotating file sink that makes the
+# `tracing` calls above actually go somewhere in a release GUI build.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+# diagnostics::metrics reads this process's CPU and RAM (cross-platform:
+# /proc on Linux, native APIs elsewhere).
+sysinfo = "0.39"
+# diagnostics::logging resolves the OS log directory (and the token store will
+# need it too).
+dirs = "6"
+# diagnostics::speedtest drives a client against Cloudflare at runtime, so
+# reqwest belongs in [dependencies], not only [dev-dependencies].
+reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
 
 [dev-dependencies]
 serde_json = "1"
@@ -31,4 +44,3 @@ tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
 # The torrent engine's tests need a scratch directory, and the bridge tests
 # spin a real HTTP client against the loopback server.
 tempfile = "3.27.0"
-reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
