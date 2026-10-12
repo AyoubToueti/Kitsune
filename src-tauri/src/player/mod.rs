@@ -8,9 +8,12 @@
 
 pub mod chooser;
 pub mod commands;
-pub mod icons;
-pub mod launch;
 pub mod state;
+
+// `icons` and `launch` moved to `kitsune-core`; re-exported under the same
+// names so `super::icons::...`, `super::launch::...` and `crate::player::launch`
+// paths keep resolving unchanged.
+pub use kitsune_core::player::{icons, launch};
 
 pub use chooser::{
     choose_player_blocking, list_players, registered_players, PlayerChoice, PlayerOption,

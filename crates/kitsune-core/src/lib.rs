@@ -10,5 +10,6 @@
 //! ...). A frontend dependency here would pull one UI stack into the other.
 
 pub mod diagnostics;
+pub mod player;
 pub mod torrent;
 pub mod types;
