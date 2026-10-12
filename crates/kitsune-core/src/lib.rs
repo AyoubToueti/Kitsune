@@ -11,5 +11,6 @@
 
 pub mod diagnostics;
 pub mod player;
+pub mod settings;
 pub mod torrent;
 pub mod types;

@@ -5,7 +5,9 @@
 //! fresh install and a corrupt file both behave identically -- the app runs on
 //! its built-in choices until the reader changes one.
 
-pub mod store;
+// `store` moved to `kitsune-core`; re-exported under the same name so
+// `crate::settings::store::...` and `super::store::...` paths keep resolving.
+pub use kitsune_core::settings::store;
 
 pub use store::{Settings, SettingsStore};
 
