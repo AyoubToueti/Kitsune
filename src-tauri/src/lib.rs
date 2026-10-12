@@ -8,7 +8,9 @@ pub mod player;
 pub mod providers;
 pub mod settings;
 pub mod torrent;
-pub mod types;
+// Extracted to `kitsune-core`; re-exported so every `crate::types::...` path
+// in this crate keeps resolving unchanged.
+pub use kitsune_core::types;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]

@@ -2631,6 +2631,7 @@ dependencies = [
  "dirs",
  "fancy-regex",
  "gtk",
+ "kitsune-core",
  "librqbit",
  "librqbit-dualstack-sockets",
  "once_cell",
@@ -2653,6 +2654,14 @@ dependencies = [
  "tracing-subscriber",
  "winreg",
  "wiremock",
+]
+
+[[package]]
+name = "kitsune-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

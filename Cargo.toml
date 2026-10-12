@@ -8,7 +8,7 @@
 # `target/`, so a dependency is compiled once no matter how many members use it.
 [workspace]
 resolver = "2"
-members = ["src-tauri"]
+members = ["src-tauri", "crates/kitsune-core"]
 
 # Release profile lives HERE, not in a member. Cargo ignores a [profile.*]
 # table in a non-root member of a virtual workspace, so keeping it in

@@ -1,0 +1,17 @@
+[package]
+name = "kitsune-core"
+version = "0.1.0"
+description = "Framework-agnostic backend logic for Kitsune"
+authors = ["you"]
+edition = "2021"
+
+# This crate MUST NOT depend on tauri, slint, Qt or any other UI framework.
+# It is the shared seam the Tauri app and the Qt6 frontend both build on, so a
+# UI dependency here would drag one frontend into the other.
+# Check: `grep -rn 'tauri\|slint\|qt' crates/kitsune-core/src`.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
