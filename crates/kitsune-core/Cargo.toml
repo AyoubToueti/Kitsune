@@ -12,6 +12,23 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+anyhow = "1.0.104"
+# The torrent engine. `http-api` brings the Range-capable HTTP bridge that the
+# player reads from; `tracing-subscriber-utils` is required by librqbit's own
+# logging setup.
+librqbit = { version = "9.0.1", features = ["http-api", "tracing-subscriber-utils"] }
+librqbit-dualstack-sockets = "0.7.0"
+# `net` for the bridge's TcpListener, `sync`/`time` for the engine's locks and
+# poll loops, `rt` for spawning the bridge task.
+tokio = { version = "1.53.1", features = ["rt", "sync", "time", "net"] }
+# `tracing::error!` in the bridge's accept loop. The subscriber that actually
+# captures these lives in the frontend (diagnostics::logging).
+tracing = "0.1.44"
 
 [dev-dependencies]
 serde_json = "1"
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+# The torrent engine's tests need a scratch directory, and the bridge tests
+# spin a real HTTP client against the loopback server.
+tempfile = "3.27.0"
+reqwest = { version = "0.13.5", features = ["json", "default-tls"] }

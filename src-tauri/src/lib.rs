@@ -7,7 +7,9 @@ pub mod indexer;
 pub mod player;
 pub mod providers;
 pub mod settings;
-pub mod torrent;
+// Extracted to `kitsune-core`; re-exported so every `crate::torrent::...` path
+// in this crate keeps resolving unchanged.
+pub use kitsune_core::torrent;
 // Extracted to `kitsune-core`; re-exported so every `crate::types::...` path
 // in this crate keeps resolving unchanged.
 pub use kitsune_core::types;
