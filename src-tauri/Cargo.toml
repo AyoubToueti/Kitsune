@@ -82,13 +82,9 @@ gtk = "0.18.2"
 winreg = "0.55"
 
 
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = 3
-panic = "abort"
-strip = true
+# NOTE: the release profile moved to the workspace root Cargo.toml. Cargo
+# ignores [profile.*] in a non-root member of a virtual workspace, so leaving
+# it here would silently have no effect.
 
 [dev-dependencies]
 tempfile = "3.27.0"

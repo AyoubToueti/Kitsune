@@ -26,6 +26,15 @@
           # Native build glue for Tauri
           pkg-config
           gobject-introspection
+
+          # Qt6 build tooling (the migration target). CMake + Ninja drive the
+          # cxx-qt build; wrapQtAppsHook wires the runtime Qt plugin paths into
+          # any binary it wraps (without it, a Qt app cannot find its platform
+          # plugin and aborts with "could not find or load the Qt platform
+          # plugin").
+          cmake
+          ninja
+          qt6.wrapQtAppsHook
         ];
 
         buildInputs = with pkgs; [
@@ -59,8 +68,18 @@
           gst_all_1.gst-plugins-ugly
           gst_all_1.gst-libav
 
-          # Media player used by the app
+          # Media player used by the app. `mpv-unwrapped` ships the libmpv
+          # shared library and the mpv/render.h header the embedded player
+          # links against; the plain `mpv` wrapper does not expose them.
           mpv
+          mpv-unwrapped
+
+          # Qt6: the migration target. `qtdeclarative` is QML/Quick.
+          # `qtbase` gives QtCore/Gui/Widgets and the platform plugins.
+          # No QtMultimedia -- playback is embedded libmpv (render API), so
+          # Qt only needs to provide the window and the QML scene graph.
+          qt6.qtbase
+          qt6.qtdeclarative
 
           # Misc utilities
           git

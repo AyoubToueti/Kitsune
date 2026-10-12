@@ -1,0 +1,22 @@
+# The Kitsune cargo workspace.
+#
+# `src-tauri` is the Tauri app (the crate being migrated away from).
+# `crates/kitsune-core` will hold the pure, framework-agnostic backend logic so
+# the Tauri app, the Qt6 frontend, and the tests all share ONE copy of it.
+#
+# A workspace keeps a single `Cargo.lock` at the repo root and a single
+# `target/`, so a dependency is compiled once no matter how many members use it.
+[workspace]
+resolver = "2"
+members = ["src-tauri"]
+
+# Release profile lives HERE, not in a member. Cargo ignores a [profile.*]
+# table in a non-root member of a virtual workspace, so keeping it in
+# src-tauri/Cargo.toml would silently do nothing.
+# See https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

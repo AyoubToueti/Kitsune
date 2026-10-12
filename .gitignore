@@ -12,9 +12,14 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # ---- Rust / Tauri build output ----
+# The cargo workspace keeps ONE target/ at the repo root now, but the nested
+# paths are kept so a stray build inside src-tauri is still ignored.
 target/
 src-tauri/target/
 src-tauri/gen/
+
+# ---- Throwaway spikes (e.g. the Qt6 toolchain spike) ----
+spike-qt/build/
 
 # ---- Environment & secrets ----
 .env

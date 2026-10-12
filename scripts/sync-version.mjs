@@ -21,7 +21,10 @@ const FILES = {
   tauri: join(root, "src-tauri", "tauri.conf.json"),
   pkg: join(root, "package.json"),
   cargo: join(root, "src-tauri", "Cargo.toml"),
-  lock: join(root, "src-tauri", "Cargo.lock"),
+  // The lockfile lives at the WORKSPACE ROOT now, not beside the crate. Cargo
+  // keeps one lock per workspace, so editing src-tauri/Cargo.lock would touch a
+  // file that no longer exists.
+  lock: join(root, "Cargo.lock"),
 };
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
