@@ -106,6 +106,65 @@
           # proxy/locale resolution paths misbehave.
           export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
 
+          # --- Qt6 merged prefix (REQUIRED for the CXX-Qt build) ---------------
+          # CXX-Qt's Cargo-only build (qt-build-utils) asks `qmake -query
+          # QT_INSTALL_LIBS` for a single lib directory and then looks for each
+          # Qt module's .prl file there. On NixOS, Qt modules are split across
+          # SEPARATE store paths (qtbase, qtdeclarative, ...), so the qtbase
+          # qmake reports only qtbase/lib -- and libQt6Qml.prl (which lives in
+          # qtdeclarative/lib) is never found, aborting with
+          # "Could not find a prl path for Qt module: Qml".
+          #
+          # Fix: build ONE prefix that symlinks every Qt module's dirs together,
+          # drop a qt.conf in it, and wrap qmake to always pass that qt.conf.
+          # Then `qmake -query QT_INSTALL_LIBS` returns the merged lib dir, where
+          # every module's .prl is present. Symlinks (not hardlinks) so the tree
+          # stays removable.
+          export QT6_MERGED_PREFIX="''${XDG_CACHE_HOME:-$HOME/.cache}/kitsune-qt6-merged"
+          if [ ! -f "$QT6_MERGED_PREFIX/.ready" ]; then
+            rm -rf "$QT6_MERGED_PREFIX"
+            # `libexec` matters: qmake -query QT_HOST_LIBEXECS points here and
+            # that is where `moc` lives (not `bin`), so the merge must include it
+            # or cxx-qt-build aborts with "Could not find moc".
+            for sub in lib include plugins qml mkspecs bin libexec; do
+              mkdir -p "$QT6_MERGED_PREFIX/$sub"
+            done
+            # QT_ADDITIONAL_PACKAGES_PREFIX_PATH lists every Qt module prefix
+            # nixpkgs injected; symlink each module's dirs into one tree.
+            for p in ''${QT_ADDITIONAL_PACKAGES_PREFIX_PATH//:/ }; do
+              case "$p" in
+                *qtbase*|*qtdeclarative*|*qtshadertools*|*qtsvg*|*qtlanguageserver*)
+                  for sub in lib include plugins qml mkspecs bin libexec; do
+                    [ -d "$p/$sub" ] || continue
+                    for f in "$p/$sub"/*; do
+                      [ -e "$f" ] || continue
+                      ln -sfn "$f" "$QT6_MERGED_PREFIX/$sub/$(basename "$f")"
+                    done
+                  done
+                  ;;
+              esac
+            done
+            cat > "$QT6_MERGED_PREFIX/qt.conf" <<QTCONF
+[Paths]
+Prefix = $QT6_MERGED_PREFIX
+Libraries = $QT6_MERGED_PREFIX/lib
+Headers = $QT6_MERGED_PREFIX/include
+Plugins = $QT6_MERGED_PREFIX/plugins
+Qml2Imports = $QT6_MERGED_PREFIX/qml
+QTCONF
+            touch "$QT6_MERGED_PREFIX/.ready"
+          fi
+          # A qmake that always injects the merged qt.conf.
+          cat > "$QT6_MERGED_PREFIX/qmake" <<QMAKEWRAP
+#!/bin/sh
+exec "${pkgs.qt6.qtbase}/bin/qmake" -qtconf "$QT6_MERGED_PREFIX/qt.conf" "\$@"
+QMAKEWRAP
+          chmod +x "$QT6_MERGED_PREFIX/qmake"
+          # Prepend so `qmake` on PATH is the wrapper, and pin QMAKE explicitly
+          # since qt-build-utils reads the env var first.
+          export QMAKE="$QT6_MERGED_PREFIX/qmake"
+          export PATH="$QT6_MERGED_PREFIX:$PATH"
+
           echo "Kitsune dev shell"
           echo "  rustc : $(rustc --version)"
           echo "  cargo : $(cargo --version)"

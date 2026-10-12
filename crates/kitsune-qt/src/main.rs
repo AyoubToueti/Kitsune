@@ -1,0 +1,44 @@
+//! Kitsune's Qt6/QML entry point.
+//!
+//! Loads `qml/main.qml` (embedded by `build.rs` under the
+//! `qrc:/qt/qml/com/kitsune/app/` prefix) into a `QQmlApplicationEngine`.
+
+mod backend;
+
+use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+
+fn main() {
+    // Qt sets LC_NUMERIC; libmpv (added later) requires "C". Setting it here
+    // keeps the same discipline the old Tauri app used.
+    libc_setlocale();
+
+    let mut app = QGuiApplication::new();
+    let mut engine = QQmlApplicationEngine::new();
+
+    if let Some(engine) = engine.as_mut() {
+        // On failure Qt logs "QQmlApplicationEngine failed to load component"
+        // to stderr, which is the signal the smoke run greps for.
+        engine.load(&QUrl::from("qrc:/qt/qml/com/kitsune/app/qml/main.qml"));
+        eprintln!("kitsune-qt: load() returned");
+    }
+
+    if let Some(app) = app.as_mut() {
+        app.exec();
+    }
+}
+
+/// Reset the numeric locale to "C" for C libraries (libmpv) that parse numbers
+/// with `strtod` and assume a dot decimal separator.
+fn libc_setlocale() {
+    // `setlocale` lives in libc; we only need the one call, so declare it here
+    // rather than pull in a whole crate for it.
+    extern "C" {
+        fn setlocale(category: i32, locale: *const i8) -> *mut i8;
+    }
+    // LC_NUMERIC == 1 on glibc; "C" is the portable locale name.
+    const LC_NUMERIC: i32 = 1;
+    let c = b"C\0";
+    unsafe {
+        setlocale(LC_NUMERIC, c.as_ptr() as *const i8);
+    }
+}
