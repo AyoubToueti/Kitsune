@@ -20,58 +20,9 @@
 //! program plus extra args the launcher expects -- is unit tested without a
 //! display server.
 
-use serde::Serialize;
-
-/// The MIME type the chooser lists applications for.
-///
-/// Anime releases are overwhelmingly Matroska, and every desktop video player
-/// registers `video/x-matroska`. A player that only registers `video/mp4`
-/// would not appear, but such a player would be useless for these files
-/// anyway. Chosen over `video/*` because the dialog takes a concrete type, not
-/// a wildcard.
-pub const VIDEO_CONTENT_TYPE: &str = "video/x-matroska";
-
-/// A chosen player, resolved from a desktop application's command line.
-///
-/// `program` is the executable and `extra_args` are its own arguments with the
-/// URL placeholder removed. Together they fit
-/// [`super::launch::spawn_player`] directly: the program is spawned, the extra
-/// args come first, and the stream URL is appended last as a positional
-/// argument -- which mpv, vlc, celluloid and totem all accept.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlayerChoice {
-    /// The executable to spawn.
-    pub program: String,
-    /// The application's own arguments, in order, minus the URL placeholder.
-    pub extra_args: Vec<String>,
-}
-
-/// A player offered in the in-app picker, before anything is launched.
-///
-/// Carries enough to render a row AND to launch it later, so the picker does
-/// not have to re-resolve anything. `id` is the executable path, which is what
-/// de-duplicates a player found both by GIO and by the PATH scan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlayerOption {
-    /// Stable identity: the resolved executable path.
-    pub id: String,
-    /// Human name for the row, e.g. "VLC media player" or "mpv".
-    pub name: String,
-    /// The program to spawn.
-    pub program: String,
-    /// The program's own arguments, in order, minus any URL placeholder.
-    pub extra_args: Vec<String>,
-    /// True for the reader's stored preference, so the picker can mark it.
-    pub is_default: bool,
-    /// The player's icon as a `data:` URL, or `None` when none was found.
-    ///
-    /// A `data:` URL rather than a path: the app's CSP allows `data:` but not
-    /// `file:`, so the bytes have to travel inline. `None` is not a failure --
-    /// the picker draws its own fallback glyph.
-    pub icon: Option<String>,
-}
+// The chosen-player types live in `kitsune-core` (they cross every frontend);
+// re-exported so `super::chooser::PlayerChoice` etc. keep resolving.
+pub use kitsune_core::player::choice::{PlayerChoice, PlayerOption, VIDEO_CONTENT_TYPE};
 
 /// An icon `data:` URL for a player's executable, if one can be found.
 ///

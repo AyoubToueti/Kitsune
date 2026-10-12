@@ -9,7 +9,11 @@
 //! `chooser` (a GTK/winreg dialog) and `commands`; the Qt6 app will supply its
 //! own dialog. Only the pure launch/icon logic lives here.
 
+pub mod choice;
 pub mod icons;
 pub mod launch;
+pub mod state;
 
+pub use choice::{PlayerChoice, PlayerOption, VIDEO_CONTENT_TYPE};
 pub use launch::{DEFAULT_PLAYER, SUGGESTED_PLAYERS};
+pub use state::{PlayerState, TorrentFile, TorrentHandle};

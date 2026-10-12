@@ -498,7 +498,7 @@ impl PlayerState {
     pub async fn open_in_player_choice(
         &self,
         url: &str,
-        choice: &super::chooser::PlayerChoice,
+        choice: &super::choice::PlayerChoice,
         torrent_id: Option<usize>,
         on_exit: Option<Arc<dyn Fn(usize) + Send + Sync>>,
     ) -> Result<String> {
