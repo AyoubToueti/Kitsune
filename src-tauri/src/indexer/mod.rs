@@ -11,5 +11,7 @@ pub mod commands;
 // rather than a list so adding a module to core::indexer needs no change here.
 pub use kitsune_core::indexer::*;
 
-// The Tauri-facing surface (the registry and the commands lib.rs registers).
-pub use commands::{download_torrent, probe_releases, search_all, search_releases, IndexerRegistry};
+// The Tauri-facing surface (the commands lib.rs registers). `search_all`,
+// `IndexerRegistry` and the rest of the pipeline come from the glob above,
+// since they now live in `kitsune-core`.
+pub use commands::{download_torrent, probe_releases, search_releases};

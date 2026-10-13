@@ -11,9 +11,11 @@
 
 pub mod auth;
 pub mod diagnostics;
+pub mod episodes;
 pub mod indexer;
 pub mod player;
 pub mod providers;
 pub mod settings;
 pub mod torrent;
+pub mod torrent_files;
 pub mod types;

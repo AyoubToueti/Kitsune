@@ -10,44 +10,14 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::probe_rank::ProbeOutcome;
-use super::{search, Indexer, ReleaseRequest, SearchMode};
+use super::{search_all, Indexer, ReleaseRequest, SearchMode};
 use crate::settings::SharedSettings;
 use crate::types::{Release, ReleasePreference};
 
-/// The indexer the app searches with.
-///
-/// A `Vec<Arc<dyn Indexer>>` rather than one indexer, so adding a second source
-/// later is a change in this file alone. Held behind an `Arc` so a command can
-/// clone it out of Tauri's state and search without holding a lock across the
-/// await.
-pub struct IndexerRegistry {
-    indexers: Vec<Arc<dyn Indexer>>,
-}
-
-impl IndexerRegistry {
-    /// A registry holding one Nyaa indexer.
-    pub fn new() -> Self {
-        Self {
-            indexers: vec![Arc::new(super::NyaaIndexer::new())],
-        }
-    }
-
-    /// A registry over an explicit set, for tests.
-    pub fn with_indexers(indexers: Vec<Arc<dyn Indexer>>) -> Self {
-        Self { indexers }
-    }
-
-    /// The indexers, in search order.
-    pub fn indexers(&self) -> &[Arc<dyn Indexer>] {
-        &self.indexers
-    }
-}
-
-impl Default for IndexerRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Re-exported from `kitsune-core` so the Tauri command layer and the Qt
+/// frontend share one registry and one fan-out. `lib.rs` still `.manage(...)`s
+/// this exact type.
+pub use kitsune_core::indexer::IndexerRegistry;
 
 /// Search every indexer, returning the merged, ranked results.
 ///
@@ -85,37 +55,6 @@ pub async fn search_releases(
         }
     });
     Ok(search_all(&indexers, &request, &preference).await)
-}
-
-/// Query every indexer concurrently and return one ranked list.
-///
-/// Split from the command so the fan-out can be tested with stub indexers. A
-/// failing indexer contributes nothing rather than an error: a single dead
-/// mirror should not turn a working search into a failure.
-pub async fn search_all(
-    indexers: &[Arc<dyn Indexer>],
-    request: &ReleaseRequest,
-    preference: &ReleasePreference,
-) -> Vec<Release> {
-    let mut handles = Vec::with_capacity(indexers.len());
-    for indexer in indexers {
-        let indexer = Arc::clone(indexer);
-        let request = request.clone();
-        handles.push(async move { search(indexer.as_ref(), &request, preference).await });
-    }
-
-    let mut merged: Vec<Release> = Vec::new();
-    for handle in handles {
-        if let Ok(mut found) = handle.await {
-            merged.append(&mut found);
-        }
-    }
-
-    // Each indexer already ranked its own results; re-ranking the merged set
-    // puts a better release from the second indexer above a worse one from the
-    // first, which per-indexer ranking cannot do.
-    super::rank::rank(&mut merged, preference);
-    merged
 }
 
 /// Download a `.torrent` file from an indexer to a path the user chose.

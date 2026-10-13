@@ -286,6 +286,38 @@ impl Title {
         .flatten()
         .find(|candidate| !candidate.trim().is_empty())
     }
+
+    /// Every title form worth searching an indexer for, best first.
+    ///
+    /// A work has an English title and a romaji one, and an uploader may have
+    /// used either, so both are searched. The native form is deliberately
+    /// excluded: the Nyaa category queried is "Anime / English-translated",
+    /// where a Japanese title essentially never appears, so searching it would
+    /// only cost a request.
+    ///
+    /// Duplicates are collapsed case-insensitively and blank forms are dropped.
+    /// Returns an empty vector only when every form is missing or blank.
+    pub fn title_forms(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut forms = Vec::new();
+
+        for candidate in [
+            self.user_preferred.as_deref(),
+            self.english.as_deref(),
+            self.romaji.as_deref(),
+        ] {
+            let Some(trimmed) = candidate.map(str::trim).filter(|c| !c.is_empty()) else {
+                continue;
+            };
+
+            let key = trimmed.to_lowercase();
+            if seen.insert(key) {
+                forms.push(trimmed.to_string());
+            }
+        }
+
+        forms
+    }
 }
 
 /// A link to an official streaming source for a work.

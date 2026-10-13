@@ -27,6 +27,8 @@ pub use nyaa::{NyaaIndexer, NYAA_ENDPOINT};
 pub use query::SearchMode;
 pub use traits::{Indexer, IndexerError};
 
+use std::sync::Arc;
+
 use crate::types::{Release, ReleasePreference};
 
 /// What to search for, assembled from an [`crate::types::Anime`] by the UI.
@@ -179,6 +181,74 @@ pub fn refine(
     // list, which would hand the viewer the wrong episode.
     rank::rank(&mut kept, preference);
     kept
+}
+
+/// The set of indexers a search fans out to.
+///
+/// A `Vec<Arc<dyn Indexer>>` rather than one indexer, so adding a second source
+/// is a change in one place. Held behind an `Arc` so a caller can clone it and
+/// search without holding a lock across the await.
+///
+/// Lives here rather than in a frontend so both the Tauri and Qt apps search
+/// the same indexer set with the same fan-out.
+pub struct IndexerRegistry {
+    indexers: Vec<Arc<dyn Indexer>>,
+}
+
+impl IndexerRegistry {
+    /// A registry holding one Nyaa indexer.
+    pub fn new() -> Self {
+        Self {
+            indexers: vec![Arc::new(NyaaIndexer::new())],
+        }
+    }
+
+    /// A registry over an explicit set, for tests.
+    pub fn with_indexers(indexers: Vec<Arc<dyn Indexer>>) -> Self {
+        Self { indexers }
+    }
+
+    /// The indexers, in search order.
+    pub fn indexers(&self) -> &[Arc<dyn Indexer>] {
+        &self.indexers
+    }
+}
+
+impl Default for IndexerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Query every indexer concurrently and return one ranked list.
+///
+/// A failing indexer contributes nothing rather than an error: a single dead
+/// mirror should not turn a working search into a failure, and one slow source
+/// must not delay the others.
+pub async fn search_all(
+    indexers: &[Arc<dyn Indexer>],
+    request: &ReleaseRequest,
+    preference: &ReleasePreference,
+) -> Vec<Release> {
+    let mut handles = Vec::with_capacity(indexers.len());
+    for indexer in indexers {
+        let indexer = Arc::clone(indexer);
+        let request = request.clone();
+        handles.push(async move { search(indexer.as_ref(), &request, preference).await });
+    }
+
+    let mut merged: Vec<Release> = Vec::new();
+    for handle in handles {
+        if let Ok(mut found) = handle.await {
+            merged.append(&mut found);
+        }
+    }
+
+    // Each indexer already ranked its own results; re-ranking the merged set
+    // puts a better release from the second indexer above a worse one from the
+    // first, which per-indexer ranking cannot do.
+    rank::rank(&mut merged, preference);
+    merged
 }
 
 #[cfg(test)]
