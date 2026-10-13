@@ -20,6 +20,8 @@ Window {
     property bool initialBrowse: false
     // Set from Rust (KITSUNE_OPEN_SCHEDULE): push the schedule page on startup.
     property bool initialSchedule: false
+    // Set from Rust (KITSUNE_OPEN_TOP): push the top-rated page on startup.
+    property bool initialTop: false
 
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
@@ -69,6 +71,7 @@ Window {
         onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
         onOpenBrowse: () => stack.push(browseComponent, { "backend": root.backend })
         onOpenSchedule: () => stack.push(scheduleComponent, { "backend": root.backend })
+        onOpenTop: () => stack.push(topComponent, { "backend": root.backend })
     }
 
     Component {
@@ -93,6 +96,13 @@ Window {
         }
     }
 
+    Component {
+        id: topComponent
+        TopPage {
+            onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
+        }
+    }
+
     Component.onCompleted: {
         backend.getTrending(40)
         if (initialOpenId > 0) {
@@ -101,6 +111,8 @@ Window {
             stack.push(browseComponent, { "backend": root.backend })
         } else if (initialSchedule) {
             stack.push(scheduleComponent, { "backend": root.backend })
+        } else if (initialTop) {
+            stack.push(topComponent, { "backend": root.backend })
         }
     }
 }

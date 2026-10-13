@@ -13,6 +13,7 @@ Item {
     signal openAnime(int id)
     signal openBrowse()
     signal openSchedule()
+    signal openTop()
 
     ListModel { id: trendingModel }
 
@@ -58,6 +59,10 @@ Item {
                 NavButton {
                     label: "Browse"
                     onClicked: page.openBrowse()
+                }
+                NavButton {
+                    label: "Top"
+                    onClicked: page.openTop()
                 }
                 NavButton {
                     label: "Schedule"

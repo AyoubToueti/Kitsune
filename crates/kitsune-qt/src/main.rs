@@ -26,6 +26,8 @@ fn main() {
     let open_browse: bool = std::env::var("KITSUNE_OPEN_BROWSE").is_ok();
     // KITSUNE_OPEN_SCHEDULE=1 pushes the schedule page on startup.
     let open_schedule: bool = std::env::var("KITSUNE_OPEN_SCHEDULE").is_ok();
+    // KITSUNE_OPEN_TOP=1 pushes the top-rated page on startup.
+    let open_top: bool = std::env::var("KITSUNE_OPEN_TOP").is_ok();
 
     // `initialProperties` seeds the root object's properties before the QML
     // runs, so `initialOpenId` is already set when Component.onCompleted fires.
@@ -44,6 +46,10 @@ fn main() {
         props.insert(
             cxx_qt_lib::QString::from("initialSchedule"),
             cxx_qt_lib::QVariant::from(&open_schedule),
+        );
+        props.insert(
+            cxx_qt_lib::QString::from("initialTop"),
+            cxx_qt_lib::QVariant::from(&open_top),
         );
         if let Some(engine) = engine.as_mut() {
             engine.set_initial_properties(&props);
