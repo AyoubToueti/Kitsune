@@ -396,6 +396,22 @@ impl PlayerState {
         Ok(())
     }
 
+    /// Take a hold on a torrent without launching anything.
+    ///
+    /// The external-player path takes its hold inside [`Self::launch`]. An
+    /// embedded player (the Qt app renders libmpv in its own window) never
+    /// goes through that path, so it must hold the torrent itself: without a
+    /// hold, leaving the page would remove the torrent out from under a player
+    /// that is still reading it. Pair every call with
+    /// [`Self::release_torrent`].
+    pub fn hold_torrent(&self, id: usize) {
+        self.inner
+            .holds
+            .lock()
+            .expect("holds mutex poisoned")
+            .hold(id);
+    }
+
     /// The loopback URL that streams one file of one torrent.
     pub async fn stream_url(&self, torrent_id: usize, file_idx: usize) -> Result<String> {
         let session = self.session().await?;

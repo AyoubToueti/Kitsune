@@ -24,6 +24,9 @@ tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
 # for the actual encoding.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Background-task failure logs (torrent removal/release). Matches the core
+# crate's logging; the subscriber lives in kitsune-core::diagnostics::logging.
+tracing = "0.1.44"
 
 [build-dependencies]
 # Generates and compiles the C++ side of every #[cxx_qt::bridge].

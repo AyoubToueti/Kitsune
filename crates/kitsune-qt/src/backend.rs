@@ -88,6 +88,63 @@ pub mod qobject {
         #[cxx_name = "getEpisodes"]
         fn get_episodes(self: Pin<&mut Self>, mal_id: i64);
 
+        /// Search the indexers for a work's releases. `titles` is a JSON array
+        /// of title forms; `mode` is the search-mode wire string.
+        #[qinvokable]
+        #[cxx_name = "searchReleases"]
+        fn search_releases(
+            self: Pin<&mut Self>,
+            titles: QString,
+            episode: i32,
+            absolute_episode: i32,
+            mode: QString,
+        );
+
+        /// Add a magnet and return the files it resolves to.
+        #[qinvokable]
+        #[cxx_name = "addMagnet"]
+        fn add_magnet(self: Pin<&mut Self>, magnet_uri: QString);
+
+        /// Drop a torrent from the session.
+        #[qinvokable]
+        #[cxx_name = "removeTorrent"]
+        fn remove_torrent(self: Pin<&mut Self>, torrent_id: i64);
+
+        /// Restrict a torrent's download to a single file index.
+        #[qinvokable]
+        #[cxx_name = "setOnlyFiles"]
+        fn set_only_files(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64);
+
+        /// The loopback URL that streams one file of one torrent.
+        #[qinvokable]
+        #[cxx_name = "getStreamUrl"]
+        fn get_stream_url(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64);
+
+        /// Pause a torrent's transfer.
+        #[qinvokable]
+        #[cxx_name = "pauseTorrent"]
+        fn pause_torrent(self: Pin<&mut Self>, torrent_id: i64);
+
+        /// Resume a paused torrent's transfer.
+        #[qinvokable]
+        #[cxx_name = "resumeTorrent"]
+        fn resume_torrent(self: Pin<&mut Self>, torrent_id: i64);
+
+        /// A download-progress snapshot, or JSON `null` when unknown.
+        #[qinvokable]
+        #[cxx_name = "getTorrentStats"]
+        fn get_torrent_stats(self: Pin<&mut Self>, torrent_id: i64);
+
+        /// Take a hold on a torrent while the embedded player reads it.
+        #[qinvokable]
+        #[cxx_name = "holdTorrent"]
+        fn hold_torrent(self: Pin<&mut Self>, torrent_id: i64);
+
+        /// Release a hold, removing the torrent when it was the last one.
+        #[qinvokable]
+        #[cxx_name = "releaseTorrent"]
+        fn release_torrent(self: Pin<&mut Self>, torrent_id: i64);
+
         // --- Account (AniList list) ------------------------------------------
         //
         // NOTE: the interactive sign-in flow (open the authorise URL, catch the
@@ -260,6 +317,33 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "episodesFailed"]
         fn episodes_failed(self: Pin<&mut Self>, message: QString);
+
+        // --- Release / torrent results ---------------------------------------
+
+        #[qsignal]
+        #[cxx_name = "releasesReady"]
+        fn releases_ready(self: Pin<&mut Self>, json: QString);
+        #[qsignal]
+        #[cxx_name = "releasesFailed"]
+        fn releases_failed(self: Pin<&mut Self>, message: QString);
+
+        #[qsignal]
+        #[cxx_name = "torrentAdded"]
+        fn torrent_added(self: Pin<&mut Self>, json: QString);
+        #[qsignal]
+        #[cxx_name = "torrentAddFailed"]
+        fn torrent_add_failed(self: Pin<&mut Self>, message: QString);
+
+        #[qsignal]
+        #[cxx_name = "streamUrlReady"]
+        fn stream_url_ready(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64, url: QString);
+        #[qsignal]
+        #[cxx_name = "streamUrlFailed"]
+        fn stream_url_failed(self: Pin<&mut Self>, message: QString);
+
+        #[qsignal]
+        #[cxx_name = "torrentStatsReady"]
+        fn torrent_stats_ready(self: Pin<&mut Self>, json: QString);
     }
 
     // Enables `self.qt_thread()` and the `queue(...)` used to hop back onto the
@@ -275,9 +359,11 @@ use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
 use kitsune_core::auth::{TokenStore, flow};
+use kitsune_core::indexer::{search_all, IndexerRegistry, ReleaseRequest, SearchMode};
+use kitsune_core::player::state::PlayerState;
 use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
 use kitsune_core::settings::{Settings, SettingsStore};
-use kitsune_core::types::{BrowseQuery, ListFilter, ListStatus};
+use kitsune_core::types::{BrowseQuery, ListFilter, ListStatus, ReleasePreference};
 
 /// The default page size, mirroring `commands::DEFAULT_LIMIT` in the Tauri app.
 const DEFAULT_LIMIT: u32 = 20;
@@ -300,6 +386,12 @@ pub struct BackendRust {
     tokens: Arc<TokenStore>,
     /// The reader's preferences, read and written by the Qt app.
     settings: Arc<SettingsStore>,
+    /// The indexers a release search fans out to.
+    indexers: Arc<IndexerRegistry>,
+    /// The torrent engine + stream bridge + player holds, started lazily on
+    /// the first playback. Shares the settings store so the reader's download
+    /// directory and player preferences are honoured.
+    player: Arc<PlayerState>,
 }
 
 impl Default for BackendRust {
@@ -321,13 +413,17 @@ impl Default for BackendRust {
             anilist.set_token(Some(token));
         }
 
+        let settings = Arc::new(SettingsStore::new());
+
         Self {
             runtime: Arc::new(runtime),
             provider: anilist.clone(),
             anilist,
             episodes: Arc::new(JikanProvider::new()),
             tokens,
-            settings: Arc::new(SettingsStore::new()),
+            player: Arc::new(PlayerState::with_settings(settings.clone())),
+            settings,
+            indexers: Arc::new(IndexerRegistry::new()),
         }
     }
 }
@@ -525,6 +621,194 @@ impl qobject::Backend {
                     let _ = qt_thread
                         .queue(move |qobject| qobject.episodes_failed(QString::from(&message)));
                 }
+            }
+        });
+    }
+
+    // --- Releases & torrents ----------------------------------------------
+
+    fn search_releases(
+        self: Pin<&mut Self>,
+        titles: QString,
+        episode: i32,
+        absolute_episode: i32,
+        mode: QString,
+    ) {
+        let titles = titles.to_string();
+        let mode = mode.to_string();
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let indexers = Arc::clone(&self.rust().indexers);
+        let settings = Arc::clone(&self.rust().settings);
+
+        runtime.spawn(async move {
+            let titles: Vec<String> = match serde_json::from_str(&titles) {
+                Ok(titles) => titles,
+                Err(err) => {
+                    let message = format!("bad titles payload: {err}");
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.releases_failed(QString::from(&message))
+                    });
+                    return;
+                }
+            };
+
+            // `<= 0` means "no episode" (a film or a title-level search).
+            let episode = (episode > 0).then_some(episode as u32);
+            let absolute_episode = (absolute_episode > 0).then_some(absolute_episode as u32);
+
+            let mode: SearchMode = match serde_json::from_value(serde_json::Value::String(mode)) {
+                Ok(mode) => mode,
+                Err(err) => {
+                    let message = format!("unknown search mode: {err}");
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.releases_failed(QString::from(&message))
+                    });
+                    return;
+                }
+            };
+
+            let request = ReleaseRequest {
+                titles,
+                episode,
+                absolute_episode,
+                mode,
+            };
+
+            // The stored preference steers ranking, so the settings page takes
+            // effect without every search passing it.
+            let preference = {
+                let stored = settings.read();
+                ReleasePreference {
+                    preferred_resolutions: stored.preferred_resolutions,
+                    min_seeders: stored.min_seeders,
+                }
+            };
+
+            let found = search_all(indexers.indexers(), &request, &preference).await;
+            let json = serde_json::to_string(&found).unwrap_or_else(|_| "[]".into());
+            let _ = qt_thread.queue(move |qobject| qobject.releases_ready(QString::from(&json)));
+        });
+    }
+
+    fn add_magnet(self: Pin<&mut Self>, magnet_uri: QString) {
+        let magnet_uri = magnet_uri.to_string();
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            match player.add_magnet(&magnet_uri).await {
+                Ok(handle) => {
+                    let json = serde_json::to_string(&handle).unwrap_or_else(|_| "null".into());
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.torrent_added(QString::from(&json)));
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.torrent_add_failed(QString::from(&message)));
+                }
+            }
+        });
+    }
+
+    fn remove_torrent(self: Pin<&mut Self>, torrent_id: i64) {
+        let id = torrent_id as usize;
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            if let Err(err) = player.remove_torrent(id).await {
+                tracing::warn!("failed to remove torrent {id}: {err:#}");
+            }
+        });
+    }
+
+    fn set_only_files(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64) {
+        let id = torrent_id as usize;
+        let file = file_idx as usize;
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            // Non-fatal: librqbit rejects this while a torrent is still
+            // initializing, and playback can proceed with the default order.
+            if let Err(err) = player.set_only_files(id, vec![file]).await {
+                tracing::warn!("set_only_files for torrent {id} failed: {err:#}");
+            }
+        });
+    }
+
+    fn get_stream_url(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64) {
+        let id = torrent_id as usize;
+        let file = file_idx as usize;
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            match player.stream_url(id, file).await {
+                Ok(url) => {
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.stream_url_ready(id as i64, file as i64, QString::from(&url))
+                    });
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.stream_url_failed(QString::from(&message)));
+                }
+            }
+        });
+    }
+
+    fn pause_torrent(self: Pin<&mut Self>, torrent_id: i64) {
+        let id = torrent_id as usize;
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            if let Err(err) = player.pause_torrent(id).await {
+                tracing::warn!("failed to pause torrent {id}: {err:#}");
+            }
+        });
+    }
+
+    fn resume_torrent(self: Pin<&mut Self>, torrent_id: i64) {
+        let id = torrent_id as usize;
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            if let Err(err) = player.resume_torrent(id).await {
+                tracing::warn!("failed to resume torrent {id}: {err:#}");
+            }
+        });
+    }
+
+    fn get_torrent_stats(self: Pin<&mut Self>, torrent_id: i64) {
+        // Synchronous: a snapshot read from the live session, no await.
+        let progress = self.rust().player.torrent_progress(torrent_id as usize);
+        let json = serde_json::to_string(&progress).unwrap_or_else(|_| "null".into());
+        self.torrent_stats_ready(QString::from(&json));
+    }
+
+    fn hold_torrent(self: Pin<&mut Self>, torrent_id: i64) {
+        // Synchronous and cheap: takes the hold before any removal can race it.
+        self.rust().player.hold_torrent(torrent_id as usize);
+    }
+
+    fn release_torrent(self: Pin<&mut Self>, torrent_id: i64) {
+        let id = torrent_id as usize;
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            if let Err(err) = player.release_torrent(id).await {
+                tracing::warn!("failed to release torrent {id}: {err:#}");
             }
         });
     }
