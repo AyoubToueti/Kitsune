@@ -11,6 +11,7 @@ fn main() {
             .qml_file("qml/main.qml")
             .qml_file("qml/HomePage.qml")
             .qml_file("qml/DetailPage.qml")
+            .qml_file("qml/BrowsePage.qml")
             .qml_file("qml/PosterCard.qml")
             // Theme is a `pragma Singleton`; the qmldir must mark it as one or
             // QML refuses to import it.

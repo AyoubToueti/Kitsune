@@ -11,6 +11,7 @@ Item {
     property alias status: statusLabel.text
 
     signal openAnime(int id)
+    signal openBrowse()
 
     ListModel { id: trendingModel }
 
@@ -43,6 +44,32 @@ Item {
                     text: "Loading…"
                     color: Theme.inkFaint
                     font.pixelSize: 13
+                }
+            }
+
+            // Browse entry, right-aligned.
+            Rectangle {
+                anchors.right: parent.right
+                anchors.rightMargin: Theme.pad
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 8
+                color: browseHover.hovered ? Theme.accent : Theme.surfaceRaised
+                implicitWidth: browseLabel.implicitWidth + 24
+                implicitHeight: 36
+
+                Text {
+                    id: browseLabel
+                    anchors.centerIn: parent
+                    text: "Browse"
+                    color: Theme.ink
+                    font.pixelSize: 14
+                    font.bold: true
+                }
+
+                HoverHandler { id: browseHover }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: page.openBrowse()
                 }
             }
         }

@@ -16,6 +16,8 @@ Window {
     // Set from Rust (KITSUNE_OPEN_ID): when > 0, the detail page is pushed on
     // startup so it can be screenshotted without a click.
     property int initialOpenId: 0
+    // Set from Rust (KITSUNE_OPEN_BROWSE): push the browse page on startup.
+    property bool initialBrowse: false
 
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
@@ -63,6 +65,7 @@ Window {
         id: home
         visible: false
         onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
+        onOpenBrowse: () => stack.push(browseComponent, { "backend": root.backend })
     }
 
     Component {
@@ -73,10 +76,19 @@ Window {
         }
     }
 
+    Component {
+        id: browseComponent
+        BrowsePage {
+            onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
+        }
+    }
+
     Component.onCompleted: {
         backend.getTrending(40)
         if (initialOpenId > 0) {
             stack.push(detailComponent, { "animeId": initialOpenId, "backend": root.backend })
+        } else if (initialBrowse) {
+            stack.push(browseComponent, { "backend": root.backend })
         }
     }
 }

@@ -22,6 +22,8 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    // KITSUNE_OPEN_BROWSE=1 pushes the browse page on startup, for screenshots.
+    let open_browse: bool = std::env::var("KITSUNE_OPEN_BROWSE").is_ok();
 
     // `initialProperties` seeds the root object's properties before the QML
     // runs, so `initialOpenId` is already set when Component.onCompleted fires.
@@ -32,6 +34,10 @@ fn main() {
         props.insert(
             cxx_qt_lib::QString::from("initialOpenId"),
             cxx_qt_lib::QVariant::from(&open_id),
+        );
+        props.insert(
+            cxx_qt_lib::QString::from("initialBrowse"),
+            cxx_qt_lib::QVariant::from(&open_browse),
         );
         if let Some(engine) = engine.as_mut() {
             engine.set_initial_properties(&props);
