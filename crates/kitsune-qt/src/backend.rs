@@ -88,6 +88,93 @@ pub mod qobject {
         #[cxx_name = "getEpisodes"]
         fn get_episodes(self: Pin<&mut Self>, mal_id: i64);
 
+        // --- Account (AniList list) ------------------------------------------
+        //
+        // NOTE: the interactive sign-in flow (open the authorise URL, catch the
+        // `kitsune://` deep link) is NOT ported yet -- it needs OS scheme
+        // registration. These commands work against a token already stored on
+        // disk (e.g. written by the Tauri build), so a signed-in reader sees
+        // their list without re-authenticating.
+
+        /// The URL to open so the reader can authorise Kitsune.
+        #[qinvokable]
+        #[cxx_name = "beginLogin"]
+        fn begin_login(self: Pin<&mut Self>) -> QString;
+
+        /// Whether a token is stored.
+        #[qinvokable]
+        #[cxx_name = "authStatus"]
+        fn auth_status(self: Pin<&mut Self>);
+
+        /// Forget the stored token.
+        #[qinvokable]
+        #[cxx_name = "logout"]
+        fn logout(self: Pin<&mut Self>);
+
+        /// The works the reader is currently watching, most recent first.
+        #[qinvokable]
+        #[cxx_name = "continueWatching"]
+        fn continue_watching(self: Pin<&mut Self>, limit: i32);
+
+        /// The reader's whole list, grouped-ready.
+        #[qinvokable]
+        #[cxx_name = "userList"]
+        fn user_list(self: Pin<&mut Self>);
+
+        /// Put a work on the reader's list / move it between lists.
+        /// `status` is the wire string ("current", "completed", ...).
+        #[qinvokable]
+        #[cxx_name = "setListEntry"]
+        fn set_list_entry(
+            self: Pin<&mut Self>,
+            media_id: i64,
+            status: QString,
+            progress: i32,
+        );
+
+        /// Remove a work from the reader's list.
+        #[qinvokable]
+        #[cxx_name = "deleteListEntry"]
+        fn delete_list_entry(self: Pin<&mut Self>, entry_id: i64);
+
+        /// Where a work sits on the reader's list, or JSON `null`.
+        #[qinvokable]
+        #[cxx_name = "getListEntry"]
+        fn get_list_entry(self: Pin<&mut Self>, media_id: i64);
+
+        // --- Account results -------------------------------------------------
+
+        #[qsignal]
+        #[cxx_name = "authStatusReady"]
+        fn auth_status_ready(self: Pin<&mut Self>, signed_in: bool);
+
+        #[qsignal]
+        #[cxx_name = "continueWatchingReady"]
+        fn continue_watching_ready(self: Pin<&mut Self>, json: QString);
+        #[qsignal]
+        #[cxx_name = "continueWatchingFailed"]
+        fn continue_watching_failed(self: Pin<&mut Self>, message: QString);
+
+        #[qsignal]
+        #[cxx_name = "userListReady"]
+        fn user_list_ready(self: Pin<&mut Self>, json: QString);
+        #[qsignal]
+        #[cxx_name = "userListFailed"]
+        fn user_list_failed(self: Pin<&mut Self>, message: QString);
+
+        #[qsignal]
+        #[cxx_name = "listEntryReady"]
+        fn list_entry_ready(self: Pin<&mut Self>, json: QString);
+
+        /// Emitted after any successful list write, so views can re-read.
+        #[qsignal]
+        #[cxx_name = "listChanged"]
+        fn list_changed(self: Pin<&mut Self>);
+
+        #[qsignal]
+        #[cxx_name = "authError"]
+        fn auth_error(self: Pin<&mut Self>, message: QString);
+
         // --- Results (one ok/err pair per command) ----------------------------
 
         #[qsignal]
@@ -166,8 +253,9 @@ use std::sync::Arc;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
+use kitsune_core::auth::{TokenStore, flow};
 use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
-use kitsune_core::types::{BrowseQuery, ListFilter};
+use kitsune_core::types::{BrowseQuery, ListFilter, ListStatus};
 
 /// The default page size, mirroring `commands::DEFAULT_LIMIT` in the Tauri app.
 const DEFAULT_LIMIT: u32 = 20;
@@ -180,7 +268,14 @@ const DEFAULT_LIMIT: u32 = 20;
 pub struct BackendRust {
     runtime: Arc<tokio::runtime::Runtime>,
     provider: Arc<dyn AnimeProvider>,
+    /// The concrete AniList handle, for account operations that are not on the
+    /// `AnimeProvider` trait (token, list writes). Points at the SAME instance
+    /// as `provider`, so a token set here is used by every metadata call.
+    anilist: Arc<AniListProvider>,
     episodes: Arc<JikanProvider>,
+    /// The AniList token, read from disk at startup so a signed-in reader
+    /// stays signed in across restarts.
+    tokens: Arc<TokenStore>,
 }
 
 impl Default for BackendRust {
@@ -193,10 +288,21 @@ impl Default for BackendRust {
             .build()
             .expect("failed to build the tokio runtime");
 
+        let anilist = Arc::new(AniListProvider::new());
+        let tokens = Arc::new(TokenStore::new());
+
+        // Restore any stored token into the provider, so a reader who signed in
+        // previously is authenticated from the first request.
+        if let Some(token) = tokens.read() {
+            anilist.set_token(Some(token));
+        }
+
         Self {
             runtime: Arc::new(runtime),
-            provider: Arc::new(AniListProvider::new()),
+            provider: anilist.clone(),
+            anilist,
             episodes: Arc::new(JikanProvider::new()),
+            tokens,
         }
     }
 }
@@ -396,6 +502,162 @@ impl qobject::Backend {
                 }
             }
         });
+    }
+
+    // --- Account -----------------------------------------------------------
+
+    /// The URL to open in a browser to authorise Kitsune.
+    ///
+    /// Synchronous: it only builds a string, no network.
+    fn begin_login(self: Pin<&mut Self>) -> QString {
+        QString::from(flow::authorize_url())
+    }
+
+    fn auth_status(self: Pin<&mut Self>) {
+        let signed_in = self.rust().tokens.has_token();
+        self.auth_status_ready(signed_in);
+    }
+
+    fn logout(self: Pin<&mut Self>) {
+        // Clear the store, then the live provider, so signing out takes effect
+        // on the next request rather than at the next restart.
+        if let Err(err) = self.rust().tokens.clear() {
+            let message = err.to_string();
+            self.auth_error(QString::from(&message));
+            return;
+        }
+        self.rust().anilist.clear_token();
+        self.auth_status_ready(false);
+    }
+
+    /// Run a concrete-`AniListProvider` task on the runtime and deliver the
+    /// result back on the Qt thread. The counterpart of `spawn_metadata` for
+    /// account operations that are not on the `AnimeProvider` trait.
+    fn spawn_anilist<M, Fut>(
+        self: Pin<&mut Self>,
+        work: M,
+        ok: fn(Pin<&mut qobject::Backend>, QString),
+        err: fn(Pin<&mut qobject::Backend>, QString),
+    ) where
+        M: FnOnce(Arc<AniListProvider>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<String, String>> + Send + 'static,
+    {
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let anilist = Arc::clone(&self.rust().anilist);
+
+        runtime.spawn(async move {
+            match work(anilist).await {
+                Ok(json) => {
+                    let _ = qt_thread.queue(move |qobject| ok(qobject, QString::from(&json)));
+                }
+                Err(message) => {
+                    let _ =
+                        qt_thread.queue(move |qobject| err(qobject, QString::from(&message)));
+                }
+            }
+        });
+    }
+
+    fn continue_watching(self: Pin<&mut Self>, limit: i32) {
+        let limit = limit_or_default(limit);
+        self.spawn_anilist(
+            move |anilist| async move {
+                anilist
+                    .continue_watching(limit)
+                    .await
+                    .map(|items| json_or_empty(&items))
+                    .map_err(|err| err.to_string())
+            },
+            Self::continue_watching_ready,
+            Self::continue_watching_failed,
+        );
+    }
+
+    fn user_list(self: Pin<&mut Self>) {
+        self.spawn_anilist(
+            move |anilist| async move {
+                anilist
+                    .user_list()
+                    .await
+                    .map(|entries| json_or_empty(&entries))
+                    .map_err(|err| err.to_string())
+            },
+            Self::user_list_ready,
+            Self::user_list_failed,
+        );
+    }
+
+    fn set_list_entry(self: Pin<&mut Self>, media_id: i64, status: QString, progress: i32) {
+        let status = status.to_string();
+        // `progress <= 0` means "leave progress alone" (the Tauri command's
+        // `Option<u32>` None); sending 0 would reset a tracked position.
+        let progress = if progress > 0 { Some(progress as u32) } else { None };
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let anilist = Arc::clone(&self.rust().anilist);
+
+        runtime.spawn(async move {
+            let parsed: ListStatus = match serde_json::from_value(serde_json::Value::String(
+                status,
+            )) {
+                Ok(s) => s,
+                Err(err) => {
+                    let message = format!("unknown list status: {err}");
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.auth_error(QString::from(&message)));
+                    return;
+                }
+            };
+
+            match anilist.save_list_entry(media_id, parsed, progress).await {
+                Ok(()) => {
+                    // Only after the write succeeded: a failed save did not
+                    // change the list, so telling the UI to re-read would lie.
+                    let _ = qt_thread.queue(move |qobject| qobject.list_changed());
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.auth_error(QString::from(&message)));
+                }
+            }
+        });
+    }
+
+    fn delete_list_entry(self: Pin<&mut Self>, entry_id: i64) {
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let anilist = Arc::clone(&self.rust().anilist);
+
+        runtime.spawn(async move {
+            match anilist.delete_list_entry(entry_id).await {
+                Ok(()) => {
+                    let _ = qt_thread.queue(move |qobject| qobject.list_changed());
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.auth_error(QString::from(&message)));
+                }
+            }
+        });
+    }
+
+    fn get_list_entry(self: Pin<&mut Self>, media_id: i64) {
+        self.spawn_anilist(
+            move |anilist| async move {
+                anilist
+                    .list_entry(media_id)
+                    .await
+                    // `None` -> JSON `null`, which QML reads as "not on list".
+                    .map(|entry| serde_json::to_string(&entry).unwrap_or_else(|_| "null".into()))
+                    .map_err(|err| err.to_string())
+            },
+            Self::list_entry_ready,
+            Self::auth_error,
+        );
     }
 }
 
