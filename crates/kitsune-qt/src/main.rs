@@ -4,6 +4,7 @@
 //! `qrc:/qt/qml/com/kitsune/app/` prefix) into a `QQmlApplicationEngine`.
 
 mod backend;
+mod screenshot;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
@@ -20,6 +21,17 @@ fn main() {
         // to stderr, which is the signal the smoke run greps for.
         engine.load(&QUrl::from("qrc:/qt/qml/com/kitsune/app/qml/main.qml"));
         eprintln!("kitsune-qt: load() returned");
+    }
+
+    // Dev/CI aid: with KITSUNE_SCREENSHOT=<path> set, grab the window after the
+    // scene settles and quit. External capture tools are unreliable here (see
+    // repo memory), so the app photographs itself.
+    if let Ok(path) = std::env::var("KITSUNE_SCREENSHOT") {
+        let delay = std::env::var("KITSUNE_SCREENSHOT_DELAY_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2500);
+        screenshot::save_after(&path, delay);
     }
 
     if let Some(app) = app.as_mut() {
