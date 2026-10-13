@@ -4,17 +4,24 @@
 //! `qrc:/qt/qml/com/kitsune/app/` prefix) into a `QQmlApplicationEngine`.
 
 mod backend;
+mod mpv;
 mod screenshot;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() {
-    // Qt sets LC_NUMERIC; libmpv (added later) requires "C". Setting it here
-    // keeps the same discipline the old Tauri app used.
-    libc_setlocale();
-
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
+
+    // Reset LC_NUMERIC to "C" AFTER constructing the app: Qt's QGuiApplication
+    // constructor sets the locale from the environment, which overrides an
+    // earlier setlocale. libmpv parses numbers with strtod and requires a dot
+    // decimal separator, so a non-C locale makes it abort with
+    // "Non-C locale detected".
+    libc_setlocale();
+
+    // Register the embedded mpv QML item before any QML loads.
+    mpv::register();
 
     // Dev aid: KITSUNE_OPEN_ID=<id> makes the app push the detail page for that
     // AniList id on startup, so a screenshot can capture it without a click.
@@ -32,6 +39,8 @@ fn main() {
     let open_mylist: bool = std::env::var("KITSUNE_OPEN_MYLIST").is_ok();
     // KITSUNE_OPEN_SETTINGS=1 pushes the settings page on startup.
     let open_settings: bool = std::env::var("KITSUNE_OPEN_SETTINGS").is_ok();
+    // KITSUNE_OPEN_WATCH=<url> pushes the watch page and plays the URL.
+    let watch_url: String = std::env::var("KITSUNE_OPEN_WATCH").unwrap_or_default();
 
     // `initialProperties` seeds the root object's properties before the QML
     // runs, so `initialOpenId` is already set when Component.onCompleted fires.
@@ -62,6 +71,11 @@ fn main() {
         props.insert(
             cxx_qt_lib::QString::from("initialSettings"),
             cxx_qt_lib::QVariant::from(&open_settings),
+        );
+        let watch_qstring = cxx_qt_lib::QString::from(&watch_url);
+        props.insert(
+            cxx_qt_lib::QString::from("initialWatchUrl"),
+            cxx_qt_lib::QVariant::from(&watch_qstring),
         );
         if let Some(engine) = engine.as_mut() {
             engine.set_initial_properties(&props);

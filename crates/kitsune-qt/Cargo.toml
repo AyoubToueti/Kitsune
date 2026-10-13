@@ -28,3 +28,5 @@ serde_json = "1"
 [build-dependencies]
 # Generates and compiles the C++ side of every #[cxx_qt::bridge].
 cxx-qt-build = "0.10"
+# Locates libmpv's include/link flags for the embedded player.
+pkg-config = "0.3"

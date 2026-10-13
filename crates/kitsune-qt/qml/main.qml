@@ -10,22 +10,18 @@ Window {
     title: "Kitsune"
     color: Theme.surface
 
-    // Exposed so child pages (DetailPage) can reach the same Backend instance.
+    // Exposed so child pages can reach the same Backend instance.
     property alias backend: backend
 
-    // Set from Rust (KITSUNE_OPEN_ID): when > 0, the detail page is pushed on
-    // startup so it can be screenshotted without a click.
+    // Startup flags, set from Rust via engine.set_initial_properties so a
+    // screen can be opened (and screenshotted) without a click.
     property int initialOpenId: 0
-    // Set from Rust (KITSUNE_OPEN_BROWSE): push the browse page on startup.
     property bool initialBrowse: false
-    // Set from Rust (KITSUNE_OPEN_SCHEDULE): push the schedule page on startup.
     property bool initialSchedule: false
-    // Set from Rust (KITSUNE_OPEN_TOP): push the top-rated page on startup.
     property bool initialTop: false
-    // Set from Rust (KITSUNE_OPEN_MYLIST): push the list page on startup.
     property bool initialMyList: false
-    // Set from Rust (KITSUNE_OPEN_SETTINGS): push the settings page on startup.
     property bool initialSettings: false
+    property string initialWatchUrl: ""
 
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
@@ -57,7 +53,7 @@ Window {
         return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
     }
 
-    // The navigation stack: Home -> Detail -> ...
+    // The navigation stack: Home -> Detail / Browse / ...
     StackView {
         id: stack
         anchors.fill: parent
@@ -123,6 +119,13 @@ Window {
         }
     }
 
+    Component {
+        id: watchComponent
+        WatchPage {
+            onBack: stack.pop()
+        }
+    }
+
     Component.onCompleted: {
         backend.getTrending(40)
         if (initialOpenId > 0) {
@@ -137,6 +140,8 @@ Window {
             stack.push(myListComponent, { "backend": root.backend })
         } else if (initialSettings) {
             stack.push(settingsComponent, { "backend": root.backend })
+        } else if (initialWatchUrl.length > 0) {
+            stack.push(watchComponent, { "streamUrl": initialWatchUrl })
         }
     }
 }

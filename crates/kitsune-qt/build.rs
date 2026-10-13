@@ -3,7 +3,7 @@
 //! `new_qml_module` also embeds the QML files into a Qt resource under
 //! `qrc:/qt/qml/<uri-as-dirs>/...`, which is how `main.rs` loads them.
 
-use cxx_qt_build::{CxxQtBuilder, QmlFile, QmlModule};
+use cxx_qt_build::{CppFile, CxxQtBuilder, QmlFile, QmlModule};
 
 fn main() {
     CxxQtBuilder::new_qml_module(
@@ -16,19 +16,39 @@ fn main() {
             .qml_file("qml/TopPage.qml")
             .qml_file("qml/MyListPage.qml")
             .qml_file("qml/SettingsPage.qml")
+            .qml_file("qml/WatchPage.qml")
             .qml_file("qml/NavButton.qml")
             .qml_file("qml/PosterCard.qml")
             // Theme is a `pragma Singleton`; the qmldir must mark it as one or
             // QML refuses to import it.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true)),
     )
-    .files(["src/backend.rs", "src/screenshot.rs"])
-    // Link QtQuick so its headers (QQuickWindow) are on the include path for
-    // the raw C++ screenshot helper below.
+    .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])
+    // Link QtQuick so its headers (QQuickWindow, QQuickFramebufferObject) are on
+    // the include path, and QtOpenGL for QOpenGLFramebufferObject (the mpv
+    // render target).
     .qt_module("Quick")
-    // The screenshot helper is plain C++ driven from Rust, so it is added as a
-    // raw source file rather than a bridge.
-    .cpp_files(["cpp/screenshot.cpp"])
+    .qt_module("OpenGL")
+    // The screenshot helper is plain C++ driven from Rust.
+    .cpp_file("cpp/screenshot.cpp")
+    // `MpvObject` has a Q_OBJECT (virtuals + signals). CppFile's defaults run
+    // moc over the HEADER and compile the .cpp, so both files are listed.
+    .cpp_file(CppFile::from("cpp/mpvitem.h"))
+    .cpp_file(CppFile::from("cpp/mpvitem.cpp"))
     .include_dir("cpp")
     .build();
+
+    // Link libmpv, which the mpv item calls directly. `pkg-config` supplies the
+    // correct -L/-l flags on NixOS; a bare `-lmpv` is the fallback.
+    match pkg_config::Config::new().probe("mpv") {
+        Ok(lib) => {
+            for path in &lib.link_paths {
+                println!("cargo:rustc-link-search=native={}", path.display());
+            }
+            for name in &lib.libs {
+                println!("cargo:rustc-link-lib=dylib={}", name);
+            }
+        }
+        Err(_) => println!("cargo:rustc-link-lib=dylib=mpv"),
+    }
 }
