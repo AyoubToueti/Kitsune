@@ -15,6 +15,7 @@ fn main() {
             .qml_file("qml/SchedulePage.qml")
             .qml_file("qml/TopPage.qml")
             .qml_file("qml/MyListPage.qml")
+            .qml_file("qml/SettingsPage.qml")
             .qml_file("qml/NavButton.qml")
             .qml_file("qml/PosterCard.qml")
             // Theme is a `pragma Singleton`; the qmldir must mark it as one or

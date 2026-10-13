@@ -15,6 +15,7 @@ Item {
     signal openSchedule()
     signal openTop()
     signal openMyList()
+    signal openSettings()
 
     ListModel { id: trendingModel }
 
@@ -72,6 +73,10 @@ Item {
                 NavButton {
                     label: "My List"
                     onClicked: page.openMyList()
+                }
+                NavButton {
+                    label: "Settings"
+                    onClicked: page.openSettings()
                 }
             }
         }

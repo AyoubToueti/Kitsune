@@ -142,6 +142,27 @@ pub mod qobject {
         #[cxx_name = "getListEntry"]
         fn get_list_entry(self: Pin<&mut Self>, media_id: i64);
 
+        // --- Settings --------------------------------------------------------
+
+        /// The reader's stored settings as JSON.
+        #[qinvokable]
+        #[cxx_name = "getSettings"]
+        fn get_settings(self: Pin<&mut Self>);
+
+        /// Replace the stored settings. `json` is a full `Settings` object.
+        #[qinvokable]
+        #[cxx_name = "setSettings"]
+        fn set_settings(self: Pin<&mut Self>, json: QString);
+
+        // --- Settings results -------------------------------------------------
+
+        #[qsignal]
+        #[cxx_name = "settingsReady"]
+        fn settings_ready(self: Pin<&mut Self>, json: QString);
+        #[qsignal]
+        #[cxx_name = "settingsFailed"]
+        fn settings_failed(self: Pin<&mut Self>, message: QString);
+
         // --- Account results -------------------------------------------------
 
         #[qsignal]
@@ -255,6 +276,7 @@ use cxx_qt_lib::QString;
 
 use kitsune_core::auth::{TokenStore, flow};
 use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
+use kitsune_core::settings::{Settings, SettingsStore};
 use kitsune_core::types::{BrowseQuery, ListFilter, ListStatus};
 
 /// The default page size, mirroring `commands::DEFAULT_LIMIT` in the Tauri app.
@@ -276,6 +298,8 @@ pub struct BackendRust {
     /// The AniList token, read from disk at startup so a signed-in reader
     /// stays signed in across restarts.
     tokens: Arc<TokenStore>,
+    /// The reader's preferences, read and written by the Qt app.
+    settings: Arc<SettingsStore>,
 }
 
 impl Default for BackendRust {
@@ -303,6 +327,7 @@ impl Default for BackendRust {
             anilist,
             episodes: Arc::new(JikanProvider::new()),
             tokens,
+            settings: Arc::new(SettingsStore::new()),
         }
     }
 }
@@ -658,6 +683,40 @@ impl qobject::Backend {
             Self::list_entry_ready,
             Self::auth_error,
         );
+    }
+
+    // --- Settings ----------------------------------------------------------
+
+    /// Both settings commands are synchronous file reads/writes, so they run
+    /// on the Qt thread directly rather than through the runtime.
+    fn get_settings(self: Pin<&mut Self>) {
+        let settings = self.rust().settings.read();
+        let json = serde_json::to_string(&settings).unwrap_or_else(|_| "null".to_string());
+        self.settings_ready(QString::from(&json));
+    }
+
+    fn set_settings(self: Pin<&mut Self>, json: QString) {
+        let json = json.to_string();
+        let parsed: Settings = match serde_json::from_str(&json) {
+            Ok(s) => s,
+            Err(err) => {
+                let message = format!("bad settings payload: {err}");
+                self.settings_failed(QString::from(&message));
+                return;
+            }
+        };
+
+        if let Err(err) = self.rust().settings.write(&parsed) {
+            let message = err.to_string();
+            self.settings_failed(QString::from(&message));
+            return;
+        }
+
+        // Emit what was actually persisted, so a clamped value (the auto-launch
+        // threshold) is visible without a second read.
+        let stored = self.rust().settings.read();
+        let out = serde_json::to_string(&stored).unwrap_or_else(|_| "null".to_string());
+        self.settings_ready(QString::from(&out));
     }
 }
 

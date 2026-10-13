@@ -30,6 +30,8 @@ fn main() {
     let open_top: bool = std::env::var("KITSUNE_OPEN_TOP").is_ok();
     // KITSUNE_OPEN_MYLIST=1 pushes the reader's list page on startup.
     let open_mylist: bool = std::env::var("KITSUNE_OPEN_MYLIST").is_ok();
+    // KITSUNE_OPEN_SETTINGS=1 pushes the settings page on startup.
+    let open_settings: bool = std::env::var("KITSUNE_OPEN_SETTINGS").is_ok();
 
     // `initialProperties` seeds the root object's properties before the QML
     // runs, so `initialOpenId` is already set when Component.onCompleted fires.
@@ -56,6 +58,10 @@ fn main() {
         props.insert(
             cxx_qt_lib::QString::from("initialMyList"),
             cxx_qt_lib::QVariant::from(&open_mylist),
+        );
+        props.insert(
+            cxx_qt_lib::QString::from("initialSettings"),
+            cxx_qt_lib::QVariant::from(&open_settings),
         );
         if let Some(engine) = engine.as_mut() {
             engine.set_initial_properties(&props);

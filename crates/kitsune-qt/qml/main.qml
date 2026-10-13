@@ -24,6 +24,8 @@ Window {
     property bool initialTop: false
     // Set from Rust (KITSUNE_OPEN_MYLIST): push the list page on startup.
     property bool initialMyList: false
+    // Set from Rust (KITSUNE_OPEN_SETTINGS): push the settings page on startup.
+    property bool initialSettings: false
 
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
@@ -75,6 +77,7 @@ Window {
         onOpenSchedule: () => stack.push(scheduleComponent, { "backend": root.backend })
         onOpenTop: () => stack.push(topComponent, { "backend": root.backend })
         onOpenMyList: () => stack.push(myListComponent, { "backend": root.backend })
+        onOpenSettings: () => stack.push(settingsComponent, { "backend": root.backend })
     }
 
     Component {
@@ -113,6 +116,13 @@ Window {
         }
     }
 
+    Component {
+        id: settingsComponent
+        SettingsPage {
+            backend: root.backend
+        }
+    }
+
     Component.onCompleted: {
         backend.getTrending(40)
         if (initialOpenId > 0) {
@@ -125,6 +135,8 @@ Window {
             stack.push(topComponent, { "backend": root.backend })
         } else if (initialMyList) {
             stack.push(myListComponent, { "backend": root.backend })
+        } else if (initialSettings) {
+            stack.push(settingsComponent, { "backend": root.backend })
         }
     }
 }
