@@ -12,6 +12,7 @@ Item {
 
     signal openAnime(int id)
     signal openBrowse()
+    signal openSchedule()
 
     ListModel { id: trendingModel }
 
@@ -47,29 +48,20 @@ Item {
                 }
             }
 
-            // Browse entry, right-aligned.
-            Rectangle {
+            // Browse + Schedule entries, right-aligned.
+            Row {
                 anchors.right: parent.right
                 anchors.rightMargin: Theme.pad
                 anchors.verticalCenter: parent.verticalCenter
-                radius: 8
-                color: browseHover.hovered ? Theme.accent : Theme.surfaceRaised
-                implicitWidth: browseLabel.implicitWidth + 24
-                implicitHeight: 36
+                spacing: 10
 
-                Text {
-                    id: browseLabel
-                    anchors.centerIn: parent
-                    text: "Browse"
-                    color: Theme.ink
-                    font.pixelSize: 14
-                    font.bold: true
-                }
-
-                HoverHandler { id: browseHover }
-                MouseArea {
-                    anchors.fill: parent
+                NavButton {
+                    label: "Browse"
                     onClicked: page.openBrowse()
+                }
+                NavButton {
+                    label: "Schedule"
+                    onClicked: page.openSchedule()
                 }
             }
         }

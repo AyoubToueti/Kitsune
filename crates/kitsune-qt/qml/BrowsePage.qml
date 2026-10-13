@@ -167,13 +167,13 @@ Item {
                 format: model.format
                 onClicked: page.openAnime(model.id)
             }
- scroll: only advance when there is real content to
+
+            // Infinite scroll: only advance when there is real content to
             // scroll AND a page already rendered. An empty/short grid reports
             // `atYEnd` immediately, so the `count > 0` guard is what stops the
             // refetch loop that otherwise wipes the model on every pass.
             onAtYEndChanged: {
-                if (atYEnd && !page.loading && results.count > 0d: {
-                if (atYEnd) {
+                if (atYEnd && !page.loading && results.count > 0) {
                     page.pageNumber += 1
                     page.runSearch(false)
                 }
