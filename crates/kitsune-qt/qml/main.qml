@@ -22,6 +22,8 @@ Window {
     property bool initialMyList: false
     property bool initialSettings: false
     property string initialWatchUrl: ""
+    property int initialEpisodeAnime: 0
+    property int initialEpisodeNumber: 0
 
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
@@ -147,6 +149,13 @@ Window {
             stack.push(myListComponent, { "backend": root.backend })
         } else if (initialSettings) {
             stack.push(settingsComponent, { "backend": root.backend })
+        } else if (initialEpisodeAnime > 0) {
+            stack.push(watchComponent, {
+                "animeId": initialEpisodeAnime,
+                "episodeNumber": initialEpisodeNumber,
+                "absoluteEpisode": initialEpisodeNumber,
+                "backend": root.backend
+            })
         } else if (initialWatchUrl.length > 0) {
             stack.push(watchComponent, { "streamUrl": initialWatchUrl })
         }
