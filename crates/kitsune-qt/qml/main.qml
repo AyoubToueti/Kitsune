@@ -3,102 +3,80 @@ import QtQuick.Controls
 import com.kitsune.app
 
 Window {
+    id: root
     width: 1280
     height: 800
     visible: true
     title: "Kitsune"
     color: Theme.surface
 
+    // Exposed so child pages (DetailPage) can reach the same Backend instance.
+    property alias backend: backend
+
+    // Set from Rust (KITSUNE_OPEN_ID): when > 0, the detail page is pushed on
+    // startup so it can be screenshotted without a click.
+    property int initialOpenId: 0
+
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
     Backend {
         id: backend
 
-        // Async results arrive as JSON, the shape the Svelte frontend already
-        // consumed. Parse once here and feed the grid model.
         onTrendingReady: (json) => {
-            trendingModel.clear()
+            home.trendingModel.clear()
             const items = JSON.parse(json)
             for (const item of items) {
-                trendingModel.append({
-                    "title": displayTitle(item),
+                home.trendingModel.append({
+                    "id": item.id,
+                    "title": root.displayTitle(item),
                     "score": item.averageScore || 0,
                     "cover": item.coverImage || "",
                     "format": item.format || "",
                 })
             }
-            status.text = items.length + " trending"
+            home.status = items.length + " trending"
         }
         onTrendingFailed: (message) => {
-            status.text = "Failed: " + message
+            home.status = "Failed: " + message
         }
     }
 
-    // Mirrors `displayTitle` in src/lib/types.ts: prefer the user's preferred
-    // form, then English, then romaji.
+    // Mirrors `displayTitle` in src/lib/types.ts.
     function displayTitle(item) {
         const t = item.title || {}
         return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
     }
 
-    ListModel { id: trendingModel }
-
-    Column {
+    // The navigation stack: Home -> Detail -> ...
+    StackView {
+        id: stack
         anchors.fill: parent
-        spacing: 0
+        initialItem: home
 
-        // Top bar
-        Rectangle {
-            width: parent.width
-            height: 64
-            color: Theme.surface
+        pushEnter: Transition { NumberAnimation { property: "x"; from: stack.width; to: 0; duration: 220; easing.type: Easing.OutCubic } }
+        pushExit: Transition { NumberAnimation { property: "x"; from: 0; to: -stack.width * 0.3; duration: 220; easing.type: Easing.OutCubic } }
+        popEnter: Transition { NumberAnimation { property: "x"; from: -stack.width * 0.3; to: 0; duration: 220; easing.type: Easing.OutCubic } }
+        popExit: Transition { NumberAnimation { property: "x"; from: 0; to: stack.width; duration: 220; easing.type: Easing.OutCubic } }
+    }
 
-            Row {
-                anchors.left: parent.left
-                anchors.leftMargin: Theme.pad
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 10
+    HomePage {
+        id: home
+        visible: false
+        onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
+    }
 
-                Text {
-                    text: "Kitsune"
-                    color: Theme.accent
-                    font.pixelSize: 28
-                    font.bold: true
-                }
-
-                Text {
-                    id: status
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "Loading…"
-                    color: Theme.inkFaint
-                    font.pixelSize: 13
-                }
-            }
-        }
-
-        // Poster grid
-        GridView {
-            id: grid
-            width: parent.width
-            height: parent.height - 64
-            clip: true
-            cellWidth: 216
-            cellHeight: 380
-            leftMargin: Theme.pad
-            topMargin: Theme.pad
-            rightMargin: Theme.pad
-            bottomMargin: Theme.pad
-            model: trendingModel
-
-            delegate: PosterCard {
-                width: 200
-                title: model.title
-                score: model.score
-                cover: model.cover
-                format: model.format
-            }
+    Component {
+        id: detailComponent
+        DetailPage {
+            onBack: stack.pop()
+            onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
         }
     }
 
-    Component.onCompleted: backend.getTrending(40)
+    Component.onCompleted: {
+        backend.getTrending(40)
+        if (initialOpenId > 0) {
+            stack.push(detailComponent, { "animeId": initialOpenId, "backend": root.backend })
+        }
+    }
 }

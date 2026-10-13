@@ -16,6 +16,28 @@ fn main() {
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
 
+    // Dev aid: KITSUNE_OPEN_ID=<id> makes the app push the detail page for that
+    // AniList id on startup, so a screenshot can capture it without a click.
+    let open_id: i32 = std::env::var("KITSUNE_OPEN_ID")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    // `initialProperties` seeds the root object's properties before the QML
+    // runs, so `initialOpenId` is already set when Component.onCompleted fires.
+    // Each cxx-qt-lib method consumes the `Pin`, so a fresh `as_mut()` is taken
+    // for each call.
+    {
+        let mut props = cxx_qt_lib::QMap::<cxx_qt_lib::QMapPair_QString_QVariant>::default();
+        props.insert(
+            cxx_qt_lib::QString::from("initialOpenId"),
+            cxx_qt_lib::QVariant::from(&open_id),
+        );
+        if let Some(engine) = engine.as_mut() {
+            engine.set_initial_properties(&props);
+        }
+    }
+
     if let Some(engine) = engine.as_mut() {
         // On failure Qt logs "QQmlApplicationEngine failed to load component"
         // to stderr, which is the signal the smoke run greps for.
