@@ -18,6 +18,17 @@ Item {
 
     signal back()
     signal openAnime(int id)
+    // Emitted when an episode is chosen: pushes the watch page with the
+    // numbers it needs to search a release and match a torrent file.
+    signal openWatch(int animeId, int malId, int episodeNumber, int absoluteEpisode)
+
+    // The episode list to render, from Jikan's catalogue (via `buildEpisodes`)
+    // or synthesised from `episodeCount` when Jikan has nothing.
+    property var episodes: []
+    // How much to add to an episode's own number to get the work's absolute
+    // number, for a later cour whose releases carry the running total.
+    property int episodeOffset: 0
+    property bool episodesLoading: false
 
     function displayTitle(item) {
         const t = item.title || {}
@@ -32,8 +43,62 @@ Item {
                 page.anime = null
             } else if (parsed.id === page.animeId) {
                 page.anime = parsed
+                page.loadEpisodes()
             }
         }
+        function onEpisodesReady(json) {
+            // Remember the catalogue, then ask the core to combine it with the
+            // work into the exact list to render (synthesis fallback included).
+            page.episodeInfo = JSON.parse(json) || []
+            page.rebuildEpisodes()
+        }
+        function onEpisodesFailed(message) {
+            // A failed catalogue is not fatal: fall back to a synthesised list.
+            page.episodeInfo = []
+            page.rebuildEpisodes()
+        }
+    }
+
+    // Jikan's per-episode catalogue, or empty when there is none.
+    property var episodeInfo: []
+
+    // Ask the core to build the display list from the work + catalogue. The
+    // rules live in kitsune-core, so Qt and the web app cannot disagree.
+    function rebuildEpisodes() {
+        if (!backend || !anime) {
+            page.episodes = []
+            return
+        }
+        const json = backend.buildEpisodes(
+            anime.episodeCount || 0,
+            anime.status || "",
+            anime.coverImage || "",
+            JSON.stringify(episodeInfo))
+        page.episodes = JSON.parse(json) || []
+        page.episodeOffset = computeOffset(page.episodes)
+    }
+
+    // The lowest number minus one, but only when it exceeds the list length
+    // (a later cour). Mirrors `absoluteOffset` in the core.
+    function computeOffset(list) {
+        const numbers = list.map((e) => e.number).filter((n) => n !== undefined)
+        if (numbers.length === 0) return 0
+        const lowest = Math.min.apply(null, numbers)
+        return lowest > list.length ? lowest - 1 : 0
+    }
+
+    function loadEpisodes() {
+        // Build from the count first, so the grid is usable immediately even
+        // while Jikan is in flight (and if it never answers).
+        page.episodeInfo = []
+        page.rebuildEpisodes()
+
+        if (!anime || !anime.idMal) {
+            return
+        }
+        // Jikan refines the list with real titles and air dates when it lands.
+        page.episodesLoading = true
+        backend.getEpisodes(anime.idMal)
     }
 
     // Start the fetch once BOTH `animeId` and `backend` are set. StackView
@@ -171,6 +236,94 @@ Item {
                                         font.pixelSize: 12
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- Episodes ---------------------------------------------------
+            //
+            // The gateway to playback: picking an episode pushes the watch page
+            // with the numbers it needs to search a release and match a file.
+            Column {
+                width: parent.width
+                visible: page.episodes.length > 0
+                spacing: 12
+                topPadding: Theme.pad
+                leftPadding: Theme.pad
+                rightPadding: Theme.pad
+
+                Text {
+                    text: "Episodes"
+                    color: Theme.ink
+                    font.pixelSize: 18
+                    font.bold: true
+                }
+
+                GridView {
+                    width: parent.width - Theme.pad * 2
+                    height: 220
+                    cellWidth: 200
+                    cellHeight: 64
+                    clip: true
+                    model: page.episodes
+
+                    delegate: Rectangle {
+                        required property var modelData
+                        required property int index
+
+                        width: 188
+                        height: 56
+                        radius: Theme.radius
+                        color: episodeMouse.containsMouse ? Theme.surfaceRaised : Theme.surface
+                        border.color: episodeMouse.containsMouse ? Theme.accent : Theme.borderSubtle
+
+                        Column {
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.leftMargin: 12
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            spacing: 2
+
+                            Text {
+                                text: "Episode " + (modelData.number !== undefined
+                                    ? modelData.number
+                                    : (index + 1))
+                                color: Theme.ink
+                                font.pixelSize: 14
+                                font.bold: true
+                            }
+                            Text {
+                                width: parent.width
+                                // A synthesised title is just "Episode N", which
+                                // the line above already shows; only the real
+                                // catalogue titles add anything.
+                                text: {
+                                    const t = modelData.title || ""
+                                    const number = modelData.number !== undefined
+                                        ? modelData.number
+                                        : (index + 1)
+                                    return t === ("Episode " + number) ? "" : t
+                                }
+                                color: Theme.inkMuted
+                                font.pixelSize: 12
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        MouseArea {
+                            id: episodeMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                const number = (modelData.number !== undefined
+                                    ? modelData.number
+                                    : (index + 1))
+                                const malId = page.anime && page.anime.idMal ? page.anime.idMal : 0
+                                page.openWatch(page.animeId, malId, number, number + page.episodeOffset)
                             }
                         }
                     }

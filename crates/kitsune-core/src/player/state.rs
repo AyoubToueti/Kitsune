@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
 use crate::settings::SettingsStore;
@@ -36,7 +36,7 @@ const METADATA_POLL: std::time::Duration = std::time::Duration::from_millis(100)
 const PLAYER_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// One file inside a torrent, as the frontend picks from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TorrentFile {
     /// Index the stream URL is built from.

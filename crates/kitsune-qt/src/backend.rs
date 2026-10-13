@@ -88,6 +88,43 @@ pub mod qobject {
         #[cxx_name = "getEpisodes"]
         fn get_episodes(self: Pin<&mut Self>, mal_id: i64);
 
+        /// Build the episode list to display for a work from its scalar facts
+        /// plus the (possibly empty) Jikan catalogue JSON. `status` is the
+        /// provider's status string (e.g. "FINISHED"). Pure and synchronous, so
+        /// QML gets the shared core rules without re-deriving.
+        #[qinvokable]
+        #[cxx_name = "buildEpisodes"]
+        fn build_episodes(
+            self: Pin<&mut Self>,
+            episode_count: i32,
+            status: QString,
+            cover_image: QString,
+            info_json: QString,
+        ) -> QString;
+
+        /// The title forms worth searching an indexer for, as a JSON array
+        /// (best first). Synchronous.
+        #[qinvokable]
+        #[cxx_name = "titleForms"]
+        fn title_forms(
+            self: Pin<&mut Self>,
+            user_preferred: QString,
+            english: QString,
+            romaji: QString,
+        ) -> QString;
+
+        /// Choose the file to play from a torrent's files: the episode match,
+        /// or the sole video, else `-1` to wait for the reader's pick.
+        /// `files_json` is a JSON `TorrentFile[]`. Synchronous.
+        #[qinvokable]
+        #[cxx_name = "pickFile"]
+        fn pick_file(
+            self: Pin<&mut Self>,
+            files_json: QString,
+            episode: i32,
+            offset: i32,
+        ) -> i32;
+
         /// Search the indexers for a work's releases. `titles` is a JSON array
         /// of title forms; `mode` is the search-mode wire string.
         #[qinvokable]
@@ -363,7 +400,7 @@ use kitsune_core::indexer::{search_all, IndexerRegistry, ReleaseRequest, SearchM
 use kitsune_core::player::state::PlayerState;
 use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
 use kitsune_core::settings::{Settings, SettingsStore};
-use kitsune_core::types::{BrowseQuery, ListFilter, ListStatus, ReleasePreference};
+use kitsune_core::types::{BrowseQuery, EpisodeInfo, ListFilter, ListStatus, ReleasePreference, Title};
 
 /// The default page size, mirroring `commands::DEFAULT_LIMIT` in the Tauri app.
 const DEFAULT_LIMIT: u32 = 20;
@@ -623,6 +660,77 @@ impl qobject::Backend {
                 }
             }
         });
+    }
+
+    /// Build the display episode list from a work's scalars and its (optional)
+    /// Jikan catalogue. Pure: the shared `kitsune_core::episodes` rules do the
+    /// work, so the Qt app and the web app cannot disagree.
+    fn build_episodes(
+        self: Pin<&mut Self>,
+        episode_count: i32,
+        status: QString,
+        cover_image: QString,
+        info_json: QString,
+    ) -> QString {
+        let info_json = info_json.to_string();
+        let info: Vec<EpisodeInfo> = serde_json::from_str(&info_json).unwrap_or_default();
+
+        let cover = cover_image.to_string();
+        let status = status.to_string();
+        let episodes = kitsune_core::episodes::episodes_for_facts(
+            (episode_count > 0).then_some(episode_count as u32),
+            (!status.is_empty()).then_some(status.as_str()),
+            (!cover.is_empty()).then_some(cover.as_str()),
+            &info,
+            kitsune_core::episodes::now_unix(),
+        );
+        let json = serde_json::to_string(&episodes).unwrap_or_else(|_| "[]".into());
+        QString::from(&json)
+    }
+
+    /// The title forms worth searching an indexer for. Pure.
+    fn title_forms(
+        self: Pin<&mut Self>,
+        user_preferred: QString,
+        english: QString,
+        romaji: QString,
+    ) -> QString {
+        let title = Title {
+            user_preferred: non_empty(user_preferred),
+            english: non_empty(english),
+            romaji: non_empty(romaji),
+            native: None,
+        };
+        let json = serde_json::to_string(&title.title_forms()).unwrap_or_else(|_| "[]".into());
+        QString::from(&json)
+    }
+
+    /// Choose the file to play from a torrent's files. Pure.
+    ///
+    /// The episode match wins; otherwise a sole video starts automatically; a
+    /// genuine choice returns `-1` so the reader picks.
+    fn pick_file(self: Pin<&mut Self>, files_json: QString, episode: i32, offset: i32) -> i32 {
+        use kitsune_core::player::state::TorrentFile;
+        use kitsune_core::torrent_files;
+
+        let files_json = files_json.to_string();
+        let files: Vec<TorrentFile> = match serde_json::from_str(&files_json) {
+            Ok(files) => files,
+            Err(_) => return -1,
+        };
+
+        if episode > 0 {
+            if let Some(file) =
+                torrent_files::file_for_episode(&files, episode as u32, offset.max(0) as u32)
+            {
+                return file.idx as i32;
+            }
+        }
+
+        match torrent_files::first_target_file(&files) {
+            Some(file) => file.idx as i32,
+            None => -1,
+        }
     }
 
     // --- Releases & torrents ----------------------------------------------
@@ -1008,4 +1116,15 @@ impl qobject::Backend {
 /// never drops the whole response (the UI already handles an empty list).
 fn json_or_empty<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// A non-blank `QString` as an `Option<String>`, so an empty FFI string reads
+/// as "absent" rather than as a present-but-empty value.
+fn non_empty(value: QString) -> Option<String> {
+    let value = value.to_string();
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }

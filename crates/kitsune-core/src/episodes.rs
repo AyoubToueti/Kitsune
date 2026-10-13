@@ -159,24 +159,42 @@ pub fn aired_episodes(info: &[EpisodeInfo], now_unix: i64) -> Vec<EpisodeInfo> {
 ///
 /// `now_unix` defaults to the current time; see [`now_unix`].
 pub fn episodes_for(anime: &Anime, info: &[EpisodeInfo], now_unix: i64) -> Vec<Episode> {
+    episodes_for_facts(
+        anime.episode_count,
+        anime.status.as_deref(),
+        anime.cover_image.as_deref(),
+        info,
+        now_unix,
+    )
+}
+
+/// The scalar-facts form of [`episodes_for`].
+///
+/// Lets a frontend that only has the numbers (the Qt app crosses the FFI with
+/// scalars, not a whole `Anime`) get the same rules. [`episodes_for`] delegates
+/// here, so there is exactly one implementation.
+pub fn episodes_for_facts(
+    episode_count: Option<u32>,
+    status: Option<&str>,
+    cover_image: Option<&str>,
+    info: &[EpisodeInfo],
+    now_unix: i64,
+) -> Vec<Episode> {
     if !info.is_empty() {
-        let known = episodes_from_info(
-            &aired_episodes(info, now_unix),
-            anime.cover_image.as_deref(),
-        );
+        let known = episodes_from_info(&aired_episodes(info, now_unix), cover_image);
 
         // Only a finished work is padded. Every episode of a finished work has
         // aired by definition, so a missing entry is one the provider has not
         // titled yet. On a releasing work the same gap could equally be
         // episodes that have not aired, and adding them would present
         // unwatchable episodes as ready.
-        return if anime.status.as_deref() == Some("FINISHED") {
-            with_missing_episodes(known, anime.episode_count, anime.cover_image.as_deref())
+        return if status == Some("FINISHED") {
+            with_missing_episodes(known, episode_count, cover_image)
         } else {
             known
         };
     }
-    synthesize_episodes(anime.episode_count, anime.cover_image.as_deref())
+    synthesize_episodes(episode_count, cover_image)
 }
 
 /// Fill the gaps between a catalogue and the count the provider announced.

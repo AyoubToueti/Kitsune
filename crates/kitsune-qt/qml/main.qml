@@ -81,6 +81,13 @@ Window {
         DetailPage {
             onBack: stack.pop()
             onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
+            onOpenWatch: (animeId, malId, episodeNumber, absoluteEpisode) => stack.push(watchComponent, {
+                "animeId": animeId,
+                "malId": malId,
+                "episodeNumber": episodeNumber,
+                "absoluteEpisode": absoluteEpisode,
+                "backend": root.backend
+            })
         }
     }
 
