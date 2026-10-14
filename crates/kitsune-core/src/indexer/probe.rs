@@ -1103,6 +1103,20 @@ pub async fn probe_releases_on_own_session(
     results
 }
 
+/// Probe a batch on its own session, building the HTTP client here.
+///
+/// The convenience the frontends use: a caller that does not already hold a
+/// `reqwest::Client` (the Qt bridge, say) should not have to depend on reqwest
+/// just to hand one in. The client is built with the defaults the probe wants,
+/// so the two entry points cannot drift on timeouts.
+pub async fn probe_releases_standalone(
+    download_dir: std::path::PathBuf,
+    releases: &[Release],
+    on_result: impl FnMut(usize, &ProbeResult),
+) -> Vec<(usize, ProbeResult)> {
+    probe_releases_on_own_session(download_dir, reqwest::Client::new(), releases, on_result).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

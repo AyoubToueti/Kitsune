@@ -19,6 +19,10 @@ use crate::types::{Release, ReleasePreference};
 /// this exact type.
 pub use kitsune_core::indexer::IndexerRegistry;
 
+/// Re-exported from `kitsune-core`: the fetch-and-write lives there now so the
+/// Qt frontend can save a `.torrent` without depending on this crate.
+pub use kitsune_core::indexer::{download_to, DownloadError};
+
 /// Search every indexer, returning the merged, ranked results.
 ///
 /// Indexers are asked in parallel and merged afterwards: one slow source must
@@ -71,61 +75,6 @@ pub async fn download_torrent(url: String, path: String) -> Result<(), String> {
         .await
         .map_err(|err| err.to_string())
 }
-
-/// Fetch `url` and write the body to `path`.
-///
-/// Split from the command so the fetch-and-write can be tested against a mock
-/// server without a Tauri app.
-pub async fn download_to(url: &str, path: &std::path::Path) -> Result<(), DownloadError> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err(DownloadError::InvalidUrl(url.to_string()));
-    }
-
-    let response = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| DownloadError::Transport(e.to_string()))?;
-
-    let status = response.status();
-    if !status.is_success() {
-        return Err(DownloadError::Status(status.as_u16()));
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| DownloadError::Transport(e.to_string()))?;
-
-    std::fs::write(path, &bytes).map_err(|e| DownloadError::Write(e.to_string()))?;
-    Ok(())
-}
-
-/// Why a torrent download failed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DownloadError {
-    /// The URL was not `http(s)`.
-    InvalidUrl(String),
-    /// The request itself failed (DNS, connection, timeout).
-    Transport(String),
-    /// The server answered with a non-success status.
-    Status(u16),
-    /// The bytes could not be written to disk.
-    Write(String),
-}
-
-impl std::fmt::Display for DownloadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::InvalidUrl(url) => write!(f, "not a downloadable URL: {url}"),
-            Self::Transport(msg) => write!(f, "could not reach the indexer: {msg}"),
-            Self::Status(code) => write!(f, "the indexer answered with status {code}"),
-            Self::Write(msg) => write!(f, "could not write the torrent file: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for DownloadError {}
 
 /// Probe a list of releases and report each result as it lands.
 ///
