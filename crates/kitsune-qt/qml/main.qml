@@ -123,6 +123,10 @@ Window {
                 "absoluteEpisode": absoluteEpisode,
                 "backend": root.backend
             })
+            onOpenGenre: (genre) => root.goTo(browseComponent, "filter", {
+                "backend": root.backend,
+                "initialGenre": genre
+            })
         }
     }
 
