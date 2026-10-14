@@ -1,9 +1,9 @@
-// The reader's own list: Continue Watching on top, then the full list grouped
-// by status. Mirrors the Svelte /list route.
+// The reader's own list, mirroring the Svelte /list route: a row of status
+// tabs with counts over a poster grid, each card carrying a menu to move or
+// remove the entry.
 //
-// Signed out, it shows a "sign in" prompt rather than an error: the commands
-// answer an empty list when there is no token, and "nothing to show" is the
-// correct state for a reader with no account.
+// Signed out, it shows a sign-in banner rather than an error: "nothing to
+// show" is the correct state for a reader with no account.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -13,11 +13,84 @@ Item {
 
     property var backend: null
     property bool signedIn: false
+    property bool loading: false
+    property string errorText: ""
+
+    // The reader's whole list, as the backend returned it.
+    property var entries: []
+    // The active tab's status wire value, or "" for All.
+    property string activeTab: ""
 
     signal openAnime(int id)
 
-    ListModel { id: continueModel }
-    ListModel { id: listModel }
+    // The tabs, in the order they are offered. Labels are the reader's words;
+    // values are AniList's own enum members (the wire format).
+    readonly property var tabs: [
+        { value: "", label: "All" },
+        { value: "current", label: "Watching" },
+        { value: "planning", label: "Plan to Watch" },
+        { value: "completed", label: "Completed" },
+        { value: "paused", label: "On-Hold" },
+        { value: "dropped", label: "Dropped" }
+    ]
+
+    // The statuses a card's menu offers, matching the detail page's.
+    readonly property var listStatuses: [
+        { value: "current", label: "Watching" },
+        { value: "completed", label: "Completed" },
+        { value: "paused", label: "On hold" },
+        { value: "dropped", label: "Dropped" },
+        { value: "planning", label: "Plan to watch" }
+    ]
+
+    function displayTitle(item) {
+        const t = item.title || {}
+        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+    }
+
+    // The entries the active tab shows. Reading `entries` and `activeTab` here
+    // makes them dependencies of every binding that calls this.
+    function visibleEntries() {
+        if (page.activeTab === "") return page.entries
+        return page.entries.filter(function (e) { return e.status === page.activeTab })
+    }
+
+    // How many entries carry `value`, or the total for "".
+    function countFor(value) {
+        if (value === "") return page.entries.length
+        let n = 0
+        for (const e of page.entries) if (e.status === value) n++
+        return n
+    }
+
+    function signIn() {
+        if (!backend) return
+        const url = backend.beginLogin()
+        if (url && url.length > 0) Qt.openUrlExternally(url)
+    }
+
+    // Optimistically drop a row, then let the backend confirm (it re-reads on
+    // `listChanged`).
+    function removeEntry(entryId) {
+        if (!backend) return
+        page.entries = page.entries.filter(function (e) { return e.entryId !== entryId })
+        backend.deleteListEntry(entryId)
+    }
+
+    // Optimistically move a row between lists, then write it.
+    function moveEntry(entryId, animeId, status) {
+        if (!backend) return
+        page.entries = page.entries.map(function (e) {
+            if (e.entryId !== entryId) return e
+            const copy = {}
+            for (const k in e) copy[k] = e[k]
+            copy.status = status
+            return copy
+        })
+        // Progress is deliberately omitted: changing the list must not reset
+        // how far the reader has got.
+        backend.setListEntry(animeId, status, 0)
+    }
 
     Connections {
         target: page.backend
@@ -25,61 +98,33 @@ Item {
         function onAuthStatusReady(signedInNow) {
             page.signedIn = signedInNow
             if (signedInNow) {
-                page.backend.continueWatching(20)
+                page.loading = true
                 page.backend.userList()
             } else {
-                continueModel.clear()
-                listModel.clear()
-                status.text = "Sign in to see your list"
-            }
-        }
-
-        function onContinueWatchingReady(json) {
-            const items = JSON.parse(json)
-            continueModel.clear()
-            for (const entry of items) {
-                const work = entry.anime || entry
-                continueModel.append({
-                    "id": work.id,
-                    "title": displayTitle(work),
-                    "cover": work.coverImage || "",
-                    "progress": entry.progress || 0,
-                    "total": work.episodeCount || 0,
-                })
+                page.entries = []
+                page.loading = false
             }
         }
 
         function onUserListReady(json) {
-            const entries = JSON.parse(json)
-            listModel.clear()
-            for (const entry of entries) {
-                const work = entry.anime || entry.media || entry
-                listModel.append({
-                    "id": work.id,
-                    "title": displayTitle(work),
-                    "cover": work.coverImage || "",
-                    "status": entry.status || "",
-                    "progress": entry.progress || 0,
-                    "total": work.episodeCount || 0,
-                })
-            }
-            status.text = listModel.count + " in your list"
+            page.entries = JSON.parse(json) || []
+            page.loading = false
+            page.errorText = ""
+        }
+
+        function onUserListFailed(message) {
+            page.loading = false
+            page.errorText = message
         }
 
         function onListChanged() {
-            // Any write re-reads, so the view is never stale.
-            page.backend.continueWatching(20)
-            page.backend.userList()
+            // Any successful write re-reads, so the grid is never stale.
+            if (page.signedIn) page.backend.userList()
         }
 
         function onAuthError(message) {
-            status.text = "Failed: " + message
+            page.errorText = message
         }
-    }
-
-    function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
     }
 
     Component.onCompleted: {
@@ -90,159 +135,347 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        // Header
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 64
-            color: Theme.surface
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.pad
-                anchors.rightMargin: Theme.pad
-
-                Text {
-                    text: "My List"
-                    color: Theme.accent
-                    font.pixelSize: 24
-                    font.bold: true
-                }
-                Text {
-                    id: status
-                    Layout.fillWidth: true
-                    color: Theme.inkFaint
-                    font.pixelSize: 13
-                }
-            }
-        }
-
-        // Continue Watching rail (only when signed in and non-empty).
+        // --- Header -------------------------------------------------------
         Column {
             Layout.fillWidth: true
-            Layout.preferredHeight: continueModel.count > 0 ? 210 : 0
-            visible: continueModel.count > 0
-            spacing: 8
-            topPadding: Theme.gap
-            leftPadding: Theme.pad
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            Layout.topMargin: Theme.pad
+            spacing: 2
 
             Text {
-                text: "Continue Watching"
+                text: "My List"
                 color: Theme.ink
-                font.pixelSize: 18
+                font.pixelSize: 20
                 font.bold: true
             }
+            Text {
+                text: "Manage your anime library and track progress"
+                color: Theme.inkMuted
+                font.pixelSize: 12
+            }
+        }
 
-            ListView {
-                width: parent.width - Theme.pad
-                height: 168
-                orientation: ListView.Horizontal
-                spacing: Theme.gap
-                clip: true
-                model: continueModel
+        // --- Signed out banner --------------------------------------------
+        Item {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: !page.signedIn
 
-                delegate: Item {
-                    width: 120
-                    height: 168
+            Rectangle {
+                anchors.centerIn: parent
+                width: 440
+                height: 250
+                radius: 16
+                color: Theme.surfaceRaised
+                border.width: 1
+                border.color: Theme.borderSubtle
 
-                    Rectangle {
-                        width: 120
-                        height: 120
-                        radius: Theme.radius
-                        color: Theme.surfaceRaised
-                        clip: true
-                        Image {
-                            anchors.fill: parent
-                            source: model.cover
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
-                        }
+                Column {
+                    anchors.centerIn: parent
+                    width: parent.width - 48
+                    spacing: 10
+
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "◎"
+                        color: Theme.accent
+                        font.pixelSize: 34
                     }
                     Text {
-                        anchors.top: parent.top
-                        anchors.topMargin: 124
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "Sign in to sync your list"
+                        color: Theme.ink
+                        font.pixelSize: 16
+                        font.bold: true
+                    }
+                    Text {
                         width: parent.width
-                        text: model.title
+                        horizontalAlignment: Text.AlignHCenter
+                        text: "Connect your AniList account to track episodes, sync watch states, and organize your collection."
                         color: Theme.inkMuted
                         font.pixelSize: 12
-                        elide: Text.ElideRight
-                        maximumLineCount: 2
                         wrapMode: Text.WordWrap
                     }
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: page.openAnime(model.id)
+
+                    Item { width: 1; height: 6 }
+
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: 190
+                        height: 40
+                        radius: 10
+                        color: signInMouse.containsMouse ? Theme.accentHover : Theme.accent
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Sign in with AniList"
+                            color: "white"
+                            font.pixelSize: 13
+                            font.bold: true
+                        }
+                        MouseArea {
+                            id: signInMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.signIn()
+                        }
                     }
                 }
             }
         }
 
-        // Full list
-        ListView {
+        // --- Tabs ---------------------------------------------------------
+        Flow {
             Layout.fillWidth: true
-            Layout.fillHeight: true
-            clip: true
-            model: listModel
-            leftMargin: Theme.pad
-            rightMargin: Theme.pad
-            topMargin: Theme.gap
-            bottomMargin: Theme.pad
-            spacing: 8
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            Layout.topMargin: Theme.gap
+            visible: page.signedIn
+            spacing: 6
 
-            delegate: Rectangle {
-                width: ListView.view.width - Theme.pad * 2
-                height: 84
-                radius: Theme.radius
-                color: rowHover.hovered ? Theme.surfaceHover : Theme.surfaceRaised
+            Repeater {
+                model: page.tabs
 
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.margins: 8
-                    spacing: 12
+                delegate: Rectangle {
+                    required property var modelData
+                    readonly property bool active: page.activeTab === modelData.value
+                    readonly property int count: page.countFor(modelData.value)
 
-                    Rectangle {
-                        Layout.preferredWidth: 48
-                        Layout.preferredHeight: 68
-                        radius: 8
-                        color: Theme.surface
-                        clip: true
-                        Image {
-                            anchors.fill: parent
-                            source: model.cover
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
+                    height: 34
+                    radius: 10
+                    color: active ? Theme.accent : Theme.surfaceRaised
+                    border.width: active ? 0 : 1
+                    border.color: Theme.borderSubtle
+                    implicitWidth: tabRow.implicitWidth + 24
+
+                    Row {
+                        id: tabRow
+                        anchors.centerIn: parent
+                        spacing: 8
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: modelData.label
+                            color: active ? "white" : Theme.inkMuted
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+                        Rectangle {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !page.loading
+                            radius: 5
+                            color: active ? "#33ffffff" : Theme.surfaceHover
+                            implicitWidth: countText.implicitWidth + 10
+                            implicitHeight: 18
+
+                            Text {
+                                id: countText
+                                anchors.centerIn: parent
+                                text: String(count)
+                                color: active ? "white" : Theme.inkFaint
+                                font.pixelSize: 10
+                                font.bold: true
+                            }
                         }
                     }
 
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 3
-                        Text {
-                            Layout.fillWidth: true
-                            text: model.title
-                            color: Theme.ink
-                            font.pixelSize: 15
-                            font.bold: true
-                            elide: Text.ElideRight
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.activeTab = modelData.value
+                    }
+                }
+            }
+        }
+
+        // --- Grid ---------------------------------------------------------
+        GridView {
+            id: grid
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            Layout.topMargin: Theme.gap
+            Layout.bottomMargin: Theme.pad
+            visible: page.signedIn
+            clip: true
+            cellWidth: 200
+            cellHeight: 350
+            model: page.visibleEntries()
+
+            delegate: Item {
+                id: cardRoot
+                required property var modelData
+                width: 180
+                height: 336
+
+                // Captured so the menu rows (declared below) can reach the
+                // entry without a nested Repeater shadowing `modelData`.
+                readonly property int entryId: modelData.entryId
+                readonly property int animeId: modelData.anime.id
+                readonly property string entryStatus: modelData.status
+
+                PosterCard {
+                    anchors.left: parent.left
+                    width: 180
+                    title: page.displayTitle(modelData.anime)
+                    score: modelData.anime.averageScore || 0
+                    cover: modelData.anime.coverImage || ""
+                    format: modelData.anime.format || ""
+                    onClicked: page.openAnime(animeId)
+                }
+
+                // ⋮ menu, top-LEFT (the card's score pill owns the top-right).
+                Rectangle {
+                    id: menuButton
+                    x: 6
+                    y: 6
+                    width: 26
+                    height: 26
+                    radius: 13
+                    color: menuMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: "⋮"
+                        color: Theme.ink
+                        font.pixelSize: 16
+                        font.bold: true
+                    }
+
+                    MouseArea {
+                        id: menuMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: itemMenu.open()
+                    }
+                }
+
+                Popup {
+                    id: itemMenu
+                    parent: menuButton
+                    x: 0
+                    y: menuButton.height + 4
+                    width: 176
+                    padding: 6
+                    modal: false
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                    background: Rectangle {
+                        color: Theme.surfaceRaised
+                        radius: 12
+                        border.width: 1
+                        border.color: Theme.borderSubtle
+                    }
+
+                    // The five statuses as explicit rows. A Repeater would be
+                    // tidier but its `modelData` would shadow this delegate's,
+                    // hiding the entry the rows need.
+                    contentItem: Column {
+                        spacing: 2
+
+                        Repeater {
+                            model: page.listStatuses
+                            delegate: Rectangle {
+                                required property var modelData
+                                width: itemMenu.width - 12
+                                height: 30
+                                radius: 8
+                                color: optMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    // `modelData` here is the STATUS; the
+                                    // entry is reached through the captured
+                                    // `cardRoot` properties.
+                                    text: modelData.label
+                                    color: modelData.value === cardRoot.entryStatus
+                                        ? Theme.accent : Theme.ink
+                                    font.pixelSize: 13
+                                }
+
+                                MouseArea {
+                                    id: optMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        itemMenu.close()
+                                        page.moveEntry(cardRoot.entryId,
+                                            cardRoot.animeId, modelData.value)
+                                    }
+                                }
+                            }
                         }
-                        Text {
-                            color: Theme.inkMuted
-                            font.pixelSize: 13
-                            text: {
-                                const parts = []
-                                if (model.status) parts.push(model.status)
-                                if (model.total > 0) parts.push(model.progress + "/" + model.total)
-                                return parts.join("  ·  ")
+
+                        Rectangle {
+                            width: itemMenu.width - 12
+                            height: 1
+                            color: Theme.borderSubtle
+                        }
+
+                        Rectangle {
+                            width: itemMenu.width - 12
+                            height: 30
+                            radius: 8
+                            color: rmMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Remove from list"
+                                color: Theme.danger
+                                font.pixelSize: 13
+                            }
+
+                            MouseArea {
+                                id: rmMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    itemMenu.close()
+                                    page.removeEntry(cardRoot.entryId)
+                                }
                             }
                         }
                     }
                 }
-
-                HoverHandler { id: rowHover }
-                MouseArea {
-                    anchors.fill: parent
-                    onClicked: page.openAnime(model.id)
-                }
             }
+        }
+
+        // --- Empty / error ------------------------------------------------
+        Text {
+            Layout.fillWidth: true
+            Layout.topMargin: 24
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            visible: page.signedIn && !page.loading
+                && page.visibleEntries().length === 0
+            text: page.activeTab === ""
+                ? "You haven't added any anime to your list yet."
+                : "No titles in this list."
+            color: Theme.inkMuted
+            font.pixelSize: 13
+            horizontalAlignment: Text.AlignHCenter
+        }
+
+        Text {
+            Layout.fillWidth: true
+            Layout.leftMargin: Theme.pad
+            Layout.bottomMargin: Theme.pad
+            visible: page.errorText !== ""
+            text: page.errorText
+            color: Theme.danger
+            font.pixelSize: 12
         }
     }
 }
