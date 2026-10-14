@@ -41,9 +41,9 @@ fn main() {
     let open_settings: bool = std::env::var("KITSUNE_OPEN_SETTINGS").is_ok();
     // KITSUNE_OPEN_WATCH=<url> pushes the watch page and plays the URL.
     let watch_url: String = std::env::var("KITSUNE_OPEN_WATCH").unwrap_or_default();
-    // KITSUNE_OPEN_EPISODE="<animeId>:<episode>" pushes the watch page straight
-    // into the release-search flow for that episode, for screenshots and the
-    // smoke test. `absoluteEpisode` defaults to `episode`.
+    // KITSUNE_OPEN_EPISODE="<animeId>:<episode>" opens the watch modal for that
+    // episode, for screenshots and the smoke test. `absoluteEpisode` defaults
+    // to `episode`.
     let (open_episode_anime, open_episode_number): (i32, i32) =
         std::env::var("KITSUNE_OPEN_EPISODE")
             .ok()
@@ -52,6 +52,10 @@ fn main() {
                 Some((a.parse().ok()?, e.parse().ok()?))
             })
             .unwrap_or((0, 0));
+    // KITSUNE_AUTOPLAY=1 makes the watch modal pick the first release and its
+    // first file on its own, so the buffering/player stage can be screenshotted
+    // without a click. Development only.
+    let auto_play: bool = std::env::var("KITSUNE_AUTOPLAY").is_ok();
 
     // `initialProperties` seeds the root object's properties before the QML
     // runs, so `initialOpenId` is already set when Component.onCompleted fires.
@@ -95,6 +99,10 @@ fn main() {
         props.insert(
             cxx_qt_lib::QString::from("initialEpisodeNumber"),
             cxx_qt_lib::QVariant::from(&open_episode_number),
+        );
+        props.insert(
+            cxx_qt_lib::QString::from("autoPlay"),
+            cxx_qt_lib::QVariant::from(&auto_play),
         );
         if let Some(engine) = engine.as_mut() {
             engine.set_initial_properties(&props);

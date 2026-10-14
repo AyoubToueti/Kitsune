@@ -25,6 +25,9 @@ Window {
     property string initialWatchUrl: ""
     property int initialEpisodeAnime: 0
     property int initialEpisodeNumber: 0
+    // Dev aid: with this set, the watch modal picks the first release + file
+    // on its own so the play stage can be screenshotted without clicking.
+    property bool autoPlay: false
 
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
@@ -193,6 +196,7 @@ Window {
     EpisodeWatchModal {
         id: watchModal
         backend: root.backend
+        autoPlay: root.autoPlay
     }
 
     // The standalone watch PAGE is kept for the KITSUNE_OPEN_WATCH debug path

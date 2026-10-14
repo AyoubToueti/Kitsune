@@ -29,6 +29,9 @@ Popup {
     property var backend: null
     // The episode thumbnail, shown in the header.
     property string episodeThumbnail: ""
+    // Dev aid: pick the first release and its first file automatically, so the
+    // play stage can be screenshotted without a click.
+    property bool autoPlay: false
 
     signal closed()
 
@@ -316,6 +319,10 @@ Popup {
             // Probe for real swarm health; the dots fill in as answers land.
             modal.probing = true
             modal.backend.probeReleases(JSON.stringify(modal.releases))
+            // Dev aid: jump straight into playback.
+            if (modal.autoPlay && modal.releases.length > 0) {
+                modal.pickRelease(modal.releases[0])
+            }
         }
 
         function onReleasesFailed(message) {
@@ -334,6 +341,19 @@ Popup {
 
         function onTorrentAdded(json) {
             const handle = JSON.parse(json)
+            // Dev aid: start the largest playable file without a pick.
+            if (modal.autoPlay) {
+                let best = -1
+                let bestSize = -1
+                for (const f of modal.files) {
+                    if (/\.(mkv|mp4|avi|webm|mov|m4v)$/i.test(f.name)
+                        && f.lengthBytes > bestSize) {
+                        best = f.idx
+                        bestSize = f.lengthBytes
+                    }
+                }
+                if (best >= 0) { modal.play(best); return }
+            }
             if (handle === null) return
             modal.torrentId = handle.id
             modal.files = handle.files || []
