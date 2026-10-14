@@ -26,6 +26,8 @@ fn main() {
             .qml_file("qml/TrendingCard.qml")
             .qml_file("qml/AnimeListRow.qml")
             .qml_file("qml/ListBlock.qml")
+            .qml_file("qml/ScheduleWidget.qml")
+            .qml_file("qml/TopList.qml")
             // Theme is a `pragma Singleton`; the qmldir must mark it as one or
             // QML refuses to import it.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true)),

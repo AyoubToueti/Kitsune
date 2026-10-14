@@ -91,6 +91,19 @@ pub mod qobject {
         #[cxx_name = "getSchedule"]
         fn get_schedule(self: Pin<&mut Self>, from: i64, to: i64, limit: i32);
 
+        /// Like `getSchedule`, but echoes `tag` back on the answer. The home
+        /// page's schedule widget uses this: the home page never unmounts, so
+        /// an untagged reply from a standalone SchedulePage would overwrite it.
+        #[qinvokable]
+        #[cxx_name = "getScheduleTagged"]
+        fn get_schedule_tagged(
+            self: Pin<&mut Self>,
+            tag: QString,
+            from: i64,
+            to: i64,
+            limit: i32,
+        );
+
         /// Full episode metadata for a work, by its MyAnimeList id.
         #[qinvokable]
         #[cxx_name = "getEpisodes"]
@@ -363,6 +376,14 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "scheduleFailed"]
         fn schedule_failed(self: Pin<&mut Self>, message: QString);
+
+        /// The tagged variant: `tag` is the caller's own label, echoed back.
+        #[qsignal]
+        #[cxx_name = "taggedScheduleReady"]
+        fn tagged_schedule_ready(self: Pin<&mut Self>, tag: QString, json: QString);
+        #[qsignal]
+        #[cxx_name = "taggedScheduleFailed"]
+        fn tagged_schedule_failed(self: Pin<&mut Self>, tag: QString, message: QString);
 
         #[qsignal]
         #[cxx_name = "episodesReady"]
@@ -699,6 +720,47 @@ impl qobject::Backend {
             Self::schedule_ready,
             Self::schedule_failed,
         );
+    }
+
+    /// The tagged variant of `get_schedule`, for the home page's embedded
+    /// schedule widget: the reply carries `tag` back so a standalone schedule
+    /// page's own request cannot be mistaken for this one's.
+    fn get_schedule_tagged(
+        self: Pin<&mut Self>,
+        tag: QString,
+        from: i64,
+        to: i64,
+        limit: i32,
+    ) {
+        let tag = tag.to_string();
+        let limit = limit_or_default(limit);
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let provider = Arc::clone(&self.rust().provider);
+
+        runtime.spawn(async move {
+            match provider.schedule(from, to, limit).await {
+                Ok(items) => {
+                    let json = json_or_empty(&items);
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.tagged_schedule_ready(
+                            QString::from(&tag),
+                            QString::from(&json),
+                        )
+                    });
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.tagged_schedule_failed(
+                            QString::from(&tag),
+                            QString::from(&message),
+                        )
+                    });
+                }
+            }
+        });
     }
 
     fn get_episodes(self: Pin<&mut Self>, mal_id: i64) {

@@ -40,9 +40,15 @@ Item {
     property bool signedIn: false
     property var continueItems: []
 
+    // --- top 100 preview ---------------------------------------------------
+    // A separate, larger request than the "Top rated" block: ten rows rather
+    // than five, ranked by score.
+    property var top100Items: []
+
     readonly property int heroLimit: 5
     readonly property int trendingLimit: 20
     readonly property int blockLimit: 5
+    readonly property int top100Limit: 10
 
     function displayTitle(item) {
         const t = item.title || {}
@@ -71,6 +77,7 @@ Item {
             else if (tag === "mostPopular") page.mostPopularItems = items
             else if (tag === "topRated") page.topRatedItems = items
             else if (tag === "latestCompleted") page.latestCompletedItems = items
+            else if (tag === "top100") page.top100Items = items
         }
         function onTaggedListFailed(tag, message) {
             // A failed block stays empty rather than taking the page down.
@@ -92,6 +99,8 @@ Item {
         backend.getListTagged("mostPopular", "mostPopular", page.blockLimit)
         backend.getListTagged("topRated", "topRated", page.blockLimit)
         backend.getListTagged("latestCompleted", "latestCompleted", page.blockLimit)
+        // The Top 100 preview: score order, ten rows.
+        backend.getListTagged("top100", "topRated", page.top100Limit)
         backend.authStatus()
     }
 
@@ -255,18 +264,74 @@ Item {
                 }
             }
 
-            // --- Secondary links ----------------------------------------
-            Row {
-                x: Theme.pad
-                spacing: 10
+            // --- Estimated schedule -------------------------------------
+            Column {
+                width: parent.width
+                spacing: 12
 
-                NavButton {
-                    label: "Top Rated"
-                    onClicked: page.openTop()
+                Text {
+                    x: Theme.pad
+                    text: "Estimated schedule"
+                    color: Theme.accent
+                    font.pixelSize: 18
+                    font.bold: true
                 }
-                NavButton {
-                    label: "Schedule"
-                    onClicked: page.openSchedule()
+
+                ScheduleWidget {
+                    x: Theme.pad
+                    width: parent.width - Theme.pad * 2
+                    backend: page.backend
+                    onOpenAnime: (id) => page.openAnime(id)
+                }
+            }
+
+            // --- Top 100 preview ----------------------------------------
+            Column {
+                width: parent.width
+                spacing: 12
+
+                RowLayout {
+                    x: Theme.pad
+                    width: parent.width - Theme.pad * 2
+
+                    Text {
+                        text: "Top 100 Anime"
+                        color: Theme.ink
+                        font.pixelSize: 18
+                        font.bold: true
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: "View All ›"
+                        color: viewAllMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                        font.pixelSize: 12
+                        MouseArea {
+                            id: viewAllMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.openTop()
+                        }
+                    }
+                }
+
+                Rectangle {
+                    x: Theme.pad
+                    width: parent.width - Theme.pad * 2
+                    radius: 12
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
+                    implicitHeight: topList.implicitHeight + 8
+
+                    TopList {
+                        id: topList
+                        x: 4
+                        y: 4
+                        width: parent.width - 8
+                        items: page.top100Items
+                        onOpenAnime: (id) => page.openAnime(id)
+                    }
                 }
             }
         }
