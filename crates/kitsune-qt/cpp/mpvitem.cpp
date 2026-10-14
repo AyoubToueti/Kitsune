@@ -1,6 +1,7 @@
 // Embedded libmpv video surface. Ported from mpv-examples/libmpv/qml, adapted
 // to Qt 6 (which removed QQuickWindow::resetOpenGLState and
-// setPersistentOpenGLContext).
+// setPersistentOpenGLContext), then extended with a small playback API so QML
+// can build a VLC/PotPlayer-style control bar on top.
 #include "mpvitem.h"
 
 #include <clocale>
@@ -8,6 +9,7 @@
 
 #include <QGuiApplication>
 #include <QList>
+#include <QMetaType>
 #include <QOpenGLContext>
 #include <QOpenGLFramebufferObject>
 #include <QQmlEngine>
@@ -45,6 +47,53 @@ get_proc_address_mpv(void* ctx, const char* name)
     return nullptr;
   }
   return reinterpret_cast<void*>(glctx->getProcAddress(QByteArray(name)));
+}
+
+/// Read a double mpv property, leaving `out` untouched on failure.
+bool
+mpv_double(mpv_handle* mpv, const char* name, double* out)
+{
+  double value = 0.0;
+  if (mpv_get_property(mpv, name, MPV_FORMAT_DOUBLE, &value) < 0) {
+    return false;
+  }
+  *out = value;
+  return true;
+}
+
+/// Read a boolean mpv property, returning `fallback` when mpv has no answer
+/// (the property does not exist yet, or the core is between files).
+bool
+mpv_flag(mpv_handle* mpv, const char* name, bool fallback)
+{
+  int value = 0;
+  if (mpv_get_property(mpv, name, MPV_FORMAT_FLAG, &value) < 0) {
+    return fallback;
+  }
+  return value != 0;
+}
+
+/// Convert an `mpv_node` to a `QVariant` for the QML side.
+///
+/// Only the scalar formats are converted; a list or map node returns an
+/// invalid `QVariant`. That is deliberate: the one collection the UI needs
+/// (`track-list`) is read as JSON through the backend instead, and handing QML
+/// a raw `mpv_node` graph would leak mpv's ownership rules into QML.
+QVariant
+node_to_variant(const mpv_node& node)
+{
+  switch (node.format) {
+    case MPV_FORMAT_STRING:
+      return QString::fromUtf8(node.u.string);
+    case MPV_FORMAT_FLAG:
+      return static_cast<bool>(node.u.flag);
+    case MPV_FORMAT_INT64:
+      return static_cast<qlonglong>(node.u.int64);
+    case MPV_FORMAT_DOUBLE:
+      return node.u.double_;
+    default:
+      return {};
+  }
 }
 
 } // namespace
@@ -129,13 +178,13 @@ MpvObject::MpvObject(QQuickItem* parent)
   connect(
     this, &MpvObject::onUpdate, this, &MpvObject::doUpdate, Qt::QueuedConnection);
 
-  // mpv reports starved playback through its own properties, which QML cannot
-  // read directly. Poll them on a slow timer: the state changes on the order of
-  // seconds, so 250ms is responsive without being busy.
-  buffering_poll_ = new QTimer(this);
-  buffering_poll_->setInterval(250);
-  connect(buffering_poll_, &QTimer::timeout, this, &MpvObject::pollBuffering);
-  buffering_poll_->start();
+  // One timer for every polled property: a control bar needs them together, and
+  // a shared signal is simpler than six near-identical ones. 200ms is smooth
+  // for a position readout without being busy.
+  poll_ = new QTimer(this);
+  poll_->setInterval(200);
+  connect(poll_, &QTimer::timeout, this, &MpvObject::pollState);
+  poll_->start();
 }
 
 MpvObject::~MpvObject()
@@ -144,39 +193,6 @@ MpvObject::~MpvObject()
     mpv_render_context_free(mpv_gl);
   }
   mpv_terminate_destroy(mpv);
-}
-
-namespace {
-
-/// Read a boolean mpv property, returning `fallback` when mpv has no answer
-/// (the property does not exist yet, or the core is between files).
-bool
-mpv_flag(mpv_handle* mpv, const char* name, bool fallback)
-{
-  int value = 0;
-  if (mpv_get_property(mpv, name, MPV_FORMAT_FLAG, &value) < 0) {
-    return fallback;
-  }
-  return value != 0;
-}
-
-} // namespace
-
-void
-MpvObject::pollBuffering()
-{
-  // A stall is either an explicit cache wait or an idle core. `core-idle` alone
-  // would also read true while the reader has PAUSED, which is not buffering --
-  // so a user pause is excluded.
-  const bool paused = mpv_flag(mpv, "pause", false);
-  const bool cache_wait = mpv_flag(mpv, "paused-for-cache", false);
-  const bool idle = mpv_flag(mpv, "core-idle", false);
-
-  const bool now_buffering = !paused && (cache_wait || idle);
-  if (now_buffering != buffering_) {
-    buffering_ = now_buffering;
-    emit bufferingChanged();
-  }
 }
 
 void
@@ -190,6 +206,63 @@ void
 MpvObject::doUpdate()
 {
   update();
+}
+
+void
+MpvObject::pollState()
+{
+  bool changed = false;
+
+  double position = position_;
+  if (mpv_double(mpv, "time-pos", &position) && position != position_) {
+    position_ = position;
+    changed = true;
+  }
+
+  double duration = duration_;
+  if (mpv_double(mpv, "duration", &duration) && duration != duration_) {
+    duration_ = duration;
+    changed = true;
+  }
+
+  const bool paused = mpv_flag(mpv, "pause", paused_);
+  if (paused != paused_) {
+    paused_ = paused;
+    changed = true;
+  }
+
+  double speed = speed_;
+  if (mpv_double(mpv, "speed", &speed) && speed != speed_) {
+    speed_ = speed;
+    changed = true;
+  }
+
+  double volume = volume_;
+  if (mpv_double(mpv, "volume", &volume) && volume != volume_) {
+    volume_ = volume;
+    changed = true;
+  }
+
+  const bool muted = mpv_flag(mpv, "mute", muted_);
+  if (muted != muted_) {
+    muted_ = muted;
+    changed = true;
+  }
+
+  // A stall is either an explicit cache wait or an idle core. `core-idle` alone
+  // would also read true while the reader has PAUSED, which is not buffering --
+  // so a user pause is excluded.
+  const bool cache_wait = mpv_flag(mpv, "paused-for-cache", false);
+  const bool idle = mpv_flag(mpv, "core-idle", false);
+  const bool buffering = !paused_ && (cache_wait || idle);
+  if (buffering != buffering_) {
+    buffering_ = buffering;
+    changed = true;
+  }
+
+  if (changed) {
+    emit stateChanged();
+  }
 }
 
 void
@@ -219,17 +292,33 @@ MpvObject::command(const QVariant& params)
 void
 MpvObject::setProperty(const QString& name, const QVariant& value)
 {
+  // mpv parses a string into the property's own type, so one string path
+  // covers every case the UI has: `speed` (double), `aid`/`sid` (integer),
+  // `pause` (flag), `hwdec` and `video-aspect-override` (enums). The one
+  // special case is a bool, which must spell as yes/no rather than true/false.
   const QByteArray n = name.toUtf8();
-  if (value.canConvert<double>()) {
-    double d = value.toDouble();
-    mpv_set_property(mpv, n.constData(), MPV_FORMAT_DOUBLE, &d);
-  } else {
-    const QByteArray s = value.toString().toUtf8();
-    mpv_set_property(mpv,
-                     n.constData(),
-                     MPV_FORMAT_STRING,
-                     const_cast<char*>(s.constData()));
+  const QByteArray v =
+    value.typeId() == QMetaType::Bool
+      ? (value.toBool() ? QByteArray("yes") : QByteArray("no"))
+      : value.toString().toUtf8();
+
+  mpv_set_property_string(mpv, n.constData(), v.constData());
+}
+
+QVariant
+MpvObject::getProperty(const QString& name) const
+{
+  const QByteArray n = name.toUtf8();
+  mpv_node node{};
+  if (mpv_get_property(mpv, n.constData(), MPV_FORMAT_NODE, &node) < 0) {
+    return {};
   }
+
+  const QVariant out = node_to_variant(node);
+  // `mpv_get_property` with NODE format allocates for a string/list/map node,
+  // so the node's contents must be released even though we copied what we need.
+  mpv_free_node_contents(&node);
+  return out;
 }
 
 QQuickFramebufferObject::Renderer*

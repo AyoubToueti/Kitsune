@@ -17,6 +17,8 @@ fn main() {
             .qml_file("qml/MyListPage.qml")
             .qml_file("qml/SettingsPopup.qml")
             .qml_file("qml/EpisodeWatchModal.qml")
+            .qml_file("qml/PlayerControls.qml")
+            .qml_file("qml/PlayerSettings.qml")
             .qml_file("qml/WatchPage.qml")
             .qml_file("qml/NavBar.qml")
             .qml_file("qml/ThemeSelect.qml")

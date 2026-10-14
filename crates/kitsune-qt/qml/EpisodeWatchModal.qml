@@ -85,6 +85,13 @@ Popup {
         }
     }
 
+    // The advanced player settings, opened from the OSD gear. Bound to the same
+    // live player the controls use.
+    PlayerSettings {
+        id: settingsPopup
+        player: playerLoader.item
+    }
+
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: 680
@@ -977,6 +984,16 @@ Popup {
                                     }
                                 }
                             }
+                        }
+
+                        // The OSD control bar, under the video surface.
+                        PlayerControls {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 2
+                            visible: modal.stage === "play"
+                            player: playerLoader.item
+                            bufferedFraction: modal.fileFraction()
+                            onOpenSettings: settingsPopup.open()
                         }
 
                         // Status headline + percent + controls.
