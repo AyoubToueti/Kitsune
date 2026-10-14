@@ -36,9 +36,9 @@ Item {
                 spacing: 12
 
                 Text {
-                    text: "Kitsune"
-                    color: Theme.accent
-                    font.pixelSize: 28
+                    text: "Trending"
+                    color: Theme.ink
+                    font.pixelSize: 22
                     font.bold: true
                 }
 
@@ -51,7 +51,8 @@ Item {
                 }
             }
 
-            // Browse + Schedule entries, right-aligned.
+            // Top / Schedule entries, right-aligned. Home, My List, Filter and
+            // Settings live in the global navbar; these two have no slot there.
             Row {
                 anchors.right: parent.right
                 anchors.rightMargin: Theme.pad
@@ -59,24 +60,12 @@ Item {
                 spacing: 10
 
                 NavButton {
-                    label: "Browse"
-                    onClicked: page.openBrowse()
-                }
-                NavButton {
-                    label: "Top"
+                    label: "Top Rated"
                     onClicked: page.openTop()
                 }
                 NavButton {
                     label: "Schedule"
                     onClicked: page.openSchedule()
-                }
-                NavButton {
-                    label: "My List"
-                    onClicked: page.openMyList()
-                }
-                NavButton {
-                    label: "Settings"
-                    onClicked: page.openSettings()
                 }
             }
         }

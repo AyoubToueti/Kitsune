@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
 import com.kitsune.app
 
 Window {
@@ -55,27 +56,59 @@ Window {
         return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
     }
 
-    // The navigation stack: Home -> Detail / Browse / ...
-    StackView {
-        id: stack
-        anchors.fill: parent
-        initialItem: home
+    // Which segmented navbar pill is active, so the indicator can follow.
+    property string navRoute: ""
 
-        pushEnter: Transition { NumberAnimation { property: "x"; from: stack.width; to: 0; duration: 220; easing.type: Easing.OutCubic } }
-        pushExit: Transition { NumberAnimation { property: "x"; from: 0; to: -stack.width * 0.3; duration: 220; easing.type: Easing.OutCubic } }
-        popEnter: Transition { NumberAnimation { property: "x"; from: -stack.width * 0.3; to: 0; duration: 220; easing.type: Easing.OutCubic } }
-        popExit: Transition { NumberAnimation { property: "x"; from: 0; to: stack.width; duration: 220; easing.type: Easing.OutCubic } }
+    // Push a page and mark the navbar state. `component` is one of the
+    // page Components declared below.
+    function goTo(component, route, props) {
+        navRoute = route
+        stack.push(component, props)
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+
+        NavBar {
+            Layout.fillWidth: true
+            activeRoute: root.navRoute
+            onOpenHome: {
+                root.navRoute = ""
+                stack.pop(null)
+            }
+            onOpenMyList: root.goTo(myListComponent, "list", { "backend": root.backend })
+            onOpenFilter: root.goTo(browseComponent, "filter", { "backend": root.backend })
+            onOpenSettings: root.goTo(settingsComponent, "", { "backend": root.backend })
+            onSearch: (term) => root.goTo(browseComponent, "filter", {
+                "backend": root.backend,
+                "initialSearch": term
+            })
+        }
+
+        // The navigation stack: Home -> Detail / Browse / ...
+        StackView {
+            id: stack
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            initialItem: home
+
+            pushEnter: Transition { NumberAnimation { property: "x"; from: stack.width; to: 0; duration: 220; easing.type: Easing.OutCubic } }
+            pushExit: Transition { NumberAnimation { property: "x"; from: 0; to: -stack.width * 0.3; duration: 220; easing.type: Easing.OutCubic } }
+            popEnter: Transition { NumberAnimation { property: "x"; from: -stack.width * 0.3; to: 0; duration: 220; easing.type: Easing.OutCubic } }
+            popExit: Transition { NumberAnimation { property: "x"; from: 0; to: stack.width; duration: 220; easing.type: Easing.OutCubic } }
+        }
     }
 
     HomePage {
         id: home
         visible: false
         onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
-        onOpenBrowse: () => stack.push(browseComponent, { "backend": root.backend })
-        onOpenSchedule: () => stack.push(scheduleComponent, { "backend": root.backend })
-        onOpenTop: () => stack.push(topComponent, { "backend": root.backend })
-        onOpenMyList: () => stack.push(myListComponent, { "backend": root.backend })
-        onOpenSettings: () => stack.push(settingsComponent, { "backend": root.backend })
+        onOpenBrowse: () => root.goTo(browseComponent, "filter", { "backend": root.backend })
+        onOpenSchedule: () => root.goTo(scheduleComponent, "", { "backend": root.backend })
+        onOpenTop: () => root.goTo(topComponent, "", { "backend": root.backend })
+        onOpenMyList: () => root.goTo(myListComponent, "list", { "backend": root.backend })
+        onOpenSettings: () => root.goTo(settingsComponent, "", { "backend": root.backend })
     }
 
     Component {
