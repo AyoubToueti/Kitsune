@@ -128,6 +128,14 @@ MpvObject::MpvObject(QQuickItem* parent)
 
   connect(
     this, &MpvObject::onUpdate, this, &MpvObject::doUpdate, Qt::QueuedConnection);
+
+  // mpv reports starved playback through its own properties, which QML cannot
+  // read directly. Poll them on a slow timer: the state changes on the order of
+  // seconds, so 250ms is responsive without being busy.
+  buffering_poll_ = new QTimer(this);
+  buffering_poll_->setInterval(250);
+  connect(buffering_poll_, &QTimer::timeout, this, &MpvObject::pollBuffering);
+  buffering_poll_->start();
 }
 
 MpvObject::~MpvObject()
@@ -136,6 +144,39 @@ MpvObject::~MpvObject()
     mpv_render_context_free(mpv_gl);
   }
   mpv_terminate_destroy(mpv);
+}
+
+namespace {
+
+/// Read a boolean mpv property, returning `fallback` when mpv has no answer
+/// (the property does not exist yet, or the core is between files).
+bool
+mpv_flag(mpv_handle* mpv, const char* name, bool fallback)
+{
+  int value = 0;
+  if (mpv_get_property(mpv, name, MPV_FORMAT_FLAG, &value) < 0) {
+    return fallback;
+  }
+  return value != 0;
+}
+
+} // namespace
+
+void
+MpvObject::pollBuffering()
+{
+  // A stall is either an explicit cache wait or an idle core. `core-idle` alone
+  // would also read true while the reader has PAUSED, which is not buffering --
+  // so a user pause is excluded.
+  const bool paused = mpv_flag(mpv, "pause", false);
+  const bool cache_wait = mpv_flag(mpv, "paused-for-cache", false);
+  const bool idle = mpv_flag(mpv, "core-idle", false);
+
+  const bool now_buffering = !paused && (cache_wait || idle);
+  if (now_buffering != buffering_) {
+    buffering_ = now_buffering;
+    emit bufferingChanged();
+  }
 }
 
 void

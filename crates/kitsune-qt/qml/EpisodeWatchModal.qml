@@ -74,6 +74,17 @@ Popup {
         height: 0
     }
 
+    // The player, as a component so the Loader creates and DESTROYS it with the
+    // play stage. `~MpvObject` frees the mpv handle and the GL render context,
+    // so nothing is left decoding in the background.
+    Component {
+        id: playerComponent
+        MpvObject {
+            // Nothing to configure here: main.rs already set `vo=libmpv` and
+            // `hwdec=auto` on the handle.
+        }
+    }
+
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: 680
@@ -102,6 +113,23 @@ Popup {
 
     function offset() {
         return Math.max(0, modal.absoluteEpisode - modal.episodeNumber)
+    }
+
+    // mpv's own buffering state, read off the live player item. `false` when
+    // the player is not loaded (nothing is playing, so nothing is buffering).
+    function playerBuffering() {
+        const p = playerLoader.item
+        return p !== null && p.buffering === true
+    }
+
+    // Hand the stream URL to whichever player item is currently loaded. Called
+    // when the URL arrives AND when the Loader finishes creating the item --
+    // either can happen first, so both try.
+    function loadStream() {
+        const p = playerLoader.item
+        if (p !== null && modal.playingUrl.length > 0) {
+            p.command(["loadfile", modal.playingUrl, "replace"])
+        }
     }
 
     // A human size, e.g. "1.4 GB".
@@ -256,7 +284,25 @@ Popup {
         else { backend.pauseTorrent(torrentId); paused = true }
     }
 
+    // Stop the player and free it.
+    //
+    // Pausing first avoids a jarring cutoff; the actual teardown is the
+    // Loader dropping the MpvObject (its destructor frees the mpv handle and
+    // GL render context) when `stage` leaves "play" -- `destroyPlayer` is for
+    // the case where the stage is NOT changing (the modal closing while the
+    // play stage is still current).
+    function stopPlayer() {
+        const p = playerLoader.item
+        if (p !== null) {
+            p.command(["stop"])
+            p.command(["quit"])
+        }
+    }
+
     function backToReleases() {
+        // Stop and free the player BEFORE leaving the stage, so a big decoder
+        // is not held while the reader is only browsing releases.
+        stopPlayer()
         if (torrentId >= 0) {
             backend.releaseTorrent(torrentId)
             backend.removeTorrent(torrentId)
@@ -265,15 +311,24 @@ Popup {
         chosenIdx = -1
         files = []
         playingUrl = ""
+        progress = null
+        speedHistory = []
+        // Setting the stage deactivates the Loader, which destroys the player.
         stage = "releases"
     }
 
     function teardown() {
+        // Same as `backToReleases` but also collapses the Loader explicitly:
+        // on a close the modal may be destroyed without `stage` ever changing,
+        // and a live mpv context must not outlive it.
+        stopPlayer()
         if (torrentId >= 0) {
             backend.releaseTorrent(torrentId)
             backend.removeTorrent(torrentId)
             torrentId = -1
         }
+        playerLoader.active = false
+        playingUrl = ""
     }
 
     function copyMagnet(release) {
@@ -374,7 +429,9 @@ Popup {
             // Hold BEFORE loading, so leaving cannot remove the torrent out
             // from under the player reading it.
             modal.backend.holdTorrent(modal.torrentId)
-            player.command(["loadfile", url, "replace"])
+            // The Loader may not have created the item yet; `onLoaded` calls
+            // this again when it has, so whichever happens second loads.
+            modal.loadStream()
         }
         function onStreamUrlFailed(message) {
             modal.error = message
@@ -851,8 +908,12 @@ Popup {
                         anchors.margins: 12
                         spacing: 10
 
-                        // The embedded player. Kept alive across stages so its
-                        // render context survives; only shown once playing.
+                        // The embedded player, created ONLY while the play stage
+                        // is showing. A `Loader` (not a hidden MpvObject) is what
+                        // makes that true: leaving the stage destroys the item,
+                        // and `~MpvObject` frees the mpv handle and GL render
+                        // context -- no decoder held in RAM for a screen that is
+                        // not playing anything.
                         Rectangle {
                             Layout.fillWidth: true
                             Layout.preferredHeight: modal.stage === "play" ? 300 : 0
@@ -861,9 +922,60 @@ Popup {
                             color: "black"
                             clip: true
 
-                            MpvObject {
-                                id: player
+                            Loader {
+                                id: playerLoader
                                 anchors.fill: parent
+                                // Active only on the play stage: leaving it
+                                // destroys the MpvObject and frees its mpv
+                                // handle + GL context.
+                                active: modal.stage === "play"
+                                sourceComponent: playerComponent
+                                // The item appears asynchronously; if the stream
+                                // URL already arrived, load it now. Whichever of
+                                // this and `onStreamUrlReady` runs second wins.
+                                onLoaded: modal.loadStream()
+                            }
+
+                            // Buffering banner, over the black surface, so the
+                            // reader can tell "still fetching" from "stuck".
+                            // Driven by mpv's own cache/idle state.
+                            Rectangle {
+                                anchors.top: parent.top
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.topMargin: 12
+                                visible: modal.stage === "play" && modal.playerBuffering()
+                                radius: 14
+                                color: "#cc0b0d12"
+                                border.width: 1
+                                border.color: Theme.borderSubtle
+                                implicitWidth: bufferRow.implicitWidth + 28
+                                implicitHeight: 30
+
+                                Row {
+                                    id: bufferRow
+                                    anchors.centerIn: parent
+                                    spacing: 8
+
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "◌"
+                                        color: Theme.accent
+                                        font.pixelSize: 16
+                                        NumberAnimation on rotation {
+                                            from: 0; to: 360
+                                            duration: 900
+                                            loops: Animation.Infinite
+                                            running: modal.playerBuffering()
+                                        }
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "Buffering…  " + modal.percent(modal.fileFraction()) + "%"
+                                        color: Theme.ink
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+                                }
                             }
                         }
 
@@ -877,8 +989,13 @@ Popup {
                                     : (modal.fileFraction() >= 1 ? "#4ade80" : Theme.accent)
                             }
                             Text {
+                                // While playing, mpv's own state decides:
+                                // "Buffering…" when it has run dry, "Playing"
+                                // otherwise. Before playback starts, the torrent
+                                // download is the thing being waited on.
                                 text: modal.paused ? "Paused"
-                                    : (modal.stage === "play" ? "Playing"
+                                    : (modal.stage === "play"
+                                        ? (modal.playerBuffering() ? "Buffering…" : "Playing")
                                         : (modal.fileFraction() >= 1 ? "Fully buffered" : "Buffering…"))
                                 color: Theme.ink
                                 font.pixelSize: 13

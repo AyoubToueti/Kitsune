@@ -8,6 +8,7 @@
 #pragma once
 
 #include <QtQuick/QQuickFramebufferObject>
+#include <QTimer>
 
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
@@ -22,8 +23,16 @@ class MpvObject : public QQuickFramebufferObject
 {
   Q_OBJECT
 
+  /// True while mpv is starved for data or has not produced a frame yet.
+  ///
+  /// Drives the "Buffering…" overlay QML draws over the black surface, so the
+  /// reader can tell "still fetching" from "stuck".
+  Q_PROPERTY(bool buffering READ isBuffering NOTIFY bufferingChanged)
+
   mpv_handle* mpv;
   mpv_render_context* mpv_gl;
+  bool buffering_ = false;
+  QTimer* buffering_poll_ = nullptr;
 
   friend class MpvRenderer;
 
@@ -34,6 +43,8 @@ public:
   ~MpvObject() override;
   Renderer* createRenderer() const override;
 
+  bool isBuffering() const { return buffering_; }
+
 public slots:
   /// Run an mpv command, e.g. `command(["loadfile", url])`.
   void command(const QVariant& params);
@@ -41,7 +52,9 @@ public slots:
 
 signals:
   void onUpdate();
+  void bufferingChanged();
 
 private slots:
   void doUpdate();
+  void pollBuffering();
 };
