@@ -135,13 +135,17 @@ Window {
         DetailPage {
             onBack: stack.pop()
             onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
-            onOpenWatch: (animeId, malId, episodeNumber, absoluteEpisode) => stack.push(watchComponent, {
-                "animeId": animeId,
-                "malId": malId,
-                "episodeNumber": episodeNumber,
-                "absoluteEpisode": absoluteEpisode,
-                "backend": root.backend
-            })
+            // An episode click opens the watch modal OVER the detail page,
+            // matching the web app: the reader keeps their place and closing
+            // it returns exactly where they were.
+            onOpenWatch: (animeId, malId, episodeNumber, absoluteEpisode) => {
+                watchModal.animeId = animeId
+                watchModal.malId = malId
+                watchModal.episodeNumber = episodeNumber
+                watchModal.absoluteEpisode = absoluteEpisode
+                watchModal.titles = []
+                watchModal.open()
+            }
             onOpenGenre: (genre) => root.goTo(browseComponent, "filter", {
                 "backend": root.backend,
                 "initialGenre": genre
@@ -184,6 +188,16 @@ Window {
         backend: root.backend
     }
 
+    // The episode watch flow: release picker -> files -> embedded player, as a
+    // modal over the detail page.
+    EpisodeWatchModal {
+        id: watchModal
+        backend: root.backend
+    }
+
+    // The standalone watch PAGE is kept for the KITSUNE_OPEN_WATCH debug path
+    // (play a bare URL with no torrent behind it) and the KITSUNE_OPEN_EPISODE
+    // smoke test. The normal path opens `watchModal` instead.
     Component {
         id: watchComponent
         WatchPage {
@@ -209,12 +223,12 @@ Window {
             // it can be screenshotted. Settings is not a stack route.
             settingsPopup.open()
         } else if (initialEpisodeAnime > 0) {
-            stack.push(watchComponent, {
-                "animeId": initialEpisodeAnime,
-                "episodeNumber": initialEpisodeNumber,
-                "absoluteEpisode": initialEpisodeNumber,
-                "backend": root.backend
-            })
+            // A dev aid: KITSUNE_OPEN_EPISODE=<id>:<n> opens the watch modal
+            // on startup so it can be screenshotted without clicking.
+            watchModal.animeId = initialEpisodeAnime
+            watchModal.episodeNumber = initialEpisodeNumber
+            watchModal.absoluteEpisode = initialEpisodeNumber
+            watchModal.open()
         } else if (initialWatchUrl.length > 0) {
             stack.push(watchComponent, { "streamUrl": initialWatchUrl })
         }
