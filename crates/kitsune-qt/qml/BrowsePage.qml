@@ -509,15 +509,21 @@ Item {
         }
     }
 
-    // --- Filters dropdown, overlaying the grid ---------------------------
+    // --- Filters dropdown, a card under the Filters button ----------------
+    //
+    // A fixed-width card rather than a full-bleed banner: anchored to the left
+    // margin (where the button sits) and capped so it reads as a popup over the
+    // grid. `Math.min` keeps it on-screen on a narrow window.
     Rectangle {
         id: filterPanel
         visible: page.filtersOpen
         anchors.top: header.bottom
         anchors.left: parent.left
-        anchors.right: parent.right
+        anchors.leftMargin: Theme.pad
+        width: Math.min(920, parent.width - Theme.pad * 2)
         height: Math.min(implicitHeight, parent.height - header.height - 20)
         implicitHeight: panelColumn.implicitHeight + 32
+        radius: 12
         z: 10
         color: Theme.surfaceRaised
         border.width: 1
