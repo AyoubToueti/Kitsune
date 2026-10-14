@@ -92,18 +92,64 @@ Popup {
         player: playerLoader.item
     }
 
+    // Dev aid: fullscreen the player. The reader's own toggle drives this too.
+    property bool fullscreen: false
+    // Whether the fullscreen chrome (the close circle) is showing. Auto-hides
+    // after a few idle seconds, the way every desktop player does.
+    property bool chromeVisible: true
+    // Ask the window to change its real fullscreen state.
+    signal requestFullscreen(bool on)
+
     parent: Overlay.overlay
-    anchors.centerIn: parent
-    width: 680
+    // Positioned by hand rather than `anchors.centerIn`: in fullscreen the
+    // popup has to cover the whole window, which an anchor to the centre
+    // cannot express.
+    x: modal.fullscreen ? 0 : Math.round((parent.width - width) / 2)
+    y: modal.fullscreen ? 0 : Math.round((parent.height - height) / 2)
+    width: modal.fullscreen ? parent.width : 680
     // An explicit height, NOT `implicitHeight`: the body uses
     // `Layout.fillHeight`, which contributes nothing to the content item's
     // implicit height, so an implicit-sized popup would collapse to just the
     // header and footer.
-    height: Math.min(720, (parent ? parent.height : 800) - 60)
+    height: modal.fullscreen ? parent.height : Math.min(720, (parent ? parent.height : 800) - 60)
     modal: true
     focus: true
     padding: 0
-    closePolicy: Popup.CloseOnEscape
+    // Escape must EXIT FULLSCREEN when fullscreen, so the popup must not also
+    // treat it as "close". Only the non-fullscreen case closes on Escape.
+    closePolicy: modal.fullscreen
+        ? Popup.NoAutoClose
+        : (Popup.CloseOnEscape | Popup.CloseOnPressOutside)
+
+    function toggleFullscreen() {
+        modal.fullscreen = !modal.fullscreen
+        modal.chromeVisible = true
+        modal.requestFullscreen(modal.fullscreen)
+        hideChrome.restart()
+    }
+
+    // Show the chrome and restart the idle countdown.
+    function wakeChrome() {
+        modal.chromeVisible = true
+        if (modal.fullscreen) hideChrome.restart()
+    }
+
+    Timer {
+        id: hideChrome
+        interval: 2500
+        onTriggered: if (modal.fullscreen) modal.chromeVisible = false
+    }
+
+
+
+
+    // Escape leaves fullscreen (and does nothing otherwise -- the popup's
+    // closePolicy handles the non-fullscreen case).
+    Shortcut {
+        enabled: modal.fullscreen
+        sequence: "Escape"
+        onActivated: modal.toggleFullscreen()
+    }
 
     onOpened: if (backend && animeId > 0 && titles.length === 0) backend.getAnime(animeId)
     onClosed: {
@@ -518,9 +564,12 @@ Popup {
         spacing: 0
 
         // --- Header ------------------------------------------------------
+        // Hidden in fullscreen: the episode title and close button are chrome,
+        // and the whole window belongs to the video.
         Item {
             Layout.fillWidth: true
-            Layout.preferredHeight: 92
+            Layout.preferredHeight: modal.fullscreen ? 0 : 92
+            visible: !modal.fullscreen
 
             RowLayout {
                 anchors.fill: parent
@@ -578,11 +627,12 @@ Popup {
                     border.width: 1
                     border.color: Theme.borderSubtle
 
-                    Text {
+                    PlayerIcon {
                         anchors.centerIn: parent
-                        text: "✕"
+                        kind: "close"
                         color: Theme.inkMuted
-                        font.pixelSize: 12
+                        width: 14
+                        height: 14
                     }
                     MouseArea {
                         id: closeMouse
@@ -901,19 +951,21 @@ Popup {
                 // The buffering card, with the player at its top.
                 Rectangle {
                     Layout.fillWidth: true
-                    implicitHeight: bufferingCol.implicitHeight + 24
-                    radius: 12
+                    // Fullscreen: the card takes the whole body, so the video
+                    // inside can too. Otherwise it hugs its content.
+                    Layout.fillHeight: modal.fullscreen
+                    implicitHeight: modal.fullscreen
+                        ? 0
+                        : bufferingCol.implicitHeight + 24
+                    radius: modal.fullscreen ? 0 : 12
                     color: Theme.surface
-                    border.width: 1
+                    border.width: modal.fullscreen ? 0 : 1
                     border.color: Theme.borderSubtle
 
                     ColumnLayout {
                         id: bufferingCol
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: 12
-                        spacing: 10
+                        anchors.fill: parent
+                        anchors.margins: modal.fullscreen ? 0 : 12
 
                         // The embedded player, created ONLY while the play stage
                         // is showing. A `Loader` (not a hidden MpvObject) is what
@@ -923,11 +975,54 @@ Popup {
                         // not playing anything.
                         Rectangle {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: modal.stage === "play" ? 300 : 0
+                            // Fullscreen: the video takes every spare pixel. Not
+                            // fullscreen: a fixed 300px box in the card.
+                            Layout.fillHeight: modal.stage === "play" && modal.fullscreen
+                            Layout.preferredHeight: (modal.stage === "play" && !modal.fullscreen)
+                                ? 300 : 0
                             visible: modal.stage === "play"
-                            radius: 8
+                            radius: modal.fullscreen ? 0 : 8
                             color: "black"
                             clip: true
+
+                            // Wake the auto-hiding chrome whenever the pointer
+                            // moves over the video in fullscreen.
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                acceptedButtons: Qt.NoButton
+                                onPositionChanged: modal.wakeChrome()
+                            }
+
+                            // The exit-fullscreen circle, top-right. Shown only
+                            // while the chrome is awake, and only in fullscreen.
+                            Rectangle {
+                                visible: modal.fullscreen && modal.chromeVisible
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                anchors.margins: 16
+                                width: 40
+                                height: 40
+                                radius: 20
+                                color: exitMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
+                                border.width: 1
+                                border.color: Theme.borderSubtle
+
+                                PlayerIcon {
+                                    anchors.centerIn: parent
+                                    kind: "close"
+                                    color: Theme.ink
+                                    width: 16
+                                    height: 16
+                                }
+                                MouseArea {
+                                    id: exitMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: modal.toggleFullscreen()
+                                }
+                            }
 
                             Loader {
                                 id: playerLoader
@@ -986,15 +1081,28 @@ Popup {
                             }
                         }
 
-                        // The OSD control bar, under the video surface.
+                        // The OSD control bar. In fullscreen it becomes an
+                        // overlay pinned to the bottom of the video, and hides
+                        // with the rest of the chrome; otherwise it sits under
+                        // the video.
                         PlayerControls {
                             Layout.fillWidth: true
                             Layout.topMargin: 2
                             visible: modal.stage === "play"
+                                && (!modal.fullscreen || modal.chromeVisible)
                             player: playerLoader.item
                             bufferedFraction: modal.fileFraction()
+                            fullscreen: modal.fullscreen
                             onOpenSettings: settingsPopup.open()
+                            onToggleFullscreen: modal.toggleFullscreen()
                         }
+
+                        // The download panel. Hidden in fullscreen, where the
+                        // video owns the screen and only the OSD is shown.
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: !modal.fullscreen
+                            spacing: 10
 
                         // Status headline + percent + controls.
                         RowLayout {
@@ -1031,11 +1139,12 @@ Popup {
                                 color: pauseMouse.containsMouse ? Theme.surfaceHover : "transparent"
                                 border.width: 1
                                 border.color: Theme.borderSubtle
-                                Text {
+                                PlayerIcon {
                                     anchors.centerIn: parent
-                                    text: modal.paused ? "▶" : "⏸"
+                                    kind: modal.paused ? "play" : "pause"
                                     color: Theme.inkMuted
-                                    font.pixelSize: 11
+                                    width: 13
+                                    height: 13
                                 }
                                 MouseArea {
                                     id: pauseMouse
@@ -1051,11 +1160,12 @@ Popup {
                                 color: cancelMouse.containsMouse ? Theme.surfaceHover : "transparent"
                                 border.width: 1
                                 border.color: Theme.borderSubtle
-                                Text {
+                                PlayerIcon {
                                     anchors.centerIn: parent
-                                    text: "■"
+                                    kind: "stop"
                                     color: Theme.inkMuted
-                                    font.pixelSize: 10
+                                    width: 12
+                                    height: 12
                                 }
                                 MouseArea {
                                     id: cancelMouse
@@ -1139,12 +1249,15 @@ Popup {
                                 }
                             }
                         }
+                        }
                     }
                 }
 
-                // Back to releases.
+                // Back to releases. Hidden in fullscreen with the rest of the
+                // non-player chrome.
                 RowLayout {
                     Layout.fillWidth: true
+                    visible: !modal.fullscreen
                     Text {
                         text: "← Back to releases"
                         color: backMouse.containsMouse ? Theme.accent : Theme.inkMuted
@@ -1165,10 +1278,12 @@ Popup {
                     }
                 }
 
-                // File rows.
+                // File rows. Hidden in fullscreen, like the rest of the
+                // non-player chrome.
                 ListView {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    visible: !modal.fullscreen
                     clip: true
                     spacing: 6
                     model: modal.files
@@ -1259,9 +1374,11 @@ Popup {
         }
 
         // --- Footer ------------------------------------------------------
+        // Hidden in fullscreen: the video owns the whole window.
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 54
+            Layout.preferredHeight: modal.fullscreen ? 0 : 54
+            visible: !modal.fullscreen
             color: Theme.surfaceRaised
 
             Rectangle {

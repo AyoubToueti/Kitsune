@@ -1,11 +1,14 @@
 // The player's OSD control bar: a seek timeline, transport buttons, speed,
-// volume, and a gear opening the full settings popup. Sits UNDER the video
-// surface (the layout the reader asked for).
+// volume, fullscreen, and a gear opening the full settings popup. Sits UNDER
+// the video surface (the layout the reader asked for).
 //
 // Everything is driven off the live `MpvObject`: play/pause, position,
 // duration, speed and volume are read from its polled properties, and actions
 // go through `command()` / `setProperty()`. No state is mirrored here, so the
 // bar cannot drift from what the decoder is actually doing.
+//
+// Icons are vector (`PlayerIcon`), not emoji: the media characters render as
+// colour emoji on many systems and ignore the theme.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -19,8 +22,13 @@ Item {
     // The chosen file's downloaded fraction, 0..1: the buffer fill under the
     // played fill on the timeline.
     property real bufferedFraction: 0
+    // Whether the player is currently fullscreen, so the button shows the
+    // right glyph.
+    property bool fullscreen: false
     // Opens the settings popup; the modal owns the popup itself.
     signal openSettings()
+    // Toggles fullscreen; the modal owns the window state.
+    signal toggleFullscreen()
 
     implicitHeight: 76
 
@@ -171,14 +179,14 @@ Item {
             spacing: 6
 
             ControlButton {
-                glyph: "⏮"
+                icon: "prev"
                 tip: "Previous frame"
                 onClicked: {
                     if (bar.player) bar.player.command(["frame-back-step"])
                 }
             }
             ControlButton {
-                glyph: bar.isPaused() ? "▶" : "⏸"
+                icon: bar.isPaused() ? "play" : "pause"
                 tip: bar.isPaused() ? "Play" : "Pause"
                 accent: true
                 onClicked: {
@@ -186,14 +194,14 @@ Item {
                 }
             }
             ControlButton {
-                glyph: "⏹"
+                icon: "stop"
                 tip: "Stop"
                 onClicked: {
                     if (bar.player) bar.player.command(["stop"])
                 }
             }
             ControlButton {
-                glyph: "⏭"
+                icon: "next"
                 tip: "Next frame"
                 onClicked: {
                     if (bar.player) bar.player.command(["frame-step"])
@@ -203,14 +211,14 @@ Item {
             Item { Layout.preferredWidth: 8 }
 
             ControlButton {
-                glyph: "⏪"
+                icon: "rewind"
                 tip: "Back 10 seconds"
                 onClicked: {
                     if (bar.player) bar.player.command(["seek", "-10", "relative"])
                 }
             }
             ControlButton {
-                glyph: "⏩"
+                icon: "forward"
                 tip: "Forward 10 seconds"
                 onClicked: {
                     if (bar.player) bar.player.command(["seek", "10", "relative"])
@@ -243,7 +251,7 @@ Item {
 
             // Mute toggle.
             ControlButton {
-                glyph: bar.isMuted() ? "🔇" : "🔊"
+                icon: bar.isMuted() ? "mute" : "volume"
                 tip: bar.isMuted() ? "Unmute" : "Mute"
                 onClicked: {
                     if (bar.player) bar.player.setProperty("mute", !bar.isMuted())
@@ -252,7 +260,7 @@ Item {
 
             // Volume slider, 0..130 (above 100 boosts).
             Slider {
-                Layout.preferredWidth: 110
+                Layout.preferredWidth: 100
                 from: 0
                 to: 130
                 value: bar.vol()
@@ -261,9 +269,16 @@ Item {
                 }
             }
 
+            // Fullscreen toggle.
+            ControlButton {
+                icon: bar.fullscreen ? "exit-fullscreen" : "fullscreen"
+                tip: bar.fullscreen ? "Exit fullscreen (Esc)" : "Fullscreen"
+                onClicked: bar.toggleFullscreen()
+            }
+
             // Gear -> settings popup.
             ControlButton {
-                glyph: "⚙"
+                icon: "gear"
                 tip: "Player settings"
                 onClicked: bar.openSettings()
             }
@@ -272,7 +287,7 @@ Item {
 
     // A small square icon button, shared by the transport row.
     component ControlButton: Rectangle {
-        property string glyph: ""
+        property string icon: "play"
         property string tip: ""
         property bool accent: false
         signal clicked()
@@ -286,11 +301,10 @@ Item {
         border.width: accent ? 0 : 1
         border.color: Theme.borderSubtle
 
-        Text {
+        PlayerIcon {
             anchors.centerIn: parent
-            text: parent.glyph
+            kind: parent.icon
             color: parent.accent ? "white" : Theme.inkMuted
-            font.pixelSize: parent.accent ? 14 : 13
         }
 
         MouseArea {

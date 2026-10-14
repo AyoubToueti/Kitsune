@@ -197,6 +197,13 @@ Window {
         id: watchModal
         backend: root.backend
         autoPlay: root.autoPlay
+        // Fullscreen the real window, so the whole screen is the player and the
+        // OS chrome (title bar) goes away. `showFullScreen()`/`showNormal()` are
+        // METHODS on Window, not a writable property.
+        onRequestFullscreen: (on) => {
+            if (on) root.showFullScreen()
+            else root.showNormal()
+        }
     }
 
     // The standalone watch PAGE is kept for the KITSUNE_OPEN_WATCH debug path

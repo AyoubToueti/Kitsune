@@ -18,7 +18,11 @@ Popup {
     parent: Overlay.overlay
     anchors.centerIn: parent
     width: 460
-    height: Math.min(implicitHeight, (parent ? parent.height : 800) - 80)
+    // An explicit height, NOT `implicitHeight`: the body is a Flickable with
+    // `Layout.fillHeight`, which contributes nothing to the content item's
+    // implicit height -- so an implicit-sized popup collapsed to just the
+    // header and the tab strip, and clicking a tab appeared to do nothing.
+    height: Math.min(520, (parent ? parent.height : 800) - 80)
     modal: true
     focus: true
     padding: 0
