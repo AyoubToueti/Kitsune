@@ -26,6 +26,7 @@ pub mod traits;
 pub use download::{download_to, DownloadError};
 pub use match_spec::{EpisodeRequest, MatchRejection};
 pub use nyaa::{NyaaIndexer, NYAA_ENDPOINT};
+pub use probe::{probe_releases_on_own_session, probe_releases_standalone};
 pub use probe_rank::{combined_score, health_badge, outcome, probe_score, HealthBadge, ProbeOutcome};
 pub use query::SearchMode;
 pub use traits::{Indexer, IndexerError};

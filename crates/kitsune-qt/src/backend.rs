@@ -203,6 +203,26 @@ pub mod qobject {
         #[cxx_name = "releaseTorrent"]
         fn release_torrent(self: Pin<&mut Self>, torrent_id: i64);
 
+        /// Probe a set of releases for swarm health.
+        ///
+        /// `releases_json` is a JSON `Release[]`, the exact list a search just
+        /// returned. One `probeResult` fires per release, in completion order,
+        /// so the list can re-rank while slower probes are still running; a
+        /// final `probeDone` marks the end. Nothing is returned: the answers
+        /// are the signals.
+        #[qinvokable]
+        #[cxx_name = "probeReleases"]
+        fn probe_releases(self: Pin<&mut Self>, releases_json: QString);
+
+        /// Fetch a `.torrent` from an indexer and write it to `path`.
+        ///
+        /// The fetch happens here rather than in QML: Nyaa cannot be reached
+        /// from a web context (CORS), and a native request writes the bytes
+        /// straight to disk.
+        #[qinvokable]
+        #[cxx_name = "downloadTorrent"]
+        fn download_torrent(self: Pin<&mut Self>, url: QString, path: QString);
+
         // --- Account (AniList list) ------------------------------------------
         //
         // NOTE: the interactive sign-in flow (open the authorise URL, catch the
@@ -418,6 +438,26 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "torrentStatsReady"]
         fn torrent_stats_ready(self: Pin<&mut Self>, json: QString);
+
+        /// One release's probe verdict. `badge` is "green"|"yellow"|"red",
+        /// `combinedScore` the probe-adjusted rank. Fires in completion order.
+        #[qsignal]
+        #[cxx_name = "probeResult"]
+        fn probe_result(self: Pin<&mut Self>, index: i32, badge: QString, combined_score: i64);
+
+        /// The whole probe batch finished (or could not start). Always fires,
+        /// even when every probe failed, so the UI can stop its spinner.
+        #[qsignal]
+        #[cxx_name = "probeDone"]
+        fn probe_done(self: Pin<&mut Self>);
+
+        /// A `.torrent` was written to disk.
+        #[qsignal]
+        #[cxx_name = "downloadDone"]
+        fn download_done(self: Pin<&mut Self>);
+        #[qsignal]
+        #[cxx_name = "downloadFailed"]
+        fn download_failed(self: Pin<&mut Self>, message: QString);
     }
 
     // Enables `self.qt_thread()` and the `queue(...)` used to hop back onto the
@@ -433,11 +473,16 @@ use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
 use kitsune_core::auth::{TokenStore, flow};
-use kitsune_core::indexer::{search_all, IndexerRegistry, ReleaseRequest, SearchMode};
+use kitsune_core::indexer::{
+    combined_score, download_to, health_badge, probe_releases_standalone, rank, search_all,
+    HealthBadge, IndexerRegistry, ReleaseRequest, SearchMode,
+};
 use kitsune_core::player::state::PlayerState;
 use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
 use kitsune_core::settings::{Settings, SettingsStore};
-use kitsune_core::types::{BrowseQuery, EpisodeInfo, ListFilter, ListStatus, ReleasePreference, Title};
+use kitsune_core::types::{
+    BrowseQuery, EpisodeInfo, ListFilter, ListStatus, Release, ReleasePreference, Title,
+};
 
 /// The default page size, mirroring `commands::DEFAULT_LIMIT` in the Tauri app.
 const DEFAULT_LIMIT: u32 = 20;
@@ -1045,6 +1090,94 @@ impl qobject::Backend {
         });
     }
 
+    /// Probe every release for swarm health, reporting each verdict as it
+    /// lands. Nothing is returned: the answers are `probeResult` signals,
+    /// terminated by `probeDone`.
+    fn probe_releases(self: Pin<&mut Self>, releases_json: QString) {
+        let releases_json = releases_json.to_string();
+
+        let releases: Vec<Release> = match serde_json::from_str(&releases_json) {
+            Ok(releases) => releases,
+            Err(err) => {
+                tracing::warn!("bad releases payload for probe: {err}");
+                self.probe_done();
+                return;
+            }
+        };
+
+        // The static half of every score, computed once; a probe only adds to
+        // it, so re-deriving per event would be wasted work.
+        let preference: ReleasePreference = {
+            let stored = self.rust().settings.read();
+            ReleasePreference {
+                preferred_resolutions: stored.preferred_resolutions,
+                min_seeders: stored.min_seeders,
+            }
+        };
+        let base: Arc<Vec<i64>> = Arc::new(
+            releases
+                .iter()
+                .map(|release| rank::score(release, &preference))
+                .collect(),
+        );
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+
+        runtime.spawn(async move {
+            // A dedicated session, matching the Tauri path: registering a
+            // release on the player's session with an empty file selection
+            // would make a later playback request for it download nothing.
+            let dir = std::env::temp_dir().join("kitsune-probes");
+
+            let for_events = Arc::clone(&base);
+            // The callback fires once per release, so the thread handle is
+            // cloned per call rather than moved into the closure once.
+            let thread_for_events = qt_thread.clone();
+            probe_releases_standalone(dir, &releases, move |index, probe| {
+                let base_score = for_events.get(index).copied().unwrap_or(0);
+                let badge = health_badge(probe);
+                let score = combined_score(base_score, probe);
+                let badge_wire = badge_literal(badge);
+
+                // `queue` needs a `'static` closure, so the values are moved
+                // in, not borrowed.
+                let _ = thread_for_events.clone().queue(move |qobject| {
+                    qobject.probe_result(
+                        index as i32,
+                        QString::from(badge_wire),
+                        score,
+                    )
+                });
+            })
+            .await;
+
+            let _ = qt_thread.queue(|qobject| qobject.probe_done());
+        });
+    }
+
+    /// Fetch a `.torrent` from an indexer and write it to `path`.
+    fn download_torrent(self: Pin<&mut Self>, url: QString, path: QString) {
+        let url = url.to_string();
+        let path = path.to_string();
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+
+        runtime.spawn(async move {
+            match download_to(&url, std::path::Path::new(&path)).await {
+                Ok(()) => {
+                    let _ = qt_thread.queue(|qobject| qobject.download_done());
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.download_failed(QString::from(&message)));
+                }
+            }
+        });
+    }
+
     // --- Account -----------------------------------------------------------
 
     /// The URL to open in a browser to authorise Kitsune.
@@ -1250,5 +1383,15 @@ fn non_empty(value: QString) -> Option<String> {
         None
     } else {
         Some(value)
+    }
+}
+
+/// The wire string for a [`HealthBadge`], matching the serde shape the Svelte
+/// frontend already consumed ("green" | "yellow" | "red").
+fn badge_literal(badge: HealthBadge) -> &'static str {
+    match badge {
+        HealthBadge::Green => "green",
+        HealthBadge::Yellow => "yellow",
+        HealthBadge::Red => "red",
     }
 }
