@@ -48,6 +48,14 @@ pub mod qobject {
         #[cxx_name = "getList"]
         fn get_list(self: Pin<&mut Self>, filter: QString, limit: i32);
 
+        /// A curated list, with a caller-supplied `tag` echoed back on the
+        /// answer. The home page fires four list requests at once and needs to
+        /// tell which block each reply belongs to; the untagged `getList`
+        /// cannot distinguish them.
+        #[qinvokable]
+        #[cxx_name = "getListTagged"]
+        fn get_list_tagged(self: Pin<&mut Self>, tag: QString, filter: QString, limit: i32);
+
         /// Browse with filters and paging. `query` is a JSON `BrowseQuery`.
         #[qinvokable]
         #[cxx_name = "getBrowse"]
@@ -306,6 +314,14 @@ pub mod qobject {
         #[cxx_name = "listFailed"]
         fn list_failed(self: Pin<&mut Self>, message: QString);
 
+        /// The tagged variant: `tag` is the caller's own label, echoed back.
+        #[qsignal]
+        #[cxx_name = "taggedListReady"]
+        fn tagged_list_ready(self: Pin<&mut Self>, tag: QString, json: QString);
+        #[qsignal]
+        #[cxx_name = "taggedListFailed"]
+        fn tagged_list_failed(self: Pin<&mut Self>, tag: QString, message: QString);
+
         #[qsignal]
         #[cxx_name = "browseReady"]
         fn browse_ready(self: Pin<&mut Self>, json: QString);
@@ -543,6 +559,52 @@ impl qobject::Backend {
             Self::list_ready,
             Self::list_failed,
         );
+    }
+
+    /// The tagged variant of `get_list`. Same work, but the answer carries the
+    /// caller's `tag` back so concurrent requests can be told apart.
+    fn get_list_tagged(self: Pin<&mut Self>, tag: QString, filter: QString, limit: i32) {
+        let tag = tag.to_string();
+        let filter = filter.to_string();
+        let limit = limit_or_default(limit);
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let provider = Arc::clone(&self.rust().provider);
+
+        runtime.spawn(async move {
+            let parsed: Result<ListFilter, String> =
+                serde_json::from_value(serde_json::Value::String(filter))
+                    .map_err(|err| format!("unknown list filter: {err}"));
+
+            match parsed {
+                Ok(filter) => match provider.list(filter, limit).await {
+                    Ok(items) => {
+                        let json = json_or_empty(&items);
+                        let _ = qt_thread.queue(move |qobject| {
+                            qobject.tagged_list_ready(QString::from(&tag), QString::from(&json))
+                        });
+                    }
+                    Err(err) => {
+                        let message = err.to_string();
+                        let _ = qt_thread.queue(move |qobject| {
+                            qobject.tagged_list_failed(
+                                QString::from(&tag),
+                                QString::from(&message),
+                            )
+                        });
+                    }
+                },
+                Err(message) => {
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.tagged_list_failed(
+                            QString::from(&tag),
+                            QString::from(&message),
+                        )
+                    });
+                }
+            }
+        });
     }
 
     fn get_browse(self: Pin<&mut Self>, query: QString, page: i32, per_page: i32) {

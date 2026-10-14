@@ -22,6 +22,10 @@ fn main() {
             .qml_file("qml/Chip.qml")
             .qml_file("qml/NavButton.qml")
             .qml_file("qml/PosterCard.qml")
+            .qml_file("qml/HeroCarousel.qml")
+            .qml_file("qml/TrendingCard.qml")
+            .qml_file("qml/AnimeListRow.qml")
+            .qml_file("qml/ListBlock.qml")
             // Theme is a `pragma Singleton`; the qmldir must mark it as one or
             // QML refuses to import it.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true)),

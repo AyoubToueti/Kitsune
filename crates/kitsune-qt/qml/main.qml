@@ -28,26 +28,13 @@ Window {
 
     // The Rust bridge. In QML a `#[qml_element]` QObject is instantiated by
     // its Rust type name.
+    //
+    // No signal handlers here: each page opens its own `Connections` to this
+    // object, so a page that is not on screen never receives a result meant for
+    // another (the home page's carousel and the top page both listen to lists,
+    // and a shared handler could not tell them apart).
     Backend {
         id: backend
-
-        onTrendingReady: (json) => {
-            home.trendingModel.clear()
-            const items = JSON.parse(json)
-            for (const item of items) {
-                home.trendingModel.append({
-                    "id": item.id,
-                    "title": root.displayTitle(item),
-                    "score": item.averageScore || 0,
-                    "cover": item.coverImage || "",
-                    "format": item.format || "",
-                })
-            }
-            home.status = items.length + " trending"
-        }
-        onTrendingFailed: (message) => {
-            home.status = "Failed: " + message
-        }
     }
 
     // Mirrors `displayTitle` in src/lib/types.ts.
@@ -103,12 +90,23 @@ Window {
     HomePage {
         id: home
         visible: false
+        backend: root.backend
         onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
         onOpenBrowse: () => root.goTo(browseComponent, "filter", { "backend": root.backend })
         onOpenSchedule: () => root.goTo(scheduleComponent, "", { "backend": root.backend })
         onOpenTop: () => root.goTo(topComponent, "", { "backend": root.backend })
         onOpenMyList: () => root.goTo(myListComponent, "list", { "backend": root.backend })
         onOpenSettings: () => root.goTo(settingsComponent, "", { "backend": root.backend })
+        onOpenGenre: (genre) => root.goTo(browseComponent, "filter", {
+            "backend": root.backend,
+            "initialGenre": genre
+        })
+        onOpenWatch: (animeId, episodeNumber) => stack.push(watchComponent, {
+            "animeId": animeId,
+            "episodeNumber": episodeNumber,
+            "absoluteEpisode": episodeNumber,
+            "backend": root.backend
+        })
     }
 
     Component {
@@ -173,7 +171,8 @@ Window {
     }
 
     Component.onCompleted: {
-        backend.getTrending(40)
+        // HomePage fetches its own trending in its own Component.onCompleted,
+        // so there is no duplicate request here.
         if (initialOpenId > 0) {
             stack.push(detailComponent, { "animeId": initialOpenId, "backend": root.backend })
         } else if (initialBrowse) {
