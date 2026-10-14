@@ -1,7 +1,8 @@
-// Browse with filters, mirroring the Svelte /filter route: a Filters dropdown
-// (Search/Type/Status/Score/Season/Year), an "Advanced Genre & Tag Filters"
-// disclosure with genre chips and grouped tag chips, an active-filters pill bar,
-// a sort menu with a reverse toggle, and a paged results grid.
+// The filter page, mirroring the Svelte /filter route: a "Filter anime" title,
+// a toolbar with a Filters button (and active count) on the left and a
+// reverse + sort group on the right, a bordered active-filters bar, and the
+// paged results grid. The Filters dropdown holds Search/Type/Status/Score/
+// Season/Year plus the Advanced Genre & Tag catalogue.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -40,6 +41,7 @@ Item {
     property string tagFilter: ""
     property bool loading: false
     property int pageNumber: 1
+    property string resultStatus: ""
 
     ListModel { id: results }
 
@@ -99,7 +101,6 @@ Item {
 
     // --- Query building ------------------------------------------------------
 
-    // Split tagStates into the include/exclude name lists the backend wants.
     function includedTags() {
         return Object.keys(tagStates).filter((name) => tagStates[name] === "include")
     }
@@ -130,7 +131,6 @@ Item {
         backend.getBrowse(JSON.stringify(buildQuery()), pageNumber, 40)
     }
 
-    // Any filter change refetches from page one.
     function applyFilters() {
         runSearch(true)
     }
@@ -236,11 +236,11 @@ Item {
                     "format": item.format || "",
                 })
             }
-            status.text = results.count + " results"
+            page.resultStatus = results.count + " results"
         }
         function onBrowseFailed(message) {
             page.loading = false
-            status.text = "Failed: " + message
+            page.resultStatus = "Failed: " + message
         }
     }
 
@@ -253,390 +253,474 @@ Item {
     }
 
     // --- Layout --------------------------------------------------------------
-    Item {
-        anchors.fill: parent
 
-        // Toolbar
-        Rectangle {
-            id: toolbar
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 56
-            color: Theme.surface
+    // Fixed header: title, toolbar, active-filters bar. The grid scrolls
+    // beneath it.
+    Column {
+        id: header
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        topPadding: Theme.pad
+        spacing: 14
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.pad
-                anchors.rightMargin: Theme.pad
-                spacing: 10
+        // Title.
+        Text {
+            x: Theme.pad
+            text: "Filter anime"
+            color: Theme.ink
+            font.pixelSize: 20
+            font.bold: true
+        }
 
-                // Filters button + active count.
-                Rectangle {
-                    width: filterRow.implicitWidth + 24
-                    height: 36
-                    radius: 10
-                    color: filterMouse.containsMouse ? Theme.surfaceRaised : Theme.surface
-                    border.width: 1
-                    border.color: (page.filtersOpen || page.activeFilters().length > 0)
-                        ? Theme.accent : Theme.borderSubtle
+        // --- Toolbar ------------------------------------------------------
+        Item {
+            x: Theme.pad
+            width: parent.width - Theme.pad * 2
+            height: 40
 
-                    Row {
-                        id: filterRow
-                        anchors.centerIn: parent
-                        spacing: 8
+            // Filters button (left) with active count.
+            Rectangle {
+                id: filtersButton
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+                width: filtersRow.implicitWidth + 28
+                height: 40
+                radius: 12
+                color: Theme.surfaceRaised
+                border.width: 1
+                border.color: (page.filtersOpen || page.activeFilters().length > 0)
+                    ? Theme.accent : Theme.borderSubtle
+
+                Row {
+                    id: filtersRow
+                    anchors.centerIn: parent
+                    spacing: 8
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "☰"
+                        color: Theme.ink
+                        font.pixelSize: 14
+                        font.bold: true
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Filters"
+                        color: Theme.ink
+                        font.pixelSize: 13
+                        font.bold: true
+                    }
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: page.activeFilters().length > 0
+                        width: 20
+                        height: 20
+                        radius: 10
+                        color: Theme.accent
                         Text {
-                            text: "☰  Filters"
-                            color: Theme.ink
-                            font.pixelSize: 13
+                            anchors.centerIn: parent
+                            text: page.activeFilters().length
+                            color: "white"
+                            font.pixelSize: 10
                             font.bold: true
                         }
-                        Rectangle {
-                            visible: page.activeFilters().length > 0
-                            width: 18; height: 18; radius: 9
-                            color: Theme.accent
-                            Text {
-                                anchors.centerIn: parent
-                                text: page.activeFilters().length
-                                color: "white"
-                                font.pixelSize: 10
-                                font.bold: true
-                            }
+                    }
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: page.filtersOpen = !page.filtersOpen
+                }
+            }
+
+            // Results count, beside the button.
+            Text {
+                anchors.left: filtersButton.right
+                anchors.leftMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                text: page.resultStatus
+                color: Theme.inkFaint
+                font.pixelSize: 12
+            }
+
+            // Sort group (right): reverse button + sort select in one pill.
+            Rectangle {
+                id: sortGroup
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                width: sortRow.implicitWidth + 10
+                height: 40
+                radius: 12
+                color: Theme.surfaceRaised
+                border.width: 1
+                border.color: Theme.borderSubtle
+
+                Row {
+                    id: sortRow
+                    anchors.centerIn: parent
+                    spacing: 4
+
+                    // Reverse toggle.
+                    Rectangle {
+                        width: 34
+                        height: 32
+                        radius: 9
+                        color: reverseMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "⇅"
+                            color: page.reversed ? Theme.accent : Theme.inkMuted
+                            font.pixelSize: 15
+                        }
+                        MouseArea {
+                            id: reverseMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: { page.reversed = !page.reversed; page.applyFilters() }
                         }
                     }
-                    MouseArea {
-                        id: filterMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: page.filtersOpen = !page.filtersOpen
+
+                    // Divider.
+                    Rectangle {
+                        width: 1
+                        height: 18
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: Theme.borderSubtle
                     }
-                }
 
-                Text {
-                    visible: page.activeFilters().length === 0
-                    text: "Nothing filtered yet."
-                    color: Theme.inkFaint
-                    font.pixelSize: 12
-                }
-
-                Text {
-                    id: status
-                    Layout.fillWidth: true
-                    text: ""
-                    color: Theme.inkFaint
-                    font.pixelSize: 12
-                    elide: Text.ElideRight
-                }
-
-                // Reverse toggle.
-                Rectangle {
-                    width: 36; height: 36; radius: 10
-                    color: reverseMouse.containsMouse ? Theme.surfaceRaised : Theme.surface
-                    border.width: 1
-                    border.color: page.reversed ? Theme.accent : Theme.borderSubtle
-                    Text {
-                        anchors.centerIn: parent
-                        text: "⇅"
-                        color: page.reversed ? Theme.accent : Theme.inkMuted
-                        font.pixelSize: 15
+                    ThemeSelect {
+                        anchors.verticalCenter: parent.verticalCenter
+                        preferredWidth: 180
+                        borderless: true
+                        accentText: true
+                        options: page.sortOptions
+                        value: page.sort
+                        onSelected: (v) => { page.sort = v; page.applyFilters() }
                     }
-                    MouseArea {
-                        id: reverseMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: { page.reversed = !page.reversed; page.applyFilters() }
-                    }
-                }
-
-                // Sort.
-                ThemeSelect {
-                    preferredWidth: 180
-                    options: page.sortOptions
-                    value: page.sort
-                    onSelected: (v) => { page.sort = v; page.applyFilters() }
                 }
             }
         }
 
-        // Results grid.
-        GridView {
-            id: grid
-            anchors.top: toolbar.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            clip: true
-            model: results
-            cellWidth: 216
-            cellHeight: 380
-            leftMargin: Theme.pad
-            topMargin: Theme.pad
-            rightMargin: Theme.pad
-            bottomMargin: Theme.pad
-
-            delegate: PosterCard {
-                width: 200
-                title: model.title
-                score: model.score
-                cover: model.cover
-                format: model.format
-                onClicked: page.openAnime(model.id)
-            }
-
-            onAtYEndChanged: {
-                if (atYEnd && !page.loading && results.count > 0) {
-                    page.pageNumber += 1
-                    page.runSearch(false)
-                }
-            }
-        }
-
-        // Filter panel, overlaying the grid when open.
+        // --- Active filters bar -------------------------------------------
         Rectangle {
-            id: filterPanel
-            visible: page.filtersOpen
-            anchors.top: toolbar.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: Math.min(implicitHeight, parent.height - toolbar.height - 20)
-            implicitHeight: panelColumn.implicitHeight + 32
-            z: 10
-            color: Theme.surfaceRaised
+            x: Theme.pad
+            width: parent.width - Theme.pad * 2
+            height: 46
+            radius: 12
+            visible: page.activeFilters().length > 0
+            color: "transparent"
             border.width: 1
             border.color: Theme.borderSubtle
 
-            Flickable {
-                anchors.fill: parent
-                anchors.margins: 16
-                contentWidth: width
-                contentHeight: panelColumn.implicitHeight
-                clip: true
-                boundsBehavior: Flickable.StopAtBounds
+            Row {
+                anchors.left: parent.left
+                anchors.leftMargin: 14
+                anchors.right: parent.right
+                anchors.rightMargin: 14
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 8
 
-                ColumnLayout {
-                    id: panelColumn
-                    width: parent.width
-                    spacing: 14
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Active"
+                    color: Theme.inkFaint
+                    font.pixelSize: 12
+                }
 
-                    // Labels row so the selects are identifiable.
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 12
-                        Text { Layout.preferredWidth: 220; text: "Search"; color: Theme.inkFaint; font.pixelSize: 11 }
-                        Text { Layout.preferredWidth: 150; text: "Type"; color: Theme.inkFaint; font.pixelSize: 11 }
-                        Text { Layout.preferredWidth: 170; text: "Status"; color: Theme.inkFaint; font.pixelSize: 11 }
-                        Text { Layout.preferredWidth: 130; text: "Score"; color: Theme.inkFaint; font.pixelSize: 11 }
-                        Text { Layout.preferredWidth: 130; text: "Season"; color: Theme.inkFaint; font.pixelSize: 11 }
-                        Text { Layout.preferredWidth: 130; text: "Year"; color: Theme.inkFaint; font.pixelSize: 11 }
-                        Item { Layout.fillWidth: true }
-                    }
+                Repeater {
+                    model: page.activeFilters()
 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 12
+                    delegate: Rectangle {
+                        required property var modelData
+                        anchors.verticalCenter: parent.verticalCenter
+                        height: 26
+                        radius: 13
+                        width: pillLabel.implicitWidth + 22
+                        color: Theme.accent
 
-                        TextField {
-                            Layout.preferredWidth: 220
-                            placeholderText: "Search…"
-                            text: page.searchText
-                            color: Theme.ink
-                            placeholderTextColor: Theme.inkFaint
-                            background: Rectangle {
-                                radius: 18; color: Theme.surfaceHover; border.width: 1
-                                border.color: Theme.borderSubtle
-                            }
-                            onAccepted: { page.searchText = text; page.applyFilters() }
-                        }
-
-                        ThemeSelect { preferredWidth: 150; options: page.formatOptions; value: page.format
-                            onSelected: (v) => { page.format = v; page.applyFilters() } }
-                        ThemeSelect { preferredWidth: 170; options: page.statusOptions; value: page.status
-                            onSelected: (v) => { page.status = v; page.applyFilters() } }
-                        ThemeSelect { preferredWidth: 130; options: page.scoreOptions; value: String(page.minScore)
-                            onSelected: (v) => { page.minScore = parseInt(v); page.applyFilters() } }
-                        ThemeSelect { preferredWidth: 130; options: page.seasonOptions; value: page.season
-                            onSelected: (v) => { page.season = v; page.applyFilters() } }
-                        ThemeSelect { preferredWidth: 130; options: page.yearOptions; value: String(page.seasonYear)
-                            onSelected: (v) => { page.seasonYear = parseInt(v); page.applyFilters() } }
-                        Item { Layout.fillWidth: true }
-                    }
-
-                    // Advanced disclosure.
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
                         Text {
-                            text: (page.showCatalogue ? "▾  " : "▸  ") + "Advanced Genre & Tag Filters"
-                            color: Theme.inkMuted
-                            font.pixelSize: 12
+                            id: pillLabel
+                            anchors.centerIn: parent
+                            text: modelData.label + "  ×"
+                            color: "white"
+                            font.pixelSize: 11
                             font.bold: true
                         }
-                        Rectangle {
-                            visible: (page.includedTags().length + page.excludedTags().length) > 0
-                            width: 20; height: 20; radius: 10
-                            color: Theme.accent
-                            Text {
-                                anchors.centerIn: parent
-                                text: page.includedTags().length + page.excludedTags().length
-                                color: "white"; font.pixelSize: 10; font.bold: true
-                            }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.clearFilter(modelData.clear)
                         }
-                        Item { Layout.fillWidth: true }
+                    }
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: page.activeFilters().length > 1
+                    text: "Clear all"
+                    color: clearMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                    font.pixelSize: 12
+                    MouseArea {
+                        id: clearMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.clearAll()
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Results grid ------------------------------------------------------
+    GridView {
+        id: grid
+        anchors.top: header.bottom
+        anchors.topMargin: Theme.gap
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        clip: true
+        model: results
+        cellWidth: 216
+        cellHeight: 380
+        leftMargin: Theme.pad
+        rightMargin: Theme.pad
+        bottomMargin: Theme.pad
+
+        delegate: PosterCard {
+            width: 200
+            title: model.title
+            score: model.score
+            cover: model.cover
+            format: model.format
+            onClicked: page.openAnime(model.id)
+        }
+
+        onAtYEndChanged: {
+            if (atYEnd && !page.loading && results.count > 0) {
+                page.pageNumber += 1
+                page.runSearch(false)
+            }
+        }
+    }
+
+    // --- Filters dropdown, overlaying the grid ---------------------------
+    Rectangle {
+        id: filterPanel
+        visible: page.filtersOpen
+        anchors.top: header.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: Math.min(implicitHeight, parent.height - header.height - 20)
+        implicitHeight: panelColumn.implicitHeight + 32
+        z: 10
+        color: Theme.surfaceRaised
+        border.width: 1
+        border.color: Theme.borderSubtle
+
+        Flickable {
+            anchors.fill: parent
+            anchors.margins: 16
+            contentWidth: width
+            contentHeight: panelColumn.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            ColumnLayout {
+                id: panelColumn
+                width: parent.width
+                spacing: 14
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    Text { Layout.preferredWidth: 220; text: "Search"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 150; text: "Type"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 170; text: "Status"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 130; text: "Score"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 130; text: "Season"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 130; text: "Year"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Item { Layout.fillWidth: true }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    TextField {
+                        Layout.preferredWidth: 220
+                        placeholderText: "Search…"
+                        text: page.searchText
+                        color: Theme.ink
+                        placeholderTextColor: Theme.inkFaint
+                        background: Rectangle {
+                            radius: 18; color: Theme.surfaceHover; border.width: 1
+                            border.color: Theme.borderSubtle
+                        }
+                        onAccepted: { page.searchText = text; page.applyFilters() }
+                    }
+
+                    ThemeSelect { preferredWidth: 150; options: page.formatOptions; value: page.format
+                        onSelected: (v) => { page.format = v; page.applyFilters() } }
+                    ThemeSelect { preferredWidth: 170; options: page.statusOptions; value: page.status
+                        onSelected: (v) => { page.status = v; page.applyFilters() } }
+                    ThemeSelect { preferredWidth: 130; options: page.scoreOptions; value: String(page.minScore)
+                        onSelected: (v) => { page.minScore = parseInt(v); page.applyFilters() } }
+                    ThemeSelect { preferredWidth: 130; options: page.seasonOptions; value: page.season
+                        onSelected: (v) => { page.season = v; page.applyFilters() } }
+                    ThemeSelect { preferredWidth: 130; options: page.yearOptions; value: String(page.seasonYear)
+                        onSelected: (v) => { page.seasonYear = parseInt(v); page.applyFilters() } }
+                    Item { Layout.fillWidth: true }
+                }
+
+                // Advanced disclosure.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: (page.showCatalogue ? "▾  " : "▸  ") + "Advanced Genre & Tag Filters"
+                        color: Theme.inkMuted
+                        font.pixelSize: 12
+                        font.bold: true
+                    }
+                    Rectangle {
+                        visible: (page.includedTags().length + page.excludedTags().length) > 0
+                        width: 20; height: 20; radius: 10
+                        color: Theme.accent
+                        Text {
+                            anchors.centerIn: parent
+                            text: page.includedTags().length + page.excludedTags().length
+                            color: "white"; font.pixelSize: 10; font.bold: true
+                        }
+                    }
+                    Item { Layout.fillWidth: true }
+                    // A dedicated clickable spanning the row's leftover width,
+                    // rather than a MouseArea anchored into a RowLayout (which
+                    // is undefined behaviour).
+                    Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: page.showCatalogue = !page.showCatalogue
                         }
                     }
+                }
 
-                    // Catalogue.
+                // Catalogue.
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: page.showCatalogue
+                    spacing: 12
+
+                    TextField {
+                        Layout.preferredWidth: 300
+                        placeholderText: "Type to narrow the list"
+                        text: page.tagFilter
+                        color: Theme.ink
+                        placeholderTextColor: Theme.inkFaint
+                        background: Rectangle {
+                            radius: 18; color: Theme.surfaceHover; border.width: 1
+                            border.color: Theme.borderSubtle
+                        }
+                        onTextChanged: page.tagFilter = text
+                    }
+
+                    // Genres.
                     ColumnLayout {
                         Layout.fillWidth: true
-                        visible: page.showCatalogue
-                        spacing: 12
-
-                        TextField {
-                            Layout.preferredWidth: 300
-                            placeholderText: "Type to narrow the list"
-                            text: page.tagFilter
-                            color: Theme.ink
-                            placeholderTextColor: Theme.inkFaint
-                            background: Rectangle {
-                                radius: 18; color: Theme.surfaceHover; border.width: 1
-                                border.color: Theme.borderSubtle
-                            }
-                            onTextChanged: page.tagFilter = text
-                        }
-
-                        // Genres.
-                        ColumnLayout {
+                        visible: page.genreOptions.length > 0
+                        spacing: 6
+                        Text { text: "Genres"; color: Theme.inkMuted; font.pixelSize: 12; font.bold: true }
+                        Flow {
                             Layout.fillWidth: true
-                            visible: page.genreOptions.length > 0
+                            Layout.preferredHeight: childrenRect.height
                             spacing: 6
-                            Text { text: "Genres"; color: Theme.inkMuted; font.pixelSize: 12; font.bold: true }
+                            Repeater {
+                                model: page.genreOptions
+                                delegate: Chip {
+                                    required property string modelData
+                                    text: modelData
+                                    state: page.genres.indexOf(modelData) >= 0 ? "include" : "off"
+                                    onClicked: {
+                                        if (page.genres.indexOf(modelData) >= 0)
+                                            page.genres = page.genres.filter((g) => g !== modelData)
+                                        else
+                                            page.genres = page.genres.concat([modelData])
+                                        page.applyFilters()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Tag groups.
+                    Repeater {
+                        model: page.tagGroups
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            Text {
+                                text: page.categoryLabel(modelData.category)
+                                color: Theme.inkMuted
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
                             Flow {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: childrenRect.height
                                 spacing: 6
                                 Repeater {
-                                    model: page.genreOptions
+                                    model: {
+                                        const needle = page.tagFilter.trim().toLowerCase()
+                                        if (needle === "") return modelData.tags
+                                        return modelData.tags.filter((t) => t.name.toLowerCase().includes(needle))
+                                    }
                                     delegate: Chip {
-                                        required property string modelData
-                                        text: modelData
-                                        state: page.genres.indexOf(modelData) >= 0 ? "include" : "off"
-                                        onClicked: {
-                                            if (page.genres.indexOf(modelData) >= 0)
-                                                page.genres = page.genres.filter((g) => g !== modelData)
-                                            else
-                                                page.genres = page.genres.concat([modelData])
-                                            page.applyFilters()
-                                        }
+                                        required property var modelData
+                                        text: modelData.name
+                                        state: page.tagStates[modelData.name] || "off"
+                                        onClicked: page.cycleTag(modelData.name)
                                     }
                                 }
                             }
                         }
-
-                        // Tag groups.
-                        Repeater {
-                            model: page.tagGroups
-                            delegate: ColumnLayout {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                spacing: 6
-
-                                Text {
-                                    text: page.categoryLabel(modelData.category)
-                                    color: Theme.inkMuted
-                                    font.pixelSize: 12
-                                    font.bold: true
-                                }
-                                Flow {
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: childrenRect.height
-                                    spacing: 6
-                                    Repeater {
-                                        model: {
-                                            const needle = page.tagFilter.trim().toLowerCase()
-                                            if (needle === "") return modelData.tags
-                                            return modelData.tags.filter((t) => t.name.toLowerCase().includes(needle))
-                                        }
-                                        delegate: Chip {
-                                            required property var modelData
-                                            text: modelData.name
-                                            state: page.tagStates[modelData.name] || "off"
-                                            onClicked: page.cycleTag(modelData.name)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Actions.
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 10
-                        Rectangle {
-                            width: 90; height: 34; radius: 17
-                            color: Theme.accent
-                            Text { anchors.centerIn: parent; text: "Filter"; color: "white"; font.pixelSize: 13; font.bold: true }
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: { page.applyFilters(); page.filtersOpen = false }
-                            }
-                        }
-                        Text {
-                            text: "Reset"
-                            color: Theme.inkMuted
-                            font.pixelSize: 13
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: page.clearAll()
-                            }
-                        }
-                        Item { Layout.fillWidth: true }
                     }
                 }
-            }
-        }
 
-        // Active filter pills.
-        Flow {
-            id: pillBar
-            anchors.top: toolbar.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: Theme.pad
-            anchors.rightMargin: Theme.pad
-            anchors.topMargin: 8
-            spacing: 6
-            z: 5
-            visible: page.activeFilters().length > 0
-
-            Repeater {
-                model: page.activeFilters()
-                delegate: Rectangle {
-                    required property var modelData
-                    height: 26
-                    radius: 13
-                    width: pillLabel.implicitWidth + 20
-                    color: modelData.excluded ? Theme.danger : Theme.accent
+                // Actions.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Rectangle {
+                        width: 90; height: 34; radius: 17
+                        color: Theme.accent
+                        Text { anchors.centerIn: parent; text: "Filter"; color: "white"; font.pixelSize: 13; font.bold: true }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: { page.applyFilters(); page.filtersOpen = false }
+                        }
+                    }
                     Text {
-                        id: pillLabel
-                        anchors.centerIn: parent
-                        text: modelData.label + "  ×"
-                        color: "white"
-                        font.pixelSize: 11
+                        text: "Reset"
+                        color: Theme.inkMuted
+                        font.pixelSize: 13
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.clearAll()
+                        }
                     }
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: page.clearFilter(modelData.clear)
-                    }
+                    Item { Layout.fillWidth: true }
                 }
             }
         }

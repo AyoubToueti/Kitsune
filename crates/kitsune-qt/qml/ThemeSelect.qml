@@ -13,6 +13,13 @@ Item {
     property string value: ""
     property string placeholder: ""
     property int preferredWidth: 150
+    // When true the trigger draws no border/background of its own, so it can
+    // sit inside a container that owns the border (the filter page's sort
+    // group, which wraps a reverse button and this select in one pill).
+    property bool borderless: false
+    // When true the chosen label is drawn in the accent colour, as the filter
+    // page's sort control does.
+    property bool accentText: false
 
     signal selected(string value)
 
@@ -30,9 +37,9 @@ Item {
     Rectangle {
         id: trigger
         anchors.fill: parent
-        radius: 18
-        color: Theme.surfaceHover
-        border.width: 1
+        radius: root.borderless ? 0 : 18
+        color: root.borderless ? "transparent" : Theme.surfaceHover
+        border.width: root.borderless ? 0 : 1
         border.color: popup.visible ? Theme.accent : Theme.borderSubtle
 
         RowLayout {
@@ -44,13 +51,14 @@ Item {
             Text {
                 Layout.fillWidth: true
                 text: root.currentLabel()
-                color: Theme.ink
+                color: root.accentText ? Theme.accent : Theme.ink
                 font.pixelSize: 13
+                font.bold: root.accentText
                 elide: Text.ElideRight
             }
             Text {
                 text: popup.visible ? "▴" : "▾"
-                color: Theme.inkFaint
+                color: root.accentText ? Theme.accent : Theme.inkFaint
                 font.pixelSize: 11
             }
         }
