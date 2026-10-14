@@ -10,6 +10,10 @@ import QtQuick.Layouts
 Item {
     id: page
 
+    // Which navbar pill this page lights up. Read by the window to derive the
+    // active route, so re-opening this page does not replay the slide.
+    readonly property string pageRoute: "filter"
+
     // The shared Backend, passed in by the window.
     property var backend: null
     // Optional genre to pre-select (from a genre chip on the detail page).

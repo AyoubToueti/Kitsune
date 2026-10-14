@@ -15,7 +15,7 @@ fn main() {
             .qml_file("qml/SchedulePage.qml")
             .qml_file("qml/TopPage.qml")
             .qml_file("qml/MyListPage.qml")
-            .qml_file("qml/SettingsPage.qml")
+            .qml_file("qml/SettingsPopup.qml")
             .qml_file("qml/WatchPage.qml")
             .qml_file("qml/NavBar.qml")
             .qml_file("qml/ThemeSelect.qml")

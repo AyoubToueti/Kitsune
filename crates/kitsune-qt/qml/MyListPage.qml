@@ -11,6 +11,10 @@ import QtQuick.Layouts
 Item {
     id: page
 
+    // Which navbar pill this page lights up. Read by the window to derive the
+    // active route, so re-opening this page does not replay the slide.
+    readonly property string pageRoute: "list"
+
     property var backend: null
     property bool signedIn: false
     property bool loading: false

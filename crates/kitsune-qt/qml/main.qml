@@ -46,10 +46,27 @@ Window {
     // Which segmented navbar pill is active, so the indicator can follow.
     property string navRoute: ""
 
-    // Push a page and mark the navbar state. `component` is one of the
-    // page Components declared below.
+    // Re-derive the navbar's active route from whatever the stack is showing.
+    //
+    // Derived rather than set by `goTo`, because a detail page is pushed
+    // DIRECTLY (not through `goTo`) and would otherwise leave `navRoute` stale
+    // at the previous page's route -- so clicking Filter from a detail page
+    // would wrongly think it was already on the filter page.
+    function updateRoute() {
+        const item = stack.currentItem
+        root.navRoute = (item && item.pageRoute !== undefined) ? item.pageRoute : ""
+    }
+
+    // Push a page, unless that route is already the one showing.
+    //
+    // Re-pushing the same page replays the slide transition for no reason,
+    // which reads as the page reloading. Pages opt in by declaring a
+    // `pageRoute`; anything without one (`""` here) is always pushed, since
+    // those are pushed by id and a second push is a genuine navigation.
     function goTo(component, route, props) {
-        navRoute = route
+        if (route !== "" && root.navRoute === route) {
+            return
+        }
         stack.push(component, props)
     }
 
@@ -66,7 +83,7 @@ Window {
             }
             onOpenMyList: root.goTo(myListComponent, "list", { "backend": root.backend })
             onOpenFilter: root.goTo(browseComponent, "filter", { "backend": root.backend })
-            onOpenSettings: root.goTo(settingsComponent, "", { "backend": root.backend })
+            onOpenSettings: settingsPopup.open()
             onSearch: (term) => root.goTo(browseComponent, "filter", {
                 "backend": root.backend,
                 "initialSearch": term
@@ -79,6 +96,10 @@ Window {
             Layout.fillWidth: true
             Layout.fillHeight: true
             initialItem: home
+
+            // Keep the navbar's active pill in step with the visible page,
+            // whatever pushed it (a navbar link, a card click, or a pop).
+            onCurrentItemChanged: root.updateRoute()
 
             pushEnter: Transition { NumberAnimation { property: "x"; from: stack.width; to: 0; duration: 220; easing.type: Easing.OutCubic } }
             pushExit: Transition { NumberAnimation { property: "x"; from: 0; to: -stack.width * 0.3; duration: 220; easing.type: Easing.OutCubic } }
@@ -96,7 +117,7 @@ Window {
         onOpenSchedule: () => root.goTo(scheduleComponent, "", { "backend": root.backend })
         onOpenTop: () => root.goTo(topComponent, "", { "backend": root.backend })
         onOpenMyList: () => root.goTo(myListComponent, "list", { "backend": root.backend })
-        onOpenSettings: () => root.goTo(settingsComponent, "", { "backend": root.backend })
+        onOpenSettings: settingsPopup.open()
         onOpenGenre: (genre) => root.goTo(browseComponent, "filter", {
             "backend": root.backend,
             "initialGenre": genre
@@ -156,11 +177,11 @@ Window {
         }
     }
 
-    Component {
-        id: settingsComponent
-        SettingsPage {
-            backend: root.backend
-        }
+    // Settings is a modal popup over whatever page is showing, not a stack
+    // page: opening it must not disturb the reader's place.
+    SettingsPopup {
+        id: settingsPopup
+        backend: root.backend
     }
 
     Component {
@@ -184,7 +205,9 @@ Window {
         } else if (initialMyList) {
             stack.push(myListComponent, { "backend": root.backend })
         } else if (initialSettings) {
-            stack.push(settingsComponent, { "backend": root.backend })
+            // A dev aid: KITSUNE_OPEN_SETTINGS=1 opens the popup on startup so
+            // it can be screenshotted. Settings is not a stack route.
+            settingsPopup.open()
         } else if (initialEpisodeAnime > 0) {
             stack.push(watchComponent, {
                 "animeId": initialEpisodeAnime,
