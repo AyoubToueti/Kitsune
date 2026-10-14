@@ -578,38 +578,44 @@ Item {
                     Item { Layout.fillWidth: true }
                 }
 
-                // Advanced disclosure.
-                RowLayout {
+                // Advanced disclosure. The whole row is the toggle, so a click
+                // anywhere on it works -- the MouseArea fills this Item, which
+                // is sized by the layout (not a child anchored into a layout,
+                // which is undefined behaviour).
+                Item {
                     Layout.fillWidth: true
-                    spacing: 8
-                    Text {
-                        text: (page.showCatalogue ? "▾  " : "▸  ") + "Advanced Genre & Tag Filters"
-                        color: Theme.inkMuted
-                        font.pixelSize: 12
-                        font.bold: true
-                    }
-                    Rectangle {
-                        visible: (page.includedTags().length + page.excludedTags().length) > 0
-                        width: 20; height: 20; radius: 10
-                        color: Theme.accent
+                    Layout.preferredHeight: disclosureRow.implicitHeight + 8
+
+                    RowLayout {
+                        id: disclosureRow
+                        anchors.fill: parent
+                        spacing: 8
+
                         Text {
-                            anchors.centerIn: parent
-                            text: page.includedTags().length + page.excludedTags().length
-                            color: "white"; font.pixelSize: 10; font.bold: true
+                            text: (page.showCatalogue ? "▾  " : "▸  ") + "Advanced Genre & Tag Filters"
+                            color: disclosureMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                            font.pixelSize: 12
+                            font.bold: true
                         }
+                        Rectangle {
+                            visible: (page.includedTags().length + page.excludedTags().length) > 0
+                            width: 20; height: 20; radius: 10
+                            color: Theme.accent
+                            Text {
+                                anchors.centerIn: parent
+                                text: page.includedTags().length + page.excludedTags().length
+                                color: "white"; font.pixelSize: 10; font.bold: true
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
                     }
-                    Item { Layout.fillWidth: true }
-                    // A dedicated clickable spanning the row's leftover width,
-                    // rather than a MouseArea anchored into a RowLayout (which
-                    // is undefined behaviour).
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.showCatalogue = !page.showCatalogue
-                        }
+
+                    MouseArea {
+                        id: disclosureMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.showCatalogue = !page.showCatalogue
                     }
                 }
 
