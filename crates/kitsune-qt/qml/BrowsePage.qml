@@ -536,15 +536,17 @@ Item {
                 width: parent.width
                 spacing: 14
 
+                // Row labels. No "Search" column: the in-panel search box was
+                // removed because the global navbar already owns search, and a
+                // second field writing the same query was redundant.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 12
-                    Text { Layout.preferredWidth: 220; text: "Search"; color: Theme.inkFaint; font.pixelSize: 11 }
-                    Text { Layout.preferredWidth: 150; text: "Type"; color: Theme.inkFaint; font.pixelSize: 11 }
-                    Text { Layout.preferredWidth: 170; text: "Status"; color: Theme.inkFaint; font.pixelSize: 11 }
-                    Text { Layout.preferredWidth: 130; text: "Score"; color: Theme.inkFaint; font.pixelSize: 11 }
-                    Text { Layout.preferredWidth: 130; text: "Season"; color: Theme.inkFaint; font.pixelSize: 11 }
-                    Text { Layout.preferredWidth: 130; text: "Year"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 170; text: "Type"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 190; text: "Status"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 150; text: "Score"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 150; text: "Season"; color: Theme.inkFaint; font.pixelSize: 11 }
+                    Text { Layout.preferredWidth: 150; text: "Year"; color: Theme.inkFaint; font.pixelSize: 11 }
                     Item { Layout.fillWidth: true }
                 }
 
@@ -552,28 +554,15 @@ Item {
                     Layout.fillWidth: true
                     spacing: 12
 
-                    TextField {
-                        Layout.preferredWidth: 220
-                        placeholderText: "Search…"
-                        text: page.searchText
-                        color: Theme.ink
-                        placeholderTextColor: Theme.inkFaint
-                        background: Rectangle {
-                            radius: 18; color: Theme.surfaceHover; border.width: 1
-                            border.color: Theme.borderSubtle
-                        }
-                        onAccepted: { page.searchText = text; page.applyFilters() }
-                    }
-
-                    ThemeSelect { preferredWidth: 150; options: page.formatOptions; value: page.format
+                    ThemeSelect { preferredWidth: 170; options: page.formatOptions; value: page.format
                         onSelected: (v) => { page.format = v; page.applyFilters() } }
-                    ThemeSelect { preferredWidth: 170; options: page.statusOptions; value: page.status
+                    ThemeSelect { preferredWidth: 190; options: page.statusOptions; value: page.status
                         onSelected: (v) => { page.status = v; page.applyFilters() } }
-                    ThemeSelect { preferredWidth: 130; options: page.scoreOptions; value: String(page.minScore)
+                    ThemeSelect { preferredWidth: 150; options: page.scoreOptions; value: String(page.minScore)
                         onSelected: (v) => { page.minScore = parseInt(v); page.applyFilters() } }
-                    ThemeSelect { preferredWidth: 130; options: page.seasonOptions; value: page.season
+                    ThemeSelect { preferredWidth: 150; options: page.seasonOptions; value: page.season
                         onSelected: (v) => { page.season = v; page.applyFilters() } }
-                    ThemeSelect { preferredWidth: 130; options: page.yearOptions; value: String(page.seasonYear)
+                    ThemeSelect { preferredWidth: 150; options: page.yearOptions; value: String(page.seasonYear)
                         onSelected: (v) => { page.seasonYear = parseInt(v); page.applyFilters() } }
                     Item { Layout.fillWidth: true }
                 }
@@ -619,12 +608,18 @@ Item {
                     }
                 }
 
-                // Catalogue.
+                // Catalogue, in its own bounded scroll region.
+                //
+                // 361 chips would push the panel past the window and the filter
+                // rows would scroll away with it. Capping the catalogue keeps
+                // the selects above it in place while the chips scroll.
                 ColumnLayout {
                     Layout.fillWidth: true
                     visible: page.showCatalogue
                     spacing: 12
 
+                    // Fixed above the scroll region: typing here must not
+                    // scroll the box away as the chips move.
                     TextField {
                         Layout.preferredWidth: 300
                         placeholderText: "Type to narrow the list"
@@ -638,95 +633,85 @@ Item {
                         onTextChanged: page.tagFilter = text
                     }
 
-                    // Genres.
-                    ColumnLayout {
+                    // The chips scroll inside a bounded box, so the selects and
+                    // this search box stay put while they move.
+                    Flickable {
                         Layout.fillWidth: true
-                        visible: page.genreOptions.length > 0
-                        spacing: 6
-                        Text { text: "Genres"; color: Theme.inkMuted; font.pixelSize: 12; font.bold: true }
-                        Flow {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: childrenRect.height
-                            spacing: 6
-                            Repeater {
-                                model: page.genreOptions
-                                delegate: Chip {
-                                    required property string modelData
-                                    text: modelData
-                                    state: page.genres.indexOf(modelData) >= 0 ? "include" : "off"
-                                    onClicked: {
-                                        if (page.genres.indexOf(modelData) >= 0)
-                                            page.genres = page.genres.filter((g) => g !== modelData)
-                                        else
-                                            page.genres = page.genres.concat([modelData])
-                                        page.applyFilters()
-                                    }
-                                }
-                            }
-                        }
-                    }
+                        Layout.preferredHeight: Math.min(catalogueColumn.implicitHeight + 8, 360)
+                        contentWidth: width
+                        contentHeight: catalogueColumn.implicitHeight + 8
+                        clip: true
+                        boundsBehavior: Flickable.StopAtBounds
 
-                    // Tag groups.
-                    Repeater {
-                        model: page.tagGroups
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            spacing: 6
+                        ColumnLayout {
+                            id: catalogueColumn
+                            width: parent.width
+                            spacing: 12
 
-                            Text {
-                                text: page.categoryLabel(modelData.category)
-                                color: Theme.inkMuted
-                                font.pixelSize: 12
-                                font.bold: true
-                            }
-                            Flow {
+                            // Genres.
+                            ColumnLayout {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: childrenRect.height
+                                visible: page.genreOptions.length > 0
                                 spacing: 6
-                                Repeater {
-                                    model: {
-                                        const needle = page.tagFilter.trim().toLowerCase()
-                                        if (needle === "") return modelData.tags
-                                        return modelData.tags.filter((t) => t.name.toLowerCase().includes(needle))
+                                Text { text: "Genres"; color: Theme.inkMuted; font.pixelSize: 12; font.bold: true }
+                                Flow {
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: childrenRect.height
+                                    spacing: 6
+                                    Repeater {
+                                        model: page.genreOptions
+                                        delegate: Chip {
+                                            required property string modelData
+                                            text: modelData
+                                            state: page.genres.indexOf(modelData) >= 0 ? "include" : "off"
+                                            onClicked: {
+                                                if (page.genres.indexOf(modelData) >= 0)
+                                                    page.genres = page.genres.filter((g) => g !== modelData)
+                                                else
+                                                    page.genres = page.genres.concat([modelData])
+                                                page.applyFilters()
+                                            }
+                                        }
                                     }
-                                    delegate: Chip {
-                                        required property var modelData
-                                        text: modelData.name
-                                        state: page.tagStates[modelData.name] || "off"
-                                        onClicked: page.cycleTag(modelData.name)
+                                }
+                            }
+
+                            // Tag groups.
+                            Repeater {
+                                model: page.tagGroups
+                                delegate: ColumnLayout {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    spacing: 6
+
+                                    Text {
+                                        text: page.categoryLabel(modelData.category)
+                                        color: Theme.inkMuted
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+                                    Flow {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: childrenRect.height
+                                        spacing: 6
+                                        Repeater {
+                                            model: {
+                                                const needle = page.tagFilter.trim().toLowerCase()
+                                                if (needle === "") return modelData.tags
+                                                return modelData.tags.filter((t) => t.name.toLowerCase().includes(needle))
+                                            }
+                                            delegate: Chip {
+                                                required property var modelData
+                                                text: modelData.name
+                                                state: page.tagStates[modelData.name] || "off"
+                                                onClicked: page.cycleTag(modelData.name)
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-
-                // Actions.
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
-                    Rectangle {
-                        width: 90; height: 34; radius: 17
-                        color: Theme.accent
-                        Text { anchors.centerIn: parent; text: "Filter"; color: "white"; font.pixelSize: 13; font.bold: true }
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: { page.applyFilters(); page.filtersOpen = false }
-                        }
-                    }
-                    Text {
-                        text: "Reset"
-                        color: Theme.inkMuted
-                        font.pixelSize: 13
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.clearAll()
-                        }
-                    }
-                    Item { Layout.fillWidth: true }
                 }
             }
         }
