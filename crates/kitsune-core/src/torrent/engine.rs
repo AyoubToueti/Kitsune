@@ -274,21 +274,24 @@ impl TorrentEngine {
         &self.download_dir
     }
 
-    /// Drop a torrent from the session, deleting the pieces it cached.
+    /// Drop a torrent from the session, KEEPING the pieces it downloaded.
     ///
     /// Removing the torrent is what stops the transfer: the session keeps
     /// running, but the bridge stops serving this id and no peer connections
     /// remain for it. Called when the reader leaves the watch page, so an
     /// episode does not keep downloading after it has been closed.
     ///
-    /// The files go too. That reclaims the disk a partly-watched episode was
-    /// holding, at the cost of re-fetching from the start on the next visit.
+    /// The files stay on disk and act as a replay cache: adding the same
+    /// magnet again reuses them (`playback_options` sets `overwrite: true`),
+    /// so a second watch resumes from where the first left off -- or starts
+    /// instantly if the file was already complete. Deleting here is what made
+    /// every replay re-fetch from zero.
     ///
     /// An unknown id is not an error: librqbit reports a missing torrent as
     /// `Ok`, so a double removal is harmless.
     pub async fn remove_torrent(&self, id: usize) -> Result<()> {
         self.session
-            .delete(id.into(), true)
+            .delete(id.into(), false)
             .await
             .with_context(|| format!("failed to remove torrent {id}"))
     }
