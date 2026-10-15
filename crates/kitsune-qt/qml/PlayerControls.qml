@@ -467,14 +467,14 @@ Item {
                         spacing: 4
 
                         TextPillButton {
-                            label: "+85s"
-                            tip: "Skip Intro (OP)"
+                            label: "Skip OP"
+                            tip: "Skip Opening"
                             onClicked: bar.skipIntro()
                         }
 
                         TextPillButton {
-                            label: "+90s"
-                            tip: "Skip Ending (ED)"
+                            label: "Skip ED"
+                            tip: "Skip Ending"
                             onClicked: bar.skipEnding()
                         }
                     }

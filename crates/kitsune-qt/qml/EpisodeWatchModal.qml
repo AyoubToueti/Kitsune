@@ -91,27 +91,30 @@ Popup {
         const p = playerLoader.item
         if (!p) return
         
-        // Search the player's chapter list for a chapter matching
-        // /op|opening/i. `chapterList` is fed by the mpv chapter-list
-        // observation, so it is populated as soon as the demuxer has chapters.
-        // NOTE: `chapterList` is array-LIKE (has .length, indexable) but
+        // Skip the OPENING MUSIC: jump PAST the OP chapter to the chapter that
+        // follows it (e.g. "Main EP"), NOT to the start of the OP. Never skip
+        // the cold-open intro -- if there is no OP chapter, do nothing.
+        // `chapterList` is array-LIKE (has .length, indexable) but
         // `Array.isArray()` is false for a QVariantList-backed property.
         const chapters = p.chapterList
         if (chapters && chapters.length !== undefined) {
             for (var i = 0; i < chapters.length; i++) {
                 const ch = chapters[i]
                 if (ch && ch.title && /op|opening/i.test(ch.title)) {
-                    p.setProperty("chapter", i)
-                    osdToast.trigger("forward", "Skipped to " + ch.title)
+                    if (i + 1 < chapters.length) {
+                        p.setProperty("chapter", i + 1)
+                        osdToast.trigger("forward", "Skipped " + ch.title)
+                    } else {
+                        // OP is the last chapter: nothing follows but the end.
+                        p.command(["seek", String(p.duration), "absolute"])
+                        osdToast.trigger("forward", "Skipped " + ch.title)
+                    }
                     modal.wakeChrome()
                     return
                 }
             }
         }
-        
-        // Fallback: seek +85s
-        p.command(["seek", "85", "relative"])
-        osdToast.trigger("forward", "Skipped Intro (+85s)")
+        // No OP chapter: nothing to skip, and definitely not the intro.
         modal.wakeChrome()
     }
 
@@ -119,26 +122,52 @@ Popup {
         const p = playerLoader.item
         if (!p) return
         
-        // Search the player's chapter list for a chapter matching
-        // /ed|ending|outro/i (same source as doSkipIntro).
+        // Skip the ENDING MUSIC: jump PAST the ED chapter to whatever follows
+        // (e.g. a preview), or to the end if the ED is the last chapter.
         // NOTE: array-LIKE, so test .length, not Array.isArray().
         const chapters = p.chapterList
         if (chapters && chapters.length !== undefined) {
             for (var i = 0; i < chapters.length; i++) {
                 const ch = chapters[i]
                 if (ch && ch.title && /ed|ending|outro/i.test(ch.title)) {
-                    p.setProperty("chapter", i)
-                    osdToast.trigger("forward", "Skipped to " + ch.title)
+                    if (i + 1 < chapters.length) {
+                        p.setProperty("chapter", i + 1)
+                        osdToast.trigger("forward", "Skipped " + ch.title)
+                    } else {
+                        p.command(["seek", String(p.duration), "absolute"])
+                        osdToast.trigger("forward", "Skipped " + ch.title)
+                    }
                     modal.wakeChrome()
                     return
                 }
             }
         }
-        
-        // Fallback: seek +90s
-        p.command(["seek", "90", "relative"])
-        osdToast.trigger("forward", "Skipped Ending (+90s)")
+        // No ED chapter: nothing to skip.
         modal.wakeChrome()
+    }
+
+    // The title of the chapter the playhead is currently inside, or "".
+    // Uses the same array-LIKE `chapterList` as the skip functions.
+    function currentChapterTitle() {
+        const p = playerLoader.item
+        if (!p) return ""
+        const chapters = p.chapterList
+        if (!chapters || chapters.length === undefined || chapters.length === 0) return ""
+        const pos = p.position || 0
+        var title = ""
+        for (var i = 0; i < chapters.length; i++) {
+            const ch = chapters[i]
+            if (ch && ch.time !== undefined && ch.time <= pos) title = ch.title || ""
+            else break
+        }
+        return title
+    }
+
+    // Context-aware skip for the S key / overlay: skip the ENDING if the ED is
+    // playing, otherwise the OPENING. Does nothing during the cold-open intro.
+    function doSkipSection() {
+        if (/ed|ending|outro/i.test(modal.currentChapterTitle())) modal.doSkipEnding()
+        else modal.doSkipIntro()
     }
 
     // --- Keybindings -----------------------------------------------------
@@ -166,7 +195,7 @@ Popup {
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
         sequence: "S"
-        onActivated: modal.doSkipIntro()
+        onActivated: modal.doSkipSection()
     }
 
     Shortcut {
@@ -1096,9 +1125,12 @@ Popup {
                                 return ""
                             }
                             
-                            // Check if current chapter matches OP/ED patterns, OR fall back to time heuristics
-                            readonly property bool isOpTime: /op|opening/i.test(chap) || (pos >= 10 && pos <= 210)
-                            readonly property bool isEdTime: /ed|ending|outro/i.test(chap) || (dur > 0 && pos >= dur - 210 && pos <= dur - 15)
+                            // Chapter-based ONLY. The old time heuristic fired
+                            // during the cold-open intro (pos 10-210s) and
+                            // wrongly offered "SKIP INTRO"; chapters are now
+                            // reliable, so match on the current chapter title.
+                            readonly property bool isOpTime: /op|opening/i.test(chap)
+                            readonly property bool isEdTime: /ed|ending|outro/i.test(chap)
                             
                             visible: modal.stage === "play" && modal.chromeVisible && (isOpTime || isEdTime)
 
@@ -1114,7 +1146,7 @@ Popup {
                                 }
 
                                 Text {
-                                    text: skipOverlay.isEdTime ? "SKIP ENDING [S]" : "SKIP INTRO [S]"
+                                    text: skipOverlay.isEdTime ? "SKIP ENDING [S]" : "SKIP OPENING [S]"
                                     color: Theme.ink
                                     font.pixelSize: 11
                                     font.bold: true
@@ -1125,10 +1157,7 @@ Popup {
                             MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    if (skipOverlay.isEdTime) modal.doSkipEnding()
-                                    else modal.doSkipIntro()
-                                }
+                                onClicked: modal.doSkipSection()
                             }
                         }
 
