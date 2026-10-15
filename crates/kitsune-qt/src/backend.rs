@@ -277,6 +277,51 @@ pub mod qobject {
         #[cxx_name = "getListEntry"]
         fn get_list_entry(self: Pin<&mut Self>, media_id: i64);
 
+        // --- Local resume state ----------------------------------------------
+
+        /// Record that `anime_id` was opened, at `episode` when known.
+        #[qinvokable]
+        #[cxx_name = "recordLastPlayed"]
+        fn record_last_played(self: Pin<&mut Self>, anime_id: i64, episode: i32);
+
+        /// The most recently opened work as JSON, or `null`.
+        #[qinvokable]
+        #[cxx_name = "getLastPlayed"]
+        fn get_last_played(self: Pin<&mut Self>);
+
+        /// Record where the reader stopped in an episode.
+        #[qinvokable]
+        #[cxx_name = "recordWatchPosition"]
+        fn record_watch_position(
+            self: Pin<&mut Self>,
+            anime_id: i64,
+            episode: i32,
+            position_seconds: f64,
+            duration_seconds: f64,
+        );
+
+        /// Every saved watch position as a JSON object keyed by anime id.
+        #[qinvokable]
+        #[cxx_name = "getWatchPositions"]
+        fn get_watch_positions(self: Pin<&mut Self>);
+
+        /// Remember the release last played for a work, so a resume can
+        /// reselect it. `file_idx` is the torrent file index that played.
+        #[qinvokable]
+        #[cxx_name = "recordLastRelease"]
+        fn record_last_release(
+            self: Pin<&mut Self>,
+            anime_id: i64,
+            magnet: QString,
+            file_idx: i32,
+            name: QString,
+        );
+
+        /// The remembered release for a work as JSON, or `null`.
+        #[qinvokable]
+        #[cxx_name = "getLastRelease"]
+        fn get_last_release(self: Pin<&mut Self>, anime_id: i64);
+
         // --- Settings --------------------------------------------------------
 
         /// The reader's stored settings as JSON.
@@ -310,6 +355,28 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "continueWatchingFailed"]
         fn continue_watching_failed(self: Pin<&mut Self>, message: QString);
+
+        /// The last-played record as JSON, or `"null"`.
+        #[qsignal]
+        #[cxx_name = "lastPlayedReady"]
+        fn last_played_ready(self: Pin<&mut Self>, json: QString);
+
+        /// Every saved watch position as a JSON object keyed by anime id.
+        #[qsignal]
+        #[cxx_name = "watchPositionsReady"]
+        fn watch_positions_ready(self: Pin<&mut Self>, json: QString);
+
+        /// The remembered release for a work as JSON, or `"null"`.
+        #[qsignal]
+        #[cxx_name = "lastReleaseReady"]
+        fn last_release_ready(self: Pin<&mut Self>, json: QString);
+
+        /// Emitted after any local resume-state write (last-played, position,
+        /// or release), so the disc and the Continue Watching row re-read
+        /// live instead of only on startup.
+        #[qsignal]
+        #[cxx_name = "libraryChanged"]
+        fn library_changed(self: Pin<&mut Self>);
 
         #[qsignal]
         #[cxx_name = "userListReady"]
@@ -477,7 +544,9 @@ use kitsune_core::indexer::{
     combined_score, download_to, health_badge, probe_releases_standalone, rank, search_all,
     HealthBadge, IndexerRegistry, ReleaseRequest, SearchMode,
 };
+use kitsune_core::auth::LastPlayedStore;
 use kitsune_core::player::state::PlayerState;
+use kitsune_core::player::{LastReleaseStore, WatchPositionStore};
 use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
 use kitsune_core::settings::{Settings, SettingsStore};
 use kitsune_core::types::{
@@ -511,6 +580,13 @@ pub struct BackendRust {
     /// the first playback. Shares the settings store so the reader's download
     /// directory and player preferences are honoured.
     player: Arc<PlayerState>,
+    /// The work the reader most recently opened, for the Continue Watching
+    /// sort and the resume disc.
+    last_played: Arc<LastPlayedStore>,
+    /// Where the reader stopped in each work, for MM:SS and precise resume.
+    watch_positions: Arc<WatchPositionStore>,
+    /// The release last played per work, so a resume can reselect it.
+    last_releases: Arc<LastReleaseStore>,
 }
 
 impl Default for BackendRust {
@@ -538,6 +614,9 @@ impl Default for BackendRust {
             runtime: Arc::new(runtime),
             provider: anilist.clone(),
             anilist,
+            last_played: Arc::new(LastPlayedStore::new()),
+            watch_positions: Arc::new(WatchPositionStore::new()),
+            last_releases: Arc::new(LastReleaseStore::new()),
             episodes: Arc::new(JikanProvider::new()),
             tokens,
             player: Arc::new(PlayerState::with_settings(settings.clone())),
@@ -1366,6 +1445,89 @@ impl qobject::Backend {
         let stored = self.rust().settings.read();
         let out = serde_json::to_string(&stored).unwrap_or_else(|_| "null".to_string());
         self.settings_ready(QString::from(&out));
+    }
+
+    // --- Local resume state ------------------------------------------------
+
+    /// Record that `anime_id` was opened. Synchronous file write, so it runs on
+    /// the Qt thread directly -- no runtime hop for a few bytes to disk.
+    fn record_last_played(self: Pin<&mut Self>, anime_id: i64, episode: i32) {
+        // `episode <= 0` means "no episode" (a film, or a play with none picked).
+        let episode = if episode > 0 { Some(episode as u32) } else { None };
+        // A failure here is not worth surfacing: the record is a hint, and a
+        // missed write only means the row keeps its previous order.
+        let _ = self.rust().last_played.write(anime_id, episode);
+        // Nudge the disc and the Continue Watching row to re-read, so a just
+        // started (or just finished) play updates the resume time live.
+        self.library_changed();
+    }
+
+    fn get_last_played(self: Pin<&mut Self>) {
+        let json = self
+            .rust()
+            .last_played
+            .read()
+            .and_then(|record| serde_json::to_string(&record).ok())
+            .unwrap_or_else(|| "null".to_string());
+        self.last_played_ready(QString::from(&json));
+    }
+
+    fn record_watch_position(
+        self: Pin<&mut Self>,
+        anime_id: i64,
+        episode: i32,
+        position_seconds: f64,
+        duration_seconds: f64,
+    ) {
+        let episode = if episode > 0 { Some(episode as u32) } else { None };
+        let _ = self.rust().watch_positions.write(
+            anime_id,
+            episode,
+            position_seconds,
+            duration_seconds,
+        );
+        // Deliberately no `library_changed()` here: this fires every few
+        // seconds during playback, and the home row's handler would then hit
+        // AniList on each tick. The modal saves the final position on close
+        // and the disc re-reads when it is shown again, which is when the
+        // updated time actually needs to appear.
+    }
+
+    fn get_watch_positions(self: Pin<&mut Self>) {
+        let entries = self.rust().watch_positions.read_all();
+        let json = serde_json::to_string(&entries).unwrap_or_else(|_| "{}".to_string());
+        self.watch_positions_ready(QString::from(&json));
+    }
+
+    fn record_last_release(
+        self: Pin<&mut Self>,
+        anime_id: i64,
+        magnet: QString,
+        file_idx: i32,
+        name: QString,
+    ) {
+        let magnet = magnet.to_string();
+        if magnet.is_empty() {
+            return;
+        }
+        let idx = if file_idx < 0 { 0 } else { file_idx as u32 };
+        let _ = self
+            .rust()
+            .last_releases
+            .write(anime_id, &magnet, idx, &name.to_string());
+        // Any write to local resume state nudges the disc and home row to
+        // re-read, so a just-watched work appears without a restart.
+        self.library_changed();
+    }
+
+    fn get_last_release(self: Pin<&mut Self>, anime_id: i64) {
+        let json = self
+            .rust()
+            .last_releases
+            .read(anime_id)
+            .and_then(|release| serde_json::to_string(&release).ok())
+            .unwrap_or_else(|| "null".to_string());
+        self.last_release_ready(QString::from(&json));
     }
 }
 
