@@ -1,54 +1,32 @@
-// The episode watch flow, as a modal over the detail page: pick a release,
-// pick a file, then watch it in the embedded player.
-//
-// Mirrors the web app's EpisodeWatchModal, with one difference that matters:
-// this app has a REAL in-window player, so the buffering card leads with the
-// live video instead of an external-player notice.
-//
-// Stages:
-//   releases -- indexer results, with swarm-health dots from a real probe.
-//   files    -- the chosen magnet's files, auto-picking the episode match.
-//   play     -- the loopback stream URL fed to mpv, over the buffering panel.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Window
 import com.kitsune.app
 
 Popup {
     id: modal
 
-    // What to play. Set by the detail page when an episode is clicked.
     property int animeId: 0
     property int malId: 0
     property int episodeNumber: 0
     property int absoluteEpisode: 0
-    // The work's titles, as a JSON array of strings, for the indexer search.
     property var titles: []
-    // The shared Backend.
     property var backend: null
-    // The episode thumbnail, shown in the header.
     property string episodeThumbnail: ""
-    // Dev aid: pick the first release and its first file automatically, so the
-    // play stage can be screenshotted without a click.
     property bool autoPlay: false
 
     signal closed()
 
-    // --- state -----------------------------------------------------------
-
-    // "releases" | "files" | "play"
     property string stage: "releases"
     property var releases: []
     property bool searching: false
     property string error: ""
 
-    // "episodes" | "packs"
     property string releaseMode: "episodes"
     property string releaseQuery: ""
-    // Selected resolutions to keep (empty = all).
     property var resolutionFilter: []
-    // Health badge per release index, from the probe: "green"|"yellow"|"red".
     property var badges: ({})
     property bool probing: false
 
@@ -60,13 +38,11 @@ Popup {
 
     property var progress: null
     property bool paused: false
-    // Recent download-speed samples (MiB/s) for the sparkline.
+    property bool settingsOpen: false
     property var speedHistory: []
     property real lastBytes: 0
     property int staleSeconds: 0
 
-    // The clipboard helper, hidden: QML has no direct clipboard API, but a
-    // read-only TextEdit can select-all + copy.
     TextEdit {
         id: clipboard
         visible: false
@@ -74,81 +50,204 @@ Popup {
         height: 0
     }
 
-    // The player, as a component so the Loader creates and DESTROYS it with the
-    // play stage. `~MpvObject` frees the mpv handle and the GL render context,
-    // so nothing is left decoding in the background.
     Component {
         id: playerComponent
-        MpvObject {
-            // Nothing to configure here: main.rs already set `vo=libmpv` and
-            // `hwdec=auto` on the handle.
-        }
+        MpvObject {}
     }
 
-    // The advanced player settings, opened from the OSD gear. Bound to the same
-    // live player the controls use.
-    PlayerSettings {
-        id: settingsPopup
-        player: playerLoader.item
-    }
-
-    // Dev aid: fullscreen the player. The reader's own toggle drives this too.
     property bool fullscreen: false
-    // Whether the fullscreen chrome (the close circle) is showing. Auto-hides
-    // after a few idle seconds, the way every desktop player does.
     property bool chromeVisible: true
-    // Ask the window to change its real fullscreen state.
     signal requestFullscreen(bool on)
 
     parent: Overlay.overlay
-    // Positioned by hand rather than `anchors.centerIn`: in fullscreen the
-    // popup has to cover the whole window, which an anchor to the centre
-    // cannot express.
     x: modal.fullscreen ? 0 : Math.round((parent.width - width) / 2)
     y: modal.fullscreen ? 0 : Math.round((parent.height - height) / 2)
-    width: modal.fullscreen ? parent.width : 680
-    // An explicit height, NOT `implicitHeight`: the body uses
-    // `Layout.fillHeight`, which contributes nothing to the content item's
-    // implicit height, so an implicit-sized popup would collapse to just the
-    // header and footer.
-    height: modal.fullscreen ? parent.height : Math.min(720, (parent ? parent.height : 800) - 60)
+    
+    width: modal.fullscreen ? parent.width : Math.min(860, parent ? parent.width - 40 : 860)
+    height: modal.fullscreen ? parent.height : Math.min(800, parent ? parent.height - 40 : 800)
+    
     modal: true
     focus: true
     padding: 0
-    // Escape must EXIT FULLSCREEN when fullscreen, so the popup must not also
-    // treat it as "close". Only the non-fullscreen case closes on Escape.
     closePolicy: modal.fullscreen
         ? Popup.NoAutoClose
         : (Popup.CloseOnEscape | Popup.CloseOnPressOutside)
 
     function toggleFullscreen() {
         modal.fullscreen = !modal.fullscreen
-        modal.chromeVisible = true
+        if (Window.window) {
+            Window.window.visibility = modal.fullscreen ? Window.FullScreen : Window.Windowed
+        }
+        wakeChrome()
         modal.requestFullscreen(modal.fullscreen)
+    }
+
+    function wakeChrome() {
+        modal.chromeVisible = true
         hideChrome.restart()
     }
 
-    // Show the chrome and restart the idle countdown.
-    function wakeChrome() {
-        modal.chromeVisible = true
-        if (modal.fullscreen) hideChrome.restart()
+    function doSkipIntro() {
+        const p = playerLoader.item
+        if (!p) return
+        
+        // Search the player's chapter list for a chapter matching
+        // /op|opening/i. `chapterList` is fed by the mpv chapter-list
+        // observation, so it is populated as soon as the demuxer has chapters.
+        // NOTE: `chapterList` is array-LIKE (has .length, indexable) but
+        // `Array.isArray()` is false for a QVariantList-backed property.
+        const chapters = p.chapterList
+        if (chapters && chapters.length !== undefined) {
+            for (var i = 0; i < chapters.length; i++) {
+                const ch = chapters[i]
+                if (ch && ch.title && /op|opening/i.test(ch.title)) {
+                    p.setProperty("chapter", i)
+                    osdToast.trigger("forward", "Skipped to " + ch.title)
+                    modal.wakeChrome()
+                    return
+                }
+            }
+        }
+        
+        // Fallback: seek +85s
+        p.command(["seek", "85", "relative"])
+        osdToast.trigger("forward", "Skipped Intro (+85s)")
+        modal.wakeChrome()
     }
 
+    function doSkipEnding() {
+        const p = playerLoader.item
+        if (!p) return
+        
+        // Search the player's chapter list for a chapter matching
+        // /ed|ending|outro/i (same source as doSkipIntro).
+        // NOTE: array-LIKE, so test .length, not Array.isArray().
+        const chapters = p.chapterList
+        if (chapters && chapters.length !== undefined) {
+            for (var i = 0; i < chapters.length; i++) {
+                const ch = chapters[i]
+                if (ch && ch.title && /ed|ending|outro/i.test(ch.title)) {
+                    p.setProperty("chapter", i)
+                    osdToast.trigger("forward", "Skipped to " + ch.title)
+                    modal.wakeChrome()
+                    return
+                }
+            }
+        }
+        
+        // Fallback: seek +90s
+        p.command(["seek", "90", "relative"])
+        osdToast.trigger("forward", "Skipped Ending (+90s)")
+        modal.wakeChrome()
+    }
+
+    // --- Keybindings -----------------------------------------------------
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "Space"
+        onActivated: {
+            if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
+            modal.wakeChrome()
+        }
+    }
+
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "F"
+        onActivated: modal.toggleFullscreen()
+    }
+
+    Shortcut {
+        enabled: modal.fullscreen && modal.opened
+        sequence: "Escape"
+        onActivated: modal.toggleFullscreen()
+    }
+
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "S"
+        onActivated: modal.doSkipIntro()
+    }
+
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "Left"
+        onActivated: {
+            if (playerLoader.item) {
+                playerLoader.item.command(["seek", "-5", "relative"])
+                osdToast.trigger("rewind", "-5s")
+            }
+            modal.wakeChrome()
+        }
+    }
+
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "Right"
+        onActivated: {
+            if (playerLoader.item) {
+                playerLoader.item.command(["seek", "5", "relative"])
+                osdToast.trigger("forward", "+5s")
+            }
+            modal.wakeChrome()
+        }
+    }
+
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "M"
+        onActivated: {
+            if (playerLoader.item) {
+                const nextMute = !playerLoader.item.muted
+                playerLoader.item.setProperty("mute", nextMute)
+                const currentVol = Math.round(playerLoader.item.volume || 100)
+                osdToast.trigger(nextMute ? "mute" : "volume", nextMute ? "Muted" : currentVol + "%")
+            }
+            modal.wakeChrome()
+        }
+    }
+
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "Up"
+        onActivated: {
+            if (playerLoader.item) {
+                const vol = Math.min(130, Math.round((playerLoader.item.volume || 100) + 5))
+                playerLoader.item.setProperty("volume", vol)
+                osdToast.trigger("volume", vol + "%")
+            }
+            modal.wakeChrome()
+        }
+    }
+
+    Shortcut {
+        enabled: modal.stage === "play" && modal.opened
+        sequence: "Down"
+        onActivated: {
+            if (playerLoader.item) {
+                const vol = Math.max(0, Math.round((playerLoader.item.volume || 0) - 5))
+                playerLoader.item.setProperty("volume", vol)
+                osdToast.trigger(vol === 0 ? "mute" : "volume", vol + "%")
+            }
+            modal.wakeChrome()
+        }
+    }
+
+    // Auto-hide controls timer
     Timer {
         id: hideChrome
         interval: 2500
-        onTriggered: if (modal.fullscreen) modal.chromeVisible = false
+        onTriggered: {
+            if ((modal.fullscreen && topBarHover.hovered) || bottomControlsHover.hovered || modal.settingsOpen) {
+                hideChrome.restart()
+            } else {
+                modal.chromeVisible = false
+            }
+        }
     }
 
-
-
-
-    // Escape leaves fullscreen (and does nothing otherwise -- the popup's
-    // closePolicy handles the non-fullscreen case).
-    Shortcut {
-        enabled: modal.fullscreen
-        sequence: "Escape"
-        onActivated: modal.toggleFullscreen()
+    onStageChanged: {
+        if (modal.stage === "play") modal.wakeChrome()
     }
 
     onOpened: if (backend && animeId > 0 && titles.length === 0) backend.getAnime(animeId)
@@ -156,8 +255,6 @@ Popup {
         modal.teardown()
         modal.closed()
     }
-
-    // --- helpers ---------------------------------------------------------
 
     function displayTitle(item) {
         const t = item.title || {}
@@ -168,16 +265,11 @@ Popup {
         return Math.max(0, modal.absoluteEpisode - modal.episodeNumber)
     }
 
-    // mpv's own buffering state, read off the live player item. `false` when
-    // the player is not loaded (nothing is playing, so nothing is buffering).
     function playerBuffering() {
         const p = playerLoader.item
         return p !== null && p.buffering === true
     }
 
-    // Hand the stream URL to whichever player item is currently loaded. Called
-    // when the URL arrives AND when the Loader finishes creating the item --
-    // either can happen first, so both try.
     function loadStream() {
         const p = playerLoader.item
         if (p !== null && modal.playingUrl.length > 0) {
@@ -185,7 +277,6 @@ Popup {
         }
     }
 
-    // A human size, e.g. "1.4 GB".
     function formatSize(bytes) {
         if (!bytes || bytes <= 0) return ""
         const units = ["B", "KB", "MB", "GB", "TB"]
@@ -213,8 +304,6 @@ Popup {
         return Math.round(Math.min(Math.max(f, 0), 1) * 100)
     }
 
-    // The fraction of the CHOSEN file downloaded, which is what playback waits
-    // on -- the whole-torrent figure includes every other episode in a pack.
     function fileFraction() {
         if (modal.progress === null || modal.chosenIdx < 0) return 0
         const per = modal.progress.fileProgress || []
@@ -234,7 +323,6 @@ Popup {
         return Math.min((modal.progress.progressBytes || 0) / total, 1)
     }
 
-    // The chosen file's bytes, for the "21 MB / 544 MB" line.
     function chosenBytes() {
         if (modal.progress === null || modal.chosenIdx < 0) return 0
         const per = modal.progress.fileProgress || []
@@ -264,7 +352,6 @@ Popup {
         return "Searching"
     }
 
-    // The badge colour for a release index.
     function badgeColor(index) {
         const b = modal.badges[index]
         if (b === "green") return "#4ade80"
@@ -273,7 +360,6 @@ Popup {
         return Theme.inkFaint
     }
 
-    // The distinct resolutions present, highest first.
     function resolutionOptions() {
         const order = ["2160p", "1080p", "720p", "480p", "360p"]
         const seen = {}
@@ -283,7 +369,6 @@ Popup {
         return order.filter(function (r) { return seen[r] })
     }
 
-    // The releases the filter box and resolution chips leave.
     function visibleReleases() {
         const needle = modal.releaseQuery.trim().toLowerCase()
         return modal.releases.filter(function (r) {
@@ -301,8 +386,6 @@ Popup {
         else next.push(r)
         modal.resolutionFilter = next
     }
-
-    // --- actions ---------------------------------------------------------
 
     function search() {
         if (!backend || titles.length === 0) return
@@ -335,15 +418,9 @@ Popup {
         if (torrentId < 0) return
         if (paused) { backend.resumeTorrent(torrentId); paused = false }
         else { backend.pauseTorrent(torrentId); paused = true }
+        if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
     }
 
-    // Stop the player and free it.
-    //
-    // Pausing first avoids a jarring cutoff; the actual teardown is the
-    // Loader dropping the MpvObject (its destructor frees the mpv handle and
-    // GL render context) when `stage` leaves "play" -- `destroyPlayer` is for
-    // the case where the stage is NOT changing (the modal closing while the
-    // play stage is still current).
     function stopPlayer() {
         const p = playerLoader.item
         if (p !== null) {
@@ -353,8 +430,6 @@ Popup {
     }
 
     function backToReleases() {
-        // Stop and free the player BEFORE leaving the stage, so a big decoder
-        // is not held while the reader is only browsing releases.
         stopPlayer()
         if (torrentId >= 0) {
             backend.releaseTorrent(torrentId)
@@ -366,14 +441,10 @@ Popup {
         playingUrl = ""
         progress = null
         speedHistory = []
-        // Setting the stage deactivates the Loader, which destroys the player.
         stage = "releases"
     }
 
     function teardown() {
-        // Same as `backToReleases` but also collapses the Loader explicitly:
-        // on a close the modal may be destroyed without `stage` ever changing,
-        // and a live mpv context must not outlive it.
         stopPlayer()
         if (torrentId >= 0) {
             backend.releaseTorrent(torrentId)
@@ -400,8 +471,6 @@ Popup {
     }
     property string pendingTorrentUrl: ""
 
-    // --- backend wiring --------------------------------------------------
-
     Connections {
         target: modal.backend
 
@@ -424,10 +493,8 @@ Popup {
                     : "No episode releases found."
                 return
             }
-            // Probe for real swarm health; the dots fill in as answers land.
             modal.probing = true
             modal.backend.probeReleases(JSON.stringify(modal.releases))
-            // Dev aid: jump straight into playback.
             if (modal.autoPlay && modal.releases.length > 0) {
                 modal.pickRelease(modal.releases[0])
             }
@@ -443,13 +510,10 @@ Popup {
             next[index] = badge
             modal.badges = next
         }
-        function onProbeDone() {
-            modal.probing = false
-        }
+        function onProbeDone() { modal.probing = false }
 
         function onTorrentAdded(json) {
             const handle = JSON.parse(json)
-            // Dev aid: start the largest playable file without a pick.
             if (modal.autoPlay) {
                 let best = -1
                 let bestSize = -1
@@ -479,24 +543,15 @@ Popup {
             if (torrentId !== modal.torrentId || fileIdx !== modal.chosenIdx) return
             modal.playingUrl = url
             modal.stage = "play"
-            // Hold BEFORE loading, so leaving cannot remove the torrent out
-            // from under the player reading it.
             modal.backend.holdTorrent(modal.torrentId)
-            // The Loader may not have created the item yet; `onLoaded` calls
-            // this again when it has, so whichever happens second loads.
             modal.loadStream()
         }
-        function onStreamUrlFailed(message) {
-            modal.error = message
-        }
+        function onStreamUrlFailed(message) { modal.error = message }
 
         function onTorrentStatsReady(json) {
             const next = JSON.parse(json)
             if (next === null) return
 
-            // Track staleness and speed history here rather than in the core:
-            // both are facts about CHANGE over time, which a single snapshot
-            // cannot express.
             const bytes = next.progressBytes || 0
             if (bytes === modal.lastBytes) {
                 modal.staleSeconds += 0.5
@@ -510,29 +565,15 @@ Popup {
             modal.speedHistory = hist
 
             modal.progress = next
-
-            // Launch as soon as enough of the file is present.
-            if (modal.stage === "files" && !modal.paused
-                && modal.fileFraction() >= readyFraction()) {
-                // The stream URL was already resolved by `play`; loading is
-                // driven by onStreamUrlReady.
-            }
         }
 
-        function onDownloadDone() {
-            modal.downloadStatus = "Saved."
-        }
-        function onDownloadFailed(message) {
-            modal.downloadStatus = message
-        }
+        function onDownloadDone() { modal.downloadStatus = "Saved." }
+        function onDownloadFailed(message) { modal.downloadStatus = message }
     }
 
     property string downloadStatus: ""
-
-    // The fraction that must be present before playback is worth starting.
     function readyFraction() { return 0.05 }
 
-    // Poll the download while a torrent is active.
     Timer {
         interval: 500
         running: modal.torrentId >= 0
@@ -553,870 +594,936 @@ Popup {
         }
     }
 
-    background: Rectangle {
-        radius: 14
-        color: Theme.surfaceRaised
-        border.width: 1
-        border.color: Theme.borderSubtle
+    background: GlassPanel {
+        radius: modal.fullscreen ? 0 : 16
+        strong: true
     }
 
-    contentItem: ColumnLayout {
-        spacing: 0
+    contentItem: Item {
+        anchors.fill: parent
 
-        // --- Header ------------------------------------------------------
-        // Hidden in fullscreen: the episode title and close button are chrome,
-        // and the whole window belongs to the video.
-        Item {
-            Layout.fillWidth: true
-            Layout.preferredHeight: modal.fullscreen ? 0 : 92
-            visible: !modal.fullscreen
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 20
-                anchors.rightMargin: 16
-                spacing: 16
+            // --- Window Header (Hidden in Fullscreen) -------------------
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: modal.fullscreen ? 0 : 84
+                visible: !modal.fullscreen
 
-                // Episode thumbnail.
-                Rectangle {
-                    Layout.preferredWidth: 124
-                    Layout.preferredHeight: 68
-                    Layout.alignment: Qt.AlignVCenter
-                    radius: 8
-                    color: Theme.surfaceHover
-                    clip: true
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 20
+                    anchors.rightMargin: 16
+                    spacing: 16
 
-                    Image {
-                        anchors.fill: parent
-                        source: modal.episodeThumbnail
-                        fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
+                    Rectangle {
+                        Layout.preferredWidth: 110
+                        Layout.preferredHeight: 60
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 8
+                        color: Theme.glassFillSubtle
+                        clip: true
+
+                        Image {
+                            anchors.fill: parent
+                            source: modal.episodeThumbnail
+                            fillMode: Image.PreserveAspectCrop
+                            asynchronous: true
+                        }
                     }
-                }
 
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignVCenter
-                    spacing: 3
-
-                    Text {
-                        text: "EPISODE " + modal.episodeNumber
-                        color: Theme.accent
-                        font.pixelSize: 11
-                        font.bold: true
-                        font.letterSpacing: 1.2
-                    }
-                    Text {
+                    ColumnLayout {
                         Layout.fillWidth: true
-                        text: "Episode " + modal.episodeNumber
-                        color: Theme.ink
-                        font.pixelSize: 20
-                        font.bold: true
-                        elide: Text.ElideRight
-                    }
-                }
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: 2
 
-                // Close X.
-                Rectangle {
-                    Layout.alignment: Qt.AlignTop | Qt.AlignRight
-                    Layout.topMargin: 14
-                    width: 30
-                    height: 30
-                    radius: 8
-                    color: closeMouse.containsMouse ? Theme.surfaceHover : "transparent"
-                    border.width: 1
-                    border.color: Theme.borderSubtle
-
-                    PlayerIcon {
-                        anchors.centerIn: parent
-                        kind: "close"
-                        color: Theme.inkMuted
-                        width: 14
-                        height: 14
+                        Text {
+                            text: "EPISODE " + modal.episodeNumber
+                            color: Theme.accent
+                            font.pixelSize: 11
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: modal.releaseTitle !== "" ? modal.releaseTitle : ("Episode " + modal.episodeNumber)
+                            color: Theme.ink
+                            font.pixelSize: 18
+                            font.bold: true
+                            elide: Text.ElideRight
+                        }
                     }
-                    MouseArea {
-                        id: closeMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: modal.close()
+
+                    Rectangle {
+                        Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                        Layout.topMargin: 14
+                        width: 30
+                        height: 30
+                        radius: 8
+                        color: closeMouse.containsMouse ? Theme.glassFillHover : "transparent"
+                        border.width: 1
+                        border.color: Theme.glassBorder
+
+                        PlayerIcon {
+                            anchors.centerIn: parent
+                            kind: "close"
+                            color: Theme.inkMuted
+                            width: 14; height: 14
+                        }
+                        MouseArea {
+                            id: closeMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: modal.close()
+                        }
                     }
                 }
             }
-        }
 
-        // --- Body --------------------------------------------------------
-        Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+            // --- Body Area -----------------------------------------------
+            Item {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
 
-            // ===== Releases stage ========================================
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 20
-                anchors.rightMargin: 20
-                visible: modal.stage === "releases"
-                spacing: 12
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text {
-                        text: "AVAILABLE RELEASES"
-                        color: Theme.inkFaint
-                        font.pixelSize: 10
-                        font.bold: true
-                        font.letterSpacing: 1.2
-                    }
-                    Item { Layout.fillWidth: true }
-                    // Episodes / Packs segmented toggle.
-                    Rectangle {
-                        width: 150
-                        height: 30
-                        radius: 15
-                        color: Theme.surface
-                        border.width: 1
-                        border.color: Theme.borderSubtle
-
-                        Rectangle {
-                            width: parent.width / 2 - 4
-                            height: parent.height - 6
-                            y: 3
-                            x: modal.releaseMode === "packs" ? parent.width / 2 : 3
-                            radius: 12
-                            color: Theme.accent
-                            Behavior on x { NumberAnimation { duration: 150 } }
-                        }
-                        Row {
-                            anchors.fill: parent
-                            Repeater {
-                                model: [
-                                    { "value": "episodes", "label": "Episodes" },
-                                    { "value": "packs", "label": "Packs" }
-                                ]
-                                delegate: Item {
-                                    required property var modelData
-                                    width: 75
-                                    height: 30
-                                    Text {
-                                        anchors.centerIn: parent
-                                        text: modelData.label
-                                        color: modal.releaseMode === modelData.value ? "white" : Theme.inkMuted
-                                        font.pixelSize: 11
-                                        font.bold: true
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            if (modal.releaseMode === modelData.value) return
-                                            modal.releaseMode = modelData.value
-                                            modal.search()
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Spinner / error.
-                Column {
-                    Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignHCenter
-                    spacing: 8
-                    visible: modal.searching
-                    topPadding: 30
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "◌"
-                        color: Theme.accent
-                        font.pixelSize: 26
-                    }
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Searching indexers…"
-                        color: Theme.inkMuted
-                        font.pixelSize: 12
-                    }
-                }
-
-                Text {
-                    Layout.fillWidth: true
-                    visible: !modal.searching && modal.error !== ""
-                    text: modal.error
-                    color: Theme.danger
-                    font.pixelSize: 12
-                    wrapMode: Text.WordWrap
-                }
-
-                // Filter box + resolution chips.
+                // ===== Releases Stage ====================================
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: !modal.searching && modal.releases.length > 0
-                    spacing: 8
+                    anchors.fill: parent
+                    anchors.leftMargin: 20
+                    anchors.rightMargin: 20
+                    visible: modal.stage === "releases"
+                    spacing: 12
 
-                    TextField {
-                        id: releaseFilter
+                    RowLayout {
                         Layout.fillWidth: true
-                        placeholderText: "Filter releases…"
-                        color: Theme.ink
-                        placeholderTextColor: Theme.inkFaint
-                        font.pixelSize: 12
-                        background: Rectangle {
-                            radius: 16; color: Theme.surface; border.width: 1
-                            border.color: releaseFilter.activeFocus ? Theme.accent : Theme.borderSubtle
+                        Text {
+                            text: "AVAILABLE RELEASES"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
                         }
-                        onTextChanged: modal.releaseQuery = text
-                    }
+                        Item { Layout.fillWidth: true }
+                        Rectangle {
+                            width: 150
+                            height: 30
+                            radius: 15
+                            color: Theme.glassFillSubtle
+                            border.width: 1
+                            border.color: Theme.glassBorder
 
-                    Flow {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: childrenRect.height
-                        spacing: 6
-                        Repeater {
-                            model: modal.resolutionOptions()
-                            delegate: Rectangle {
-                                required property string modelData
-                                radius: 12
-                                color: modal.resolutionFilter.indexOf(modelData) >= 0
-                                    ? Theme.accent : Theme.surface
-                                border.width: 1
-                                border.color: modal.resolutionFilter.indexOf(modelData) >= 0
-                                    ? Theme.accent : Theme.borderSubtle
-                                implicitWidth: resLabel.implicitWidth + 20
-                                implicitHeight: 24
-
-                                Text {
-                                    id: resLabel
-                                    anchors.centerIn: parent
-                                    text: modelData
-                                    color: modal.resolutionFilter.indexOf(modelData) >= 0
-                                        ? "white" : Theme.inkMuted
-                                    font.pixelSize: 11
-                                }
-                                MouseArea {
-                                    anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: modal.toggleResolution(modelData)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Release rows.
-                ListView {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    visible: !modal.searching && modal.releases.length > 0
-                    clip: true
-                    spacing: 8
-                    model: modal.visibleReleases()
-
-                    delegate: Rectangle {
-                        required property var modelData
-                        // The release's index in the FULL list, for the badge.
-                        readonly property int realIndex: modal.releases.indexOf(modelData)
-
-                        width: ListView.view.width
-                        height: 52
-                        radius: 10
-                        color: Theme.surface
-                        border.width: 1
-                        border.color: relHover.hovered ? Theme.accent : Theme.borderSubtle
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 10
-                            spacing: 10
-
-                            // Health dot.
                             Rectangle {
-                                Layout.alignment: Qt.AlignVCenter
-                                width: 8
-                                height: 8
-                                radius: 4
-                                color: modal.badgeColor(realIndex)
+                                width: parent.width / 2 - 4
+                                height: parent.height - 6
+                                y: 3
+                                x: modal.releaseMode === "packs" ? parent.width / 2 : 3
+                                radius: 12
+                                color: Theme.accent
+                                Behavior on x { NumberAnimation { duration: 150 } }
                             }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 3
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: modelData.title
-                                    color: Theme.ink
-                                    font.pixelSize: 12
-                                    elide: Text.ElideRight
-                                }
-                                Row {
-                                    spacing: 6
-                                    // resolution / source / seeders / size chips.
-                                    Repeater {
-                                        model: {
-                                            const out = []
-                                            if (modelData.resolution && modelData.resolution !== "unknown")
-                                                out.push(modelData.resolution)
-                                            if (modelData.source && modelData.source !== "unknown")
-                                                out.push(modelData.source)
-                                            if (modelData.seeders !== undefined && modelData.seeders !== null)
-                                                out.push(modelData.seeders + " seeders")
-                                            if (modelData.sizeBytes)
-                                                out.push(modal.formatSize(modelData.sizeBytes))
-                                            return out
+                            Row {
+                                anchors.fill: parent
+                                Repeater {
+                                    model: [
+                                        { "value": "episodes", "label": "Episodes" },
+                                        { "value": "packs", "label": "Packs" }
+                                    ]
+                                    delegate: Item {
+                                        required property var modelData
+                                        width: 75
+                                        height: 30
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: modelData.label
+                                            color: modal.releaseMode === modelData.value ? "white" : Theme.inkMuted
+                                            font.pixelSize: 11
+                                            font.bold: true
                                         }
-                                        delegate: Rectangle {
-                                            required property string modelData
-                                            radius: 5
-                                            color: Theme.surfaceHover
-                                            implicitWidth: chipText.implicitWidth + 12
-                                            implicitHeight: 18
-                                            Text {
-                                                id: chipText
-                                                anchors.centerIn: parent
-                                                text: modelData
-                                                color: Theme.inkMuted
-                                                font.pixelSize: 10
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                if (modal.releaseMode === modelData.value) return
+                                                modal.releaseMode = modelData.value
+                                                modal.search()
                                             }
                                         }
                                     }
                                 }
                             }
-
-                            // Copy magnet.
-                            Rectangle {
-                                Layout.alignment: Qt.AlignVCenter
-                                width: 28; height: 28; radius: 7
-                                color: copyMouse.containsMouse ? Theme.surfaceHover : "transparent"
-                                border.width: 1
-                                border.color: Theme.borderSubtle
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "⧉"
-                                    color: copyMouse.containsMouse ? Theme.accent : Theme.inkMuted
-                                    font.pixelSize: 12
-                                }
-                                MouseArea {
-                                    id: copyMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: modal.copyMagnet(modelData)
-                                }
-                            }
-
-                            // Save .torrent.
-                            Rectangle {
-                                Layout.alignment: Qt.AlignVCenter
-                                width: 28; height: 28; radius: 7
-                                color: saveMouse.containsMouse ? Theme.surfaceHover : "transparent"
-                                border.width: 1
-                                border.color: Theme.borderSubtle
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: "⤓"
-                                    color: saveMouse.containsMouse ? Theme.accent : Theme.inkMuted
-                                    font.pixelSize: 13
-                                }
-                                MouseArea {
-                                    id: saveMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: modal.saveTorrent(modelData)
-                                }
-                            }
-                        }
-
-                        HoverHandler { id: relHover }
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            // Below the icons: only fires where they do not.
-                            onClicked: modal.pickRelease(modelData)
                         }
                     }
-                }
-            }
 
-            // ===== Files + play stage ====================================
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 20
-                anchors.rightMargin: 20
-                visible: modal.stage === "files" || modal.stage === "play"
-                spacing: 12
+                    Column {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignHCenter
+                        spacing: 8
+                        visible: modal.searching
+                        topPadding: 30
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "◌"
+                            color: Theme.accent
+                            font.pixelSize: 26
+                        }
+                        Text {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            text: "Searching indexers…"
+                            color: Theme.inkMuted
+                            font.pixelSize: 12
+                        }
+                    }
 
-                // The buffering card, with the player at its top.
-                Rectangle {
-                    Layout.fillWidth: true
-                    // Fullscreen: the card takes the whole body, so the video
-                    // inside can too. Otherwise it hugs its content.
-                    Layout.fillHeight: modal.fullscreen
-                    implicitHeight: modal.fullscreen
-                        ? 0
-                        : bufferingCol.implicitHeight + 24
-                    radius: modal.fullscreen ? 0 : 12
-                    color: Theme.surface
-                    border.width: modal.fullscreen ? 0 : 1
-                    border.color: Theme.borderSubtle
+                    Text {
+                        Layout.fillWidth: true
+                        visible: !modal.searching && modal.error !== ""
+                        text: modal.error
+                        color: Theme.danger
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                    }
 
                     ColumnLayout {
-                        id: bufferingCol
-                        anchors.fill: parent
-                        anchors.margins: modal.fullscreen ? 0 : 12
+                        Layout.fillWidth: true
+                        visible: !modal.searching && modal.releases.length > 0
+                        spacing: 8
 
-                        // The embedded player, created ONLY while the play stage
-                        // is showing. A `Loader` (not a hidden MpvObject) is what
-                        // makes that true: leaving the stage destroys the item,
-                        // and `~MpvObject` frees the mpv handle and GL render
-                        // context -- no decoder held in RAM for a screen that is
-                        // not playing anything.
-                        Rectangle {
+                        TextField {
+                            id: releaseFilter
                             Layout.fillWidth: true
-                            // Fullscreen: the video takes every spare pixel. Not
-                            // fullscreen: a fixed 300px box in the card.
-                            Layout.fillHeight: modal.stage === "play" && modal.fullscreen
-                            Layout.preferredHeight: (modal.stage === "play" && !modal.fullscreen)
-                                ? 300 : 0
-                            visible: modal.stage === "play"
-                            radius: modal.fullscreen ? 0 : 8
-                            color: "black"
-                            clip: true
-
-                            // Wake the auto-hiding chrome whenever the pointer
-                            // moves over the video in fullscreen.
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                acceptedButtons: Qt.NoButton
-                                onPositionChanged: modal.wakeChrome()
+                            placeholderText: "Filter releases…"
+                            color: Theme.ink
+                            placeholderTextColor: Theme.inkFaint
+                            font.pixelSize: 12
+                            background: Rectangle {
+                                radius: 16; color: Theme.glassFillSubtle; border.width: 1
+                                border.color: releaseFilter.activeFocus ? Theme.accent : Theme.glassBorder
                             }
+                            onTextChanged: modal.releaseQuery = text
+                        }
 
-                            // The exit-fullscreen circle, top-right. Shown only
-                            // while the chrome is awake, and only in fullscreen.
-                            Rectangle {
-                                visible: modal.fullscreen && modal.chromeVisible
-                                anchors.top: parent.top
-                                anchors.right: parent.right
-                                anchors.margins: 16
-                                width: 40
-                                height: 40
-                                radius: 20
-                                color: exitMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
-                                border.width: 1
-                                border.color: Theme.borderSubtle
-
-                                PlayerIcon {
-                                    anchors.centerIn: parent
-                                    kind: "close"
-                                    color: Theme.ink
-                                    width: 16
-                                    height: 16
-                                }
-                                MouseArea {
-                                    id: exitMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: modal.toggleFullscreen()
-                                }
-                            }
-
-                            Loader {
-                                id: playerLoader
-                                anchors.fill: parent
-                                // Active only on the play stage: leaving it
-                                // destroys the MpvObject and frees its mpv
-                                // handle + GL context.
-                                active: modal.stage === "play"
-                                sourceComponent: playerComponent
-                                // The item appears asynchronously; if the stream
-                                // URL already arrived, load it now. Whichever of
-                                // this and `onStreamUrlReady` runs second wins.
-                                onLoaded: modal.loadStream()
-                            }
-
-                            // Buffering banner, over the black surface, so the
-                            // reader can tell "still fetching" from "stuck".
-                            // Driven by mpv's own cache/idle state.
-                            Rectangle {
-                                anchors.top: parent.top
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                anchors.topMargin: 12
-                                visible: modal.stage === "play" && modal.playerBuffering()
-                                radius: 14
-                                color: "#cc0b0d12"
-                                border.width: 1
-                                border.color: Theme.borderSubtle
-                                implicitWidth: bufferRow.implicitWidth + 28
-                                implicitHeight: 30
-
-                                Row {
-                                    id: bufferRow
-                                    anchors.centerIn: parent
-                                    spacing: 8
+                        Flow {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: childrenRect.height
+                            spacing: 6
+                            Repeater {
+                                model: modal.resolutionOptions()
+                                delegate: Rectangle {
+                                    required property string modelData
+                                    radius: 12
+                                    color: modal.resolutionFilter.indexOf(modelData) >= 0
+                                        ? Theme.accent : Theme.glassFillSubtle
+                                    border.width: 1
+                                    border.color: modal.resolutionFilter.indexOf(modelData) >= 0
+                                        ? Theme.accent : Theme.glassBorder
+                                    implicitWidth: resLabel.implicitWidth + 20
+                                    implicitHeight: 24
 
                                     Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: "◌"
-                                        color: Theme.accent
-                                        font.pixelSize: 16
-                                        NumberAnimation on rotation {
-                                            from: 0; to: 360
-                                            duration: 900
-                                            loops: Animation.Infinite
-                                            running: modal.playerBuffering()
-                                        }
+                                        id: resLabel
+                                        anchors.centerIn: parent
+                                        text: modelData
+                                        color: modal.resolutionFilter.indexOf(modelData) >= 0
+                                            ? "white" : Theme.inkMuted
+                                        font.pixelSize: 11
                                     }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modal.toggleResolution(modelData)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ListView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: !modal.searching && modal.releases.length > 0
+                        clip: true
+                        spacing: 8
+                        model: modal.visibleReleases()
+
+                        delegate: GlassPanel {
+                            required property var modelData
+                            readonly property int realIndex: modal.releases.indexOf(modelData)
+
+                            width: ListView.view.width
+                            height: 52
+                            interactive: true
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 10
+                                spacing: 10
+
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    width: 8; height: 8; radius: 4
+                                    color: modal.badgeColor(realIndex)
+                                }
+
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 3
                                     Text {
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: "Buffering…  " + modal.percent(modal.fileFraction()) + "%"
+                                        Layout.fillWidth: true
+                                        text: modelData.title
                                         color: Theme.ink
                                         font.pixelSize: 12
-                                        font.bold: true
+                                        elide: Text.ElideRight
+                                    }
+                                    Row {
+                                        spacing: 6
+                                        Repeater {
+                                            model: {
+                                                const out = []
+                                                if (modelData.resolution && modelData.resolution !== "unknown")
+                                                    out.push(modelData.resolution)
+                                                if (modelData.source && modelData.source !== "unknown")
+                                                    out.push(modelData.source)
+                                                if (modelData.seeders !== undefined && modelData.seeders !== null)
+                                                    out.push(modelData.seeders + " seeders")
+                                                if (modelData.sizeBytes)
+                                                    out.push(modal.formatSize(modelData.sizeBytes))
+                                                return out
+                                            }
+                                            delegate: Rectangle {
+                                                required property string modelData
+                                                radius: 5
+                                                color: Theme.glassFillHover
+                                                implicitWidth: chipText.implicitWidth + 12
+                                                implicitHeight: 18
+                                                Text {
+                                                    id: chipText
+                                                    anchors.centerIn: parent
+                                                    text: modelData
+                                                    color: Theme.inkMuted
+                                                    font.pixelSize: 10
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    width: 28; height: 28; radius: 7
+                                    color: copyMouse.containsMouse ? Theme.glassFillHover : "transparent"
+                                    border.width: 1
+                                    border.color: Theme.glassBorder
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "⧉"
+                                        color: copyMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                                        font.pixelSize: 12
+                                    }
+                                    MouseArea {
+                                        id: copyMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modal.copyMagnet(modelData)
+                                    }
+                                }
+
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    width: 28; height: 28; radius: 7
+                                    color: saveMouse.containsMouse ? Theme.glassFillHover : "transparent"
+                                    border.width: 1
+                                    border.color: Theme.glassBorder
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: "⤓"
+                                        color: saveMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                                        font.pixelSize: 13
+                                    }
+                                    MouseArea {
+                                        id: saveMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modal.saveTorrent(modelData)
                                     }
                                 }
                             }
-                        }
 
-                        // The OSD control bar. In fullscreen it becomes an
-                        // overlay pinned to the bottom of the video, and hides
-                        // with the rest of the chrome; otherwise it sits under
-                        // the video.
-                        PlayerControls {
-                            Layout.fillWidth: true
-                            Layout.topMargin: 2
-                            visible: modal.stage === "play"
-                                && (!modal.fullscreen || modal.chromeVisible)
-                            player: playerLoader.item
-                            bufferedFraction: modal.fileFraction()
-                            fullscreen: modal.fullscreen
-                            onOpenSettings: settingsPopup.open()
-                            onToggleFullscreen: modal.toggleFullscreen()
-                        }
-
-                        // The download panel. Hidden in fullscreen, where the
-                        // video owns the screen and only the OSD is shown.
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            visible: !modal.fullscreen
-                            spacing: 10
-
-                        // Status headline + percent + controls.
-                        RowLayout {
-                            Layout.fillWidth: true
-
-                            Rectangle {
-                                width: 8; height: 8; radius: 4
-                                color: modal.paused ? Theme.inkFaint
-                                    : (modal.fileFraction() >= 1 ? "#4ade80" : Theme.accent)
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: modal.pickRelease(modelData)
                             }
-                            Text {
-                                // While playing, mpv's own state decides:
-                                // "Buffering…" when it has run dry, "Playing"
-                                // otherwise. Before playback starts, the torrent
-                                // download is the thing being waited on.
-                                text: modal.paused ? "Paused"
-                                    : (modal.stage === "play"
-                                        ? (modal.playerBuffering() ? "Buffering…" : "Playing")
-                                        : (modal.fileFraction() >= 1 ? "Fully buffered" : "Buffering…"))
-                                color: Theme.ink
-                                font.pixelSize: 13
-                                font.bold: true
-                            }
-                            Item { Layout.fillWidth: true }
-                            Text {
-                                text: modal.percent(modal.fileFraction()) + "%"
-                                color: Theme.accent
-                                font.pixelSize: 13
-                                font.bold: true
-                            }
-                            // Pause / resume.
-                            Rectangle {
-                                width: 26; height: 26; radius: 7
-                                color: pauseMouse.containsMouse ? Theme.surfaceHover : "transparent"
-                                border.width: 1
-                                border.color: Theme.borderSubtle
-                                PlayerIcon {
-                                    anchors.centerIn: parent
-                                    kind: modal.paused ? "play" : "pause"
-                                    color: Theme.inkMuted
-                                    width: 13
-                                    height: 13
-                                }
-                                MouseArea {
-                                    id: pauseMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: modal.togglePause()
-                                }
-                            }
-                            // Cancel.
-                            Rectangle {
-                                width: 26; height: 26; radius: 7
-                                color: cancelMouse.containsMouse ? Theme.surfaceHover : "transparent"
-                                border.width: 1
-                                border.color: Theme.borderSubtle
-                                PlayerIcon {
-                                    anchors.centerIn: parent
-                                    kind: "stop"
-                                    color: Theme.inkMuted
-                                    width: 12
-                                    height: 12
-                                }
-                                MouseArea {
-                                    id: cancelMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: modal.backToReleases()
-                                }
-                            }
-                        }
-
-                        // Progress bar.
-                        Rectangle {
-                            Layout.fillWidth: true
-                            height: 6
-                            radius: 3
-                            color: Theme.borderSubtle
-                            Rectangle {
-                                width: parent.width * modal.fileFraction()
-                                height: parent.height
-                                radius: 3
-                                color: Theme.accent
-                            }
-                        }
-
-                        // Bytes + whole torrent.
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Text {
-                                text: modal.formatSize(modal.chosenBytes()) + " / "
-                                    + modal.formatSize(modal.chosenTotal())
-                                color: Theme.inkFaint
-                                font.pixelSize: 11
-                            }
-                            Item { Layout.fillWidth: true }
-                            Text {
-                                text: "whole torrent " + modal.percent(modal.torrentFraction()) + "%"
-                                color: Theme.inkFaint
-                                font.pixelSize: 11
-                            }
-                        }
-
-                        // Peers / speed / ETA / health.
-                        Row {
-                            spacing: 18
-                            Text {
-                                text: "Peers  " + modal.connectionLabel()
-                                color: Theme.inkMuted
-                                font.pixelSize: 11
-                            }
-                            Text {
-                                text: "Down  " + modal.formatSpeed(modal.progress ? modal.progress.downloadMbps : 0)
-                                color: Theme.inkMuted
-                                font.pixelSize: 11
-                            }
-                            Text {
-                                text: "ETA  " + modal.formatEta(modal.progress ? modal.progress.etaSeconds : 0)
-                                color: Theme.inkMuted
-                                font.pixelSize: 11
-                            }
-                            Text {
-                                text: "Health  " + modal.healthLabel()
-                                color: modal.healthLabel() === "Healthy" ? "#4ade80" : Theme.inkMuted
-                                font.pixelSize: 11
-                                font.bold: true
-                            }
-                        }
-
-                        // Speed sparkline.
-                        Row {
-                            spacing: 3
-                            Repeater {
-                                model: modal.speedHistory
-                                delegate: Rectangle {
-                                    required property real modelData
-                                    width: 10
-                                    height: Math.max(3, Math.min(30, 3 + modelData * 12))
-                                    anchors.bottom: parent.bottom
-                                    color: Theme.accent
-                                    opacity: 0.7
-                                }
-                            }
-                        }
                         }
                     }
                 }
 
-                // Back to releases. Hidden in fullscreen with the rest of the
-                // non-player chrome.
-                RowLayout {
-                    Layout.fillWidth: true
-                    visible: !modal.fullscreen
-                    Text {
-                        text: "← Back to releases"
-                        color: backMouse.containsMouse ? Theme.accent : Theme.inkMuted
-                        font.pixelSize: 11
+                // ===== Files & Playback Stage ============================
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: modal.fullscreen ? 0 : 20
+                    anchors.rightMargin: modal.fullscreen ? 0 : 20
+                    visible: modal.stage === "files" || modal.stage === "play"
+                    spacing: 12
+
+                    // Viewport Container
+                    Item {
+                        id: playerViewport
+                        Layout.fillWidth: true
+                        Layout.fillHeight: modal.stage === "play" && modal.fullscreen
+                        Layout.preferredHeight: (modal.stage === "play" && !modal.fullscreen) ? 420 : 0
+                        visible: modal.stage === "play"
+                        clip: true
+
+                        // 1. BASE LAYER: Video Renderer
+                        Loader {
+                            id: playerLoader
+                            anchors.fill: parent
+                            active: modal.stage === "play"
+                            sourceComponent: playerComponent
+                            onLoaded: modal.loadStream()
+                        }
+
+                        // Pointer wake handler, click-to-pause & synchronized blank cursor hiding
                         MouseArea {
-                            id: backMouse
+                            id: viewportMouseArea
                             anchors.fill: parent
                             hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: modal.backToReleases()
-                        }
-                    }
-                    Item { Layout.fillWidth: true }
-                    Text {
-                        text: modal.files.length + (modal.files.length === 1 ? " file" : " files")
-                        color: Theme.inkFaint
-                        font.pixelSize: 11
-                    }
-                }
-
-                // File rows. Hidden in fullscreen, like the rest of the
-                // non-player chrome.
-                ListView {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    visible: !modal.fullscreen
-                    clip: true
-                    spacing: 6
-                    model: modal.files
-
-                    delegate: Rectangle {
-                        required property var modelData
-                        required property int index
-                        readonly property bool chosen: modelData.idx === modal.chosenIdx
-
-                        width: ListView.view.width
-                        height: 46
-                        radius: 9
-                        color: chosen ? Theme.surfaceHover : Theme.surface
-                        border.width: chosen ? 2 : 1
-                        border.color: chosen ? Theme.accent
-                            : (fileHover.hovered ? Theme.accent : Theme.borderSubtle)
-
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 10
-                            spacing: 10
-
-                            Text {
-                                text: "▸"
-                                color: Theme.accent
-                                font.pixelSize: 12
+                            acceptedButtons: Qt.LeftButton
+                            cursorShape: (modal.stage === "play" && !modal.chromeVisible) ? Qt.BlankCursor : Qt.ArrowCursor
+                            onPositionChanged: modal.wakeChrome()
+                            onClicked: {
+                                modal.wakeChrome()
+                                if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
                             }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 1
+                        }
+
+                        // 2. OVERLAY LAYER: Top Floating HUD (Fullscreen Only)
+                        GlassPanel {
+                            id: topBar
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.margins: 14
+                            height: 48
+                            z: 10
+                            visible: opacity > 0.0
+                            opacity: (modal.stage === "play" && modal.chromeVisible && modal.fullscreen) ? 1.0 : 0.0
+
+                            Behavior on opacity { NumberAnimation { duration: 200 } }
+
+                            HoverHandler {
+                                id: topBarHover
+                            }
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 16
+                                anchors.rightMargin: 16
+
                                 Text {
-                                    Layout.fillWidth: true
-                                    text: modelData.name
+                                    text: "Episode " + modal.episodeNumber + " — " + modal.releaseTitle
                                     color: Theme.ink
-                                    font.pixelSize: 11
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                    Layout.fillWidth: true
                                     elide: Text.ElideRight
                                 }
+                            }
+                        }
+
+                        // 3. OVERLAY LAYER: Bottom Floating OSD Controls Bar
+                        PlayerControls {
+                            id: bottomControls
+                            anchors.bottom: parent.bottom
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.margins: 14
+                            z: 10
+                            visible: opacity > 0.0
+                            opacity: (modal.stage === "play" && modal.chromeVisible) ? 1.0 : 0.0
+
+                            Behavior on opacity { NumberAnimation { duration: 200 } }
+
+                            HoverHandler {
+                                id: bottomControlsHover
+                            }
+
+                            player: playerLoader.item
+                            playingUrl: modal.playingUrl
+                            bufferedFraction: modal.fileFraction()
+                            fullscreen: modal.fullscreen
+                            onOpenSettings: modal.settingsOpen = !modal.settingsOpen
+                            onToggleFullscreen: modal.toggleFullscreen()
+                            onTriggerOSD: (icon, label) => osdToast.trigger(icon, label)
+                            onSkipIntro: modal.doSkipIntro()
+                            onSkipEnding: modal.doSkipEnding()
+                        }
+
+                        // 4. OVERLAY LAYER: Floating "Skip Intro / ED" Badge
+                        GlassPanel {
+                            id: skipOverlay
+                            anchors.bottom: parent.bottom
+                            anchors.right: parent.right
+                            anchors.bottomMargin: 104
+                            anchors.rightMargin: 24
+                            z: 12
+                            radius: 12
+                            implicitWidth: skipOverlayRow.implicitWidth + 24
+                            implicitHeight: 38
+                            
+                            readonly property real pos: playerLoader.item ? (playerLoader.item.position || 0) : 0
+                            readonly property real dur: playerLoader.item ? (playerLoader.item.duration || 0) : 0
+                            
+                            // Find the current chapter title from the player's
+                            // observed chapter list (same source the OSD uses).
+                            readonly property string chap: {
+                                if (!playerLoader.item) return ""
+                                const chapters = playerLoader.item.chapterList
+                                if (chapters && chapters.length > 0) {
+                                    // Find which chapter we're currently in
+                                    for (var i = chapters.length - 1; i >= 0; i--) {
+                                        const ch = chapters[i]
+                                        if (ch && ch.time !== undefined && ch.time <= pos) {
+                                            return ch.title || ""
+                                        }
+                                    }
+                                }
+                                return ""
+                            }
+                            
+                            // Check if current chapter matches OP/ED patterns, OR fall back to time heuristics
+                            readonly property bool isOpTime: /op|opening/i.test(chap) || (pos >= 10 && pos <= 210)
+                            readonly property bool isEdTime: /ed|ending|outro/i.test(chap) || (dur > 0 && pos >= dur - 210 && pos <= dur - 15)
+                            
+                            visible: modal.stage === "play" && modal.chromeVisible && (isOpTime || isEdTime)
+
+                            RowLayout {
+                                id: skipOverlayRow
+                                anchors.centerIn: parent
+                                spacing: 8
+
+                                PlayerIcon {
+                                    kind: "forward"
+                                    color: Theme.accent
+                                    width: 14; height: 14
+                                }
+
                                 Text {
-                                    text: modal.formatSize(modelData.lengthBytes)
-                                    color: Theme.inkFaint
-                                    font.pixelSize: 10
+                                    text: skipOverlay.isEdTime ? "SKIP ENDING [S]" : "SKIP INTRO [S]"
+                                    color: Theme.ink
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    font.letterSpacing: 0.8
                                 }
                             }
-                            Rectangle {
-                                visible: chosen
-                                radius: 8
-                                color: Theme.accent
-                                implicitWidth: playingText.implicitWidth + 18
-                                implicitHeight: 24
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    if (skipOverlay.isEdTime) modal.doSkipEnding()
+                                    else modal.doSkipIntro()
+                                }
+                            }
+                        }
+
+                        // 5. OVERLAY LAYER: Dynamic Center Action OSD Toast
+                        Rectangle {
+                            id: osdToast
+                            anchors.centerIn: parent
+                            z: 20
+                            height: 64
+                            radius: 32
+                            implicitWidth: Math.max(64, osdRow.implicitWidth + 32)
+                            color: Qt.rgba(0.07, 0.07, 0.11, 0.82)
+                            border.width: 1.5
+                            border.color: Theme.accent
+                            opacity: 0.0
+                            scale: 0.85
+                            visible: opacity > 0.0
+
+                            property string iconKind: "play"
+                            property string labelText: ""
+                            property var lastPauseState: undefined
+
+                            function trigger(kind, label) {
+                                iconKind = kind
+                                labelText = label || ""
+                                osdAnim.restart()
+                            }
+
+                            RowLayout {
+                                id: osdRow
+                                anchors.centerIn: parent
+                                spacing: 8
+
+                                PlayerIcon {
+                                    kind: osdToast.iconKind
+                                    color: Theme.accent
+                                    width: 24
+                                    height: 24
+                                }
+
                                 Text {
-                                    id: playingText
-                                    anchors.centerIn: parent
-                                    text: modal.stage === "play" ? "Playing" : "Loading…"
-                                    color: "white"
-                                    font.pixelSize: 11
+                                    visible: osdToast.labelText.length > 0
+                                    text: osdToast.labelText
+                                    color: Theme.ink
+                                    font.pixelSize: 13
+                                    font.bold: true
+                                }
+                            }
+
+                            ParallelAnimation {
+                                id: osdAnim
+                                NumberAnimation { target: osdToast; property: "opacity"; from: 1.0; to: 0.0; duration: 650; easing.type: Easing.OutQuad }
+                                NumberAnimation { target: osdToast; property: "scale"; from: 0.85; to: 1.15; duration: 650; easing.type: Easing.OutQuad }
+                            }
+                        }
+
+                        Connections {
+                            target: playerLoader.item
+                            function onPausedChanged() {
+                                if (!playerLoader.item || modal.stage !== "play") return
+                                const currentPaused = playerLoader.item.paused
+                                if (osdToast.lastPauseState === undefined) {
+                                    osdToast.lastPauseState = currentPaused
+                                    return
+                                }
+                                if (osdToast.lastPauseState !== currentPaused) {
+                                    osdToast.lastPauseState = currentPaused
+                                    osdToast.trigger(currentPaused ? "pause" : "play", "")
+                                }
+                            }
+                        }
+
+                        // 6. OVERLAY LAYER: Buffering Indicator Toast
+                        GlassPanel {
+                            anchors.centerIn: parent
+                            z: 15
+                            visible: modal.stage === "play" && modal.playerBuffering()
+                            radius: 14
+                            implicitWidth: bufferRow.implicitWidth + 32
+                            implicitHeight: 40
+
+                            Row {
+                                id: bufferRow
+                                anchors.centerIn: parent
+                                spacing: 10
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "◌"
+                                    color: Theme.accent
+                                    font.pixelSize: 18
+                                    NumberAnimation on rotation {
+                                        from: 0; to: 360
+                                        duration: 900
+                                        loops: Animation.Infinite
+                                        running: modal.playerBuffering()
+                                    }
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Buffering… " + modal.percent(modal.fileFraction()) + "%"
+                                    color: Theme.ink
+                                    font.pixelSize: 13
                                     font.bold: true
                                 }
                             }
                         }
+                    }
 
-                        HoverHandler { id: fileHover }
-                        MouseArea {
+                    // --- Download & Peer Stats Panel (Windowed Mode Only) ---
+                    GlassPanel {
+                        Layout.fillWidth: true
+                        visible: !modal.fullscreen
+                        implicitHeight: torrentStatsCol.implicitHeight + 20
+                        strong: true
+
+                        ColumnLayout {
+                            id: torrentStatsCol
                             anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: modal.play(modelData.idx)
+                            anchors.margins: 10
+                            spacing: 8
+
+                            RowLayout {
+                                Layout.fillWidth: true
+
+                                Rectangle {
+                                    width: 8; height: 8; radius: 4
+                                    color: modal.paused ? Theme.inkFaint
+                                        : (modal.fileFraction() >= 1 ? "#4ade80" : Theme.accent)
+                                }
+                                Text {
+                                    text: modal.paused ? "Paused"
+                                        : (modal.stage === "play"
+                                            ? (modal.playerBuffering() ? "Buffering…" : "Playing")
+                                            : (modal.fileFraction() >= 1 ? "Fully buffered" : "Buffering…"))
+                                    color: Theme.ink
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    text: modal.percent(modal.fileFraction()) + "%"
+                                    color: Theme.accent
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                                Rectangle {
+                                    width: 24; height: 24; radius: 6
+                                    color: pauseMouse.containsMouse ? Theme.glassFillHover : "transparent"
+                                    border.width: 1; border.color: Theme.glassBorder
+                                    PlayerIcon {
+                                        anchors.centerIn: parent
+                                        kind: modal.paused ? "play" : "pause"
+                                        color: Theme.inkMuted
+                                        width: 12; height: 12
+                                    }
+                                    MouseArea {
+                                        id: pauseMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modal.togglePause()
+                                    }
+                                }
+                                Rectangle {
+                                    width: 24; height: 24; radius: 6
+                                    color: cancelMouse.containsMouse ? Theme.glassFillHover : "transparent"
+                                    border.width: 1; border.color: Theme.glassBorder
+                                    PlayerIcon {
+                                        anchors.centerIn: parent
+                                        kind: "stop"
+                                        color: Theme.inkMuted
+                                        width: 11; height: 11
+                                    }
+                                    MouseArea {
+                                        id: cancelMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modal.backToReleases()
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                height: 4
+                                radius: 2
+                                color: Theme.glassBorder
+                                Rectangle {
+                                    width: parent.width * modal.fileFraction()
+                                    height: parent.height
+                                    radius: 2
+                                    color: Theme.accent
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Text {
+                                    text: modal.formatSize(modal.chosenBytes()) + " / " + modal.formatSize(modal.chosenTotal())
+                                    color: Theme.inkFaint
+                                    font.pixelSize: 10
+                                }
+                                Item { Layout.fillWidth: true }
+                                Text {
+                                    text: "whole torrent " + modal.percent(modal.torrentFraction()) + "%"
+                                    color: Theme.inkFaint
+                                    font.pixelSize: 10
+                                }
+                            }
+
+                            Row {
+                                spacing: 14
+                                Text {
+                                    text: "Peers " + modal.connectionLabel()
+                                    color: Theme.inkMuted
+                                    font.pixelSize: 10
+                                }
+                                Text {
+                                    text: "Down " + modal.formatSpeed(modal.progress ? modal.progress.downloadMbps : 0)
+                                    color: Theme.inkMuted
+                                    font.pixelSize: 10
+                                }
+                                Text {
+                                    text: "ETA " + modal.formatEta(modal.progress ? modal.progress.etaSeconds : 0)
+                                    color: Theme.inkMuted
+                                    font.pixelSize: 10
+                                }
+                                Text {
+                                    text: "Health " + modal.healthLabel()
+                                    color: modal.healthLabel() === "Healthy" ? "#4ade80" : Theme.inkMuted
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                }
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        visible: !modal.fullscreen
+                        Text {
+                            text: "← Back to releases"
+                            color: backMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                            font.pixelSize: 11
+                            MouseArea {
+                                id: backMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: modal.backToReleases()
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                        Text {
+                            text: modal.files.length + (modal.files.length === 1 ? " file" : " files")
+                            color: Theme.inkFaint
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    ListView {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        visible: !modal.fullscreen
+                        clip: true
+                        spacing: 6
+                        model: modal.files
+
+                        delegate: GlassPanel {
+                            required property var modelData
+                            required property int index
+                            readonly property bool chosen: modelData.idx === modal.chosenIdx
+
+                            width: ListView.view.width
+                            height: 44
+                            interactive: true
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 10
+                                spacing: 10
+
+                                Text {
+                                    text: "▸"
+                                    color: Theme.accent
+                                    font.pixelSize: 12
+                                }
+                                ColumnLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 1
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: modelData.name
+                                        color: Theme.ink
+                                        font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        text: modal.formatSize(modelData.lengthBytes)
+                                        color: Theme.inkFaint
+                                        font.pixelSize: 10
+                                    }
+                                }
+                                Rectangle {
+                                    visible: chosen
+                                    radius: 6
+                                    color: Theme.accent
+                                    implicitWidth: playingText.implicitWidth + 14
+                                    implicitHeight: 22
+                                    Text {
+                                        id: playingText
+                                        anchors.centerIn: parent
+                                        text: modal.stage === "play" ? "Playing" : "Loading…"
+                                        color: "white"
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                    }
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: modal.play(modelData.idx)
+                            }
                         }
                     }
                 }
+            }
 
-                Text {
-                    Layout.fillWidth: true
-                    visible: modal.error !== ""
-                    text: modal.error
-                    color: Theme.danger
-                    font.pixelSize: 11
-                    wrapMode: Text.WordWrap
+            // --- Window Footer (Hidden in Fullscreen) -------------------
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: modal.fullscreen ? 0 : 48
+                visible: !modal.fullscreen
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    height: 1
+                    color: Theme.glassBorder
                 }
 
-                Text {
-                    Layout.fillWidth: true
-                    visible: modal.downloadStatus !== ""
-                    text: modal.downloadStatus
-                    color: Theme.inkMuted
-                    font.pixelSize: 11
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 20
+                    anchors.rightMargin: 20
+                    spacing: 10
+
+                    Text {
+                        visible: modal.copied
+                        text: "Magnet copied"
+                        color: Theme.accent
+                        font.pixelSize: 11
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Text {
+                        text: "Close"
+                        color: footerClose.containsMouse ? Theme.accent : Theme.inkMuted
+                        font.pixelSize: 12
+                        MouseArea {
+                            id: footerClose
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: modal.close()
+                        }
+                    }
                 }
             }
         }
 
-        // --- Footer ------------------------------------------------------
-        // Hidden in fullscreen: the video owns the whole window.
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: modal.fullscreen ? 0 : 54
-            visible: !modal.fullscreen
-            color: Theme.surfaceRaised
+        // Overlay Dismiss Backdrop
+        MouseArea {
+            anchors.fill: parent
+            visible: modal.settingsOpen && modal.stage === "play"
+            z: 99
+            onClicked: modal.settingsOpen = false
+        }
 
-            Rectangle {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                height: 1
-                color: Theme.borderSubtle
-            }
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 20
-                anchors.rightMargin: 20
-                spacing: 10
-
-                Text {
-                    visible: modal.copied
-                    text: "Magnet copied"
-                    color: Theme.accent
-                    font.pixelSize: 11
-                }
-
-                Item { Layout.fillWidth: true }
-
-                Text {
-                    text: "Close"
-                    color: footerClose.containsMouse ? Theme.accent : Theme.inkMuted
-                    font.pixelSize: 12
-                    MouseArea {
-                        id: footerClose
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: modal.close()
-                    }
-                }
-            }
+        // Overlay Settings Card
+        PlayerSettings {
+            id: settingsCard
+            player: playerLoader.item
+            open: modal.settingsOpen
+            visible: modal.settingsOpen && modal.stage === "play"
+            z: 100
+            anchors.centerIn: parent
+            onCloseRequested: modal.settingsOpen = false
         }
     }
 }

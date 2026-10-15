@@ -244,11 +244,33 @@ Item {
         // The mpv surface. Hidden until playback starts so the picking UI has
         // the whole window; kept alive (not destroyed) so the render context
         // survives the stage changes.
-        MpvObject {
-            id: player
+        Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: page.stage === "play"
+
+            MpvObject {
+                id: player
+                anchors.fill: parent
+            }
+
+            // The same OSD bar the modal uses -- chapter markers, the chapter
+            // dropdown, and skip-intro/ED all read `player.chapterList`, which
+            // is fed by the mpv chapter-list observation.
+            PlayerControls {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 14
+                player: player
+                playingUrl: page.playingUrl
+                fullscreen: false
+                onOpenSettings: {}
+                onToggleFullscreen: {}
+                onTriggerOSD: (icon, label) => {}
+                onSkipIntro: {}
+                onSkipEnding: {}
+            }
         }
 
         // The picking UI: releases, then files.
