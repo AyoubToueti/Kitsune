@@ -11,10 +11,18 @@ Item {
     // Current shortcut overrides, action -> key sequence, from the modal.
     property var shortcuts: ({})
 
+    // Continue Watching: what to do when an episode has a saved position
+    // ("ask" | "seek" | "fresh"), and how many seconds to rewind from it.
+    property string resumeBehavior: "ask"
+    property int resumeRewind: 20
+
     signal closeRequested()
     /// Emitted when the reader rebinds an action. An empty sequence clears the
     /// override so the action falls back to its default.
     signal shortcutChanged(string action, string sequence)
+    /// Emitted when the reader changes the Continue Watching behaviour or the
+    /// rewind delay from the in-player settings card.
+    signal resumeChanged(string behavior, int rewind)
 
     // The actions the reader can rebind, with their built-in defaults. Kept in
     // sync with the `sc(...)` calls in EpisodeWatchModal.
@@ -225,6 +233,7 @@ Item {
                         { "value": "video", "label": "Video" },
                         { "value": "audio", "label": "Audio" },
                         { "value": "subtitles", "label": "Subs" },
+                        { "value": "resume", "label": "Resume" },
                         { "value": "shortcuts", "label": "Keys" }
                     ]
                     delegate: Rectangle {
@@ -504,6 +513,91 @@ Item {
                             card.subScale = v
                             if (card.player) card.player.setProperty("sub-scale", String(v))
                         }
+                    }
+                }
+
+                // Continue Watching: what to do when the episode has a saved
+                // position, and how far to rewind from it. Mirrors the section
+                // in the general Settings popup; edits here write straight to
+                // settings through the modal's resumeChanged handler.
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 12
+                    visible: card.tab === "resume"
+
+                    SettingLabel { text: "When an episode has a saved position" }
+
+                    Repeater {
+                        model: [
+                            { "value": "ask", "label": "Ask each time" },
+                            { "value": "seek", "label": "Seek automatically" },
+                            { "value": "fresh", "label": "Start fresh" }
+                        ]
+                        delegate: Rectangle {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            height: 34
+                            radius: 8
+                            readonly property bool active: card.resumeBehavior === modelData.value
+                            color: active ? Theme.accent
+                                : (resumeMouse.containsMouse ? Theme.glassFillHover : Theme.glassFillSubtle)
+                            border.width: 1
+                            border.color: active ? Theme.accent : Theme.glassBorder
+
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: active ? "white" : Theme.inkMuted
+                                font.pixelSize: 11
+                                font.bold: active
+                            }
+                            MouseArea {
+                                id: resumeMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: card.resumeChanged(modelData.value, card.resumeRewind)
+                            }
+                        }
+                    }
+
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.glassBorder }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        SettingLabel { text: "Rewind before resuming"; Layout.fillWidth: true }
+                        TextField {
+                            id: rewindField
+                            Layout.preferredWidth: 70
+                            text: String(card.resumeRewind)
+                            color: Theme.ink
+                            font.pixelSize: 12
+                            horizontalAlignment: TextInput.AlignHCenter
+                            validator: IntValidator { bottom: 0; top: 3600 }
+                            background: Rectangle {
+                                radius: 8; color: Theme.surface; border.width: 1
+                                border.color: rewindField.activeFocus ? Theme.accent : Theme.glassBorder
+                            }
+                            onEditingFinished: {
+                                const n = parseInt(text, 10)
+                                const v = isFinite(n) && n >= 0 ? n : 0
+                                text = String(v)
+                                card.resumeChanged(card.resumeBehavior, v)
+                            }
+                        }
+                        Text {
+                            text: "seconds"
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    Text {
+                        Layout.fillWidth: true
+                        text: "The player starts this many seconds before the saved spot, so you get a run-up into the scene."
+                        color: Theme.inkFaint
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
                     }
                 }
 

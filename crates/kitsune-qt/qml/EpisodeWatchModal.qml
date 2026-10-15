@@ -17,7 +17,8 @@ Popup {
     property string episodeThumbnail: ""
     property bool autoPlay: false
 
-    signal closed()
+    // NOTE: no `signal closed()` here -- `Popup` already defines one, and
+    // redeclaring it is an "invalid override" error that aborts the component.
 
     property string stage: "releases"
     property var releases: []
@@ -31,6 +32,93 @@ Popup {
     property bool probing: false
 
     property string releaseTitle: ""
+    // The chosen release's magnet, kept so the release can be remembered for a
+    // future resume. Empty until a release is picked.
+    property string releaseMagnet: ""
+
+    // --- resume -----------------------------------------------------------
+    // What to do with a saved position when a file starts: "ask" | "seek" |
+    // "fresh". Comes from settings; defaults to "ask".
+    readonly property string resumeBehavior: modal.appSettings.resumeBehavior || "ask"
+    // A saved position waiting to be applied to the next loaded file.
+    property var pendingResume: null
+    // True while the "Continue from MM:SS?" prompt is up.
+    property bool resumePromptOpen: false
+    // A position to seek to once the file has a duration, or -1 for none.
+    property real resumeSeekTarget: -1
+    // Guards against asking more than once per loaded file.
+    property bool resumeHandled: false
+    // When true, the modal skips the release picker and resumes the last
+    // remembered torrent for the work (the disc and the Continue Watching
+    // Resume button both set this). Cleared once consumed, or on teardown.
+    property bool resumeLast: false
+    // The file index to play from the resumed torrent, or -1 when unknown.
+    property int resumeFileIdx: -1
+
+    function fmtTime(seconds) {
+        if (!seconds || seconds <= 0 || !isFinite(seconds)) return "00:00"
+        const s = Math.floor(seconds % 60)
+        const m = Math.floor((seconds / 60) % 60)
+        const h = Math.floor(seconds / 3600)
+        const ss = s < 10 ? "0" + s : "" + s
+        const mm = m < 10 ? "0" + m : "" + m
+        return (h > 0 ? h + ":" + mm : mm) + ":" + ss
+    }
+
+    // Ask the backend for the saved positions; the reply applies the resume.
+    function requestResume() {
+        if (modal.backend) modal.backend.getWatchPositions()
+    }
+
+    // The rewind to apply on resume, from settings (seconds back from the
+    // saved position so the reader gets a run-up into the scene).
+    readonly property int resumeRewind: {
+        const v = modal.appSettings.resumeRewindSeconds
+        return (v === undefined || v === null) ? 20 : Math.max(0, Math.round(v))
+    }
+
+    // The position to actually resume from: the saved position minus the
+    // configured rewind, floored at 0.
+    function resumeTarget(pos) {
+        const at = (pos && pos.positionSeconds) ? pos.positionSeconds : 0
+        return Math.max(0, at - modal.resumeRewind)
+    }
+
+    // Apply the resume behaviour for `pos` (a saved WatchPosition).
+    function applyResume(pos) {
+        if (!pos || !pos.positionSeconds || pos.positionSeconds < 5) {
+            modal.pendingResume = null
+            return
+        }
+        modal.pendingResume = pos
+        const behavior = modal.resumeBehavior
+        if (behavior === "fresh") {
+            modal.pendingResume = null
+        } else if (behavior === "seek") {
+            modal.resumeSeekTarget = modal.resumeTarget(pos)
+        } else {
+            // "ask": show the prompt, seek only on Continue.
+            modal.resumePromptOpen = true
+        }
+    }
+
+    // Seek to the saved position once the file reports a duration.
+    Timer {
+        id: resumeApply
+        interval: 400
+        repeat: true
+        running: modal.resumeSeekTarget >= 0
+        onTriggered: {
+            const p = playerLoader.item
+            if (!p) return
+            if ((p.duration || 0) > 0) {
+                p.command(["seek", String(modal.resumeSeekTarget), "absolute"])
+                modal.resumeSeekTarget = -1
+                resumeApply.stop()
+            }
+        }
+    }
+
     property int torrentId: -1
     property var files: []
     property int chosenIdx: -1
@@ -318,6 +406,25 @@ Popup {
         if (modal.stage === "play") modal.wakeChrome()
     }
 
+    // While playing, save where the reader stopped every few seconds, so the
+    // Continue Watching resume and the disc's MM:SS are current without
+    // writing on every frame. mpv's polled position/duration are already
+    // mirrored on the player item.
+    Timer {
+        interval: 5000
+        repeat: true
+        running: modal.stage === "play" && modal.opened
+        onTriggered: {
+            const p = playerLoader.item
+            if (!p || !modal.backend || modal.animeId <= 0) return
+            const pos = p.position || 0
+            const dur = p.duration || 0
+            if (pos > 0) {
+                modal.backend.recordWatchPosition(modal.animeId, modal.episodeNumber, pos, dur)
+            }
+        }
+    }
+
     // The anime whose title forms and releases are currently cached, so a
     // re-open for the SAME anime reuses them (no refetch) while a different
     // anime resets and fetches.
@@ -351,6 +458,17 @@ Popup {
         if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
     }
 
+    /// Persist the Continue Watching behaviour + rewind delay chosen in the
+    /// in-player settings card. Mirrors `setShortcut`: the whole settings
+    /// object is rewritten so nothing else is clobbered.
+    function setResume(behavior, rewind) {
+        const s = Object.assign({}, modal.appSettings)
+        s.resumeBehavior = behavior
+        s.resumeRewindSeconds = Math.max(0, Math.round(rewind))
+        modal.appSettings = s
+        if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
+    }
+
     Connections {
         target: modal.backend
         function onSettingsReady(json) {
@@ -364,6 +482,18 @@ Popup {
     onOpened: {
         if (!backend || animeId <= 0) return
         backend.getSettings()
+        // Resume the last remembered torrent directly, skipping the release
+        // picker entirely, when the open came from the resume disc or a
+        // Continue Watching card.
+        if (modal.resumeLast) {
+            modal.searching = true
+            modal.stage = "releases"
+            // Fetch the work too, purely for the header thumbnail; the
+            // release search is suppressed while resuming.
+            modal.backend.getAnime(animeId)
+            modal.backend.getLastRelease(animeId)
+            return
+        }
         if (loadedAnimeId !== animeId) {
             // Different work: drop any cached results and fetch.
             loadedAnimeId = animeId
@@ -377,8 +507,31 @@ Popup {
         // Same work: keep the cached titles/releases as-is.
     }
     onClosed: {
+        // Save the final position BEFORE tearing the player down. Closing the
+        // window is the reader's "I stopped here" -- whether or not the stream
+        // was paused or the torrent finished -- so the disc and the row show
+        // the last time that was on screen.
+        modal.savePositionNow()
+        // Re-record the last-played stamp: it emits `libraryChanged`, so the
+        // disc AND the Continue Watching row re-read the saved time on close,
+        // without a per-tick refresh during playback.
+        if (modal.backend && modal.animeId > 0) {
+            modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber)
+        }
         modal.teardown()
-        modal.closed()
+    }
+
+    // Persist the player's current position for this work+episode. Called on
+    // close (the definitive save) and safe to call with no player loaded.
+    function savePositionNow() {
+        const p = playerLoader.item
+        if (!p || !modal.backend || modal.animeId <= 0) return
+        const pos = p.position || 0
+        const dur = p.duration || 0
+        if (pos > 0) {
+            modal.backend.recordWatchPosition(
+                modal.animeId, modal.episodeNumber, pos, dur)
+        }
     }
 
     function displayTitle(item) {
@@ -390,6 +543,14 @@ Popup {
         return Math.max(0, modal.absoluteEpisode - modal.episodeNumber)
     }
 
+    // The display name of a chosen file index, or "" when unknown.
+    function fileNameFor(idx) {
+        for (let i = 0; i < modal.files.length; i++) {
+            if (modal.files[i].idx === idx) return modal.files[i].name || ""
+        }
+        return ""
+    }
+
     function playerBuffering() {
         const p = playerLoader.item
         return p !== null && p.buffering === true
@@ -397,9 +558,15 @@ Popup {
 
     function loadStream() {
         const p = playerLoader.item
-        if (p !== null && modal.playingUrl.length > 0) {
-            p.command(["loadfile", modal.playingUrl, "replace"])
-        }
+        if (p === null || modal.playingUrl.length === 0) return
+        // NEVER `loadfile` before mpv's GL render context exists. libmpv opens
+        // its video output at load time; with no render context it reports
+        // "No render context set" and fails permanently ("Video: no video"),
+        // while audio -- on its own thread -- keeps playing. That is the
+        // intermittent black-video-with-sound. The item flips `renderReady`
+        // once the first frame has created the context; wait for it.
+        if (!p.renderReady) return
+        p.command(["loadfile", modal.playingUrl, "replace"])
     }
 
     function formatSize(bytes) {
@@ -527,6 +694,7 @@ Popup {
 
     function pickRelease(release) {
         releaseTitle = release.title || ""
+        releaseMagnet = release.magnetUri || ""
         error = ""
         searching = true
         backend.addMagnet(release.magnetUri)
@@ -592,6 +760,13 @@ Popup {
         speedHistory = []
         searching = false
         stage = "releases"
+        // A one-shot resume must not survive into the next open.
+        resumeLast = false
+        resumeFileIdx = -1
+        resumeHandled = false
+        resumePromptOpen = false
+        resumeSeekTarget = -1
+        pendingResume = null
     }
 
     function copyMagnet(release) {
@@ -620,7 +795,9 @@ Popup {
             modal.titles = JSON.parse(modal.backend.titleForms(
                 t.userPreferred || "", t.english || "", t.romaji || ""))
             modal.episodeThumbnail = parsed.coverImage || ""
-            modal.search()
+            // A resume goes straight to the remembered torrent; a release
+            // search here would spin up a list nobody sees.
+            if (!modal.resumeLast) modal.search()
         }
 
         function onReleasesReady(json) {
@@ -673,9 +850,43 @@ Popup {
             modal.torrentId = handle.id
             modal.files = handle.files || []
             modal.stage = "files"
+            // A resume plays the exact file that was last watched; anything
+            // else (a fresh pick) falls back to the episode matcher.
+            if (modal.resumeLast && modal.resumeFileIdx >= 0
+                    && modal.resumeFileIdx < modal.files.length) {
+                modal.resumeLast = false
+                modal.play(modal.resumeFileIdx)
+                return
+            }
             const picked = modal.backend.pickFile(
                 JSON.stringify(modal.files), modal.episodeNumber, modal.offset())
             if (picked >= 0) modal.play(picked)
+        }
+
+        // The remembered release reply. A resume adds its magnet straight away
+        // (skipping the release list); a miss falls back to a normal search.
+        function onLastReleaseReady(json) {
+            if (!modal.resumeLast) return
+            const release = JSON.parse(json)
+            if (release && release.magnet) {
+                modal.resumeFileIdx = (release.fileIdx === undefined
+                    || release.fileIdx === null) ? -1 : release.fileIdx
+                modal.releaseMagnet = release.magnet
+                modal.releaseTitle = release.name || ""
+                modal.searching = true
+                modal.backend.addMagnet(release.magnet)
+            } else {
+                // Nothing remembered: fall through to the usual picker.
+                modal.resumeLast = false
+                modal.searching = false
+                if (loadedAnimeId !== modal.animeId) {
+                    loadedAnimeId = modal.animeId
+                    titles = []
+                    releases = []
+                    badges = ({})
+                    modal.backend.getAnime(modal.animeId)
+                }
+            }
         }
         function onTorrentAddFailed(message) {
             modal.error = message
@@ -688,7 +899,38 @@ Popup {
             modal.stage = "play"
             modal.backend.holdTorrent(modal.torrentId)
             modal.loadStream()
+            // Playback is starting: record the work as the most recently
+            // opened (drives the Continue Watching order and the resume disc),
+            // remember the release so a future resume can reselect it, and
+            // advance its AniList progress so the row stays in step.
+            if (modal.backend && modal.animeId > 0) {
+                modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber)
+                modal.backend.setListEntry(modal.animeId, "current", modal.episodeNumber)
+                if (modal.releaseMagnet.length > 0) {
+                    modal.backend.recordLastRelease(
+                        modal.animeId, modal.releaseMagnet, modal.chosenIdx,
+                        modal.fileNameFor(modal.chosenIdx))
+                }
+            }
+            // Apply the saved position for this episode, per the resume setting.
+            modal.resumeHandled = false
+            modal.requestResume()
         }
+
+        // The saved positions reply. Match the current work+episode and apply
+        // the resume behaviour for it (ask / seek / fresh).
+        function onWatchPositionsReady(json) {
+            const all = JSON.parse(json) || {}
+            const saved = all[String(modal.animeId)]
+            if (!saved) return
+            // Only resume the episode being played.
+            if (saved.episode !== undefined && saved.episode !== null
+                    && saved.episode !== modal.episodeNumber) return
+            if (modal.resumeHandled) return
+            modal.resumeHandled = true
+            modal.applyResume(saved)
+        }
+
         function onStreamUrlFailed(message) { modal.error = message }
 
         function onTorrentStatsReady(json) {
@@ -1131,6 +1373,17 @@ Popup {
                             onLoaded: modal.loadStream()
                         }
 
+                        // When the mpv item finishes creating its render
+                        // context, the load deferred by `loadStream` (it bailed
+                        // while `renderReady` was false) can go ahead.
+                        Connections {
+                            target: playerLoader.item
+                            function onRenderReadyChanged() {
+                                if (playerLoader.item && playerLoader.item.renderReady)
+                                    modal.loadStream()
+                            }
+                        }
+
                         // Pointer wake handler, click-to-pause & synchronized blank cursor hiding
                         MouseArea {
                             id: viewportMouseArea
@@ -1292,6 +1545,93 @@ Popup {
                                             font.family: "monospace"
                                             elide: Text.ElideRight
                                             Layout.fillWidth: true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3c. OVERLAY LAYER: Resume prompt. Shown only in "ask"
+                        // mode when a saved position exists for this episode.
+                        GlassPanel {
+                            id: resumePrompt
+                            visible: modal.resumePromptOpen && modal.pendingResume !== null
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.top: parent.top
+                            anchors.topMargin: 24
+                            z: 25
+                            radius: 12
+                            implicitWidth: resumeRow.implicitWidth + 32
+                            implicitHeight: 56
+                            strong: true
+
+                            RowLayout {
+                                id: resumeRow
+                                anchors.centerIn: parent
+                                spacing: 12
+
+                                Text {
+                                    text: "Continue from "
+                                        + modal.fmtTime(modal.pendingResume ? modal.pendingResume.positionSeconds : 0)
+                                        + "?"
+                                    color: Theme.ink
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+
+                                // Continue: seek to the saved position.
+                                Rectangle {
+                                    height: 30
+                                    radius: 9
+                                    color: contMouse.containsMouse ? Theme.accentHover : Theme.accent
+                                    implicitWidth: contLabel.implicitWidth + 20
+                                    Text {
+                                        id: contLabel
+                                        anchors.centerIn: parent
+                                        text: "Continue"
+                                        color: "white"
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+                                    MouseArea {
+                                        id: contMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            modal.resumeSeekTarget =
+                                                modal.pendingResume ? modal.resumeTarget(modal.pendingResume) : -1
+                                            modal.resumePromptOpen = false
+                                        }
+                                    }
+                                }
+
+                                // Dismiss: leave playback where it is (the file
+                                // starts from 0 anyway, so this is "no resume",
+                                // not a deliberate rewind).
+                                Rectangle {
+                                    height: 30
+                                    radius: 9
+                                    color: startMouse.containsMouse ? Theme.glassFillHover : Theme.glassFillSubtle
+                                    border.width: 1
+                                    border.color: Theme.glassBorder
+                                    implicitWidth: startLabel.implicitWidth + 20
+                                    Text {
+                                        id: startLabel
+                                        anchors.centerIn: parent
+                                        text: "Dismiss"
+                                        color: Theme.ink
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+                                    MouseArea {
+                                        id: startMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            modal.resumePromptOpen = false
+                                            modal.pendingResume = null
                                         }
                                     }
                                 }
@@ -1754,12 +2094,15 @@ Popup {
             id: settingsCard
             player: playerLoader.item
             shortcuts: modal.shortcutMap
+            resumeBehavior: modal.resumeBehavior
+            resumeRewind: modal.resumeRewind
             open: modal.settingsOpen
             visible: modal.settingsOpen && modal.stage === "play"
             z: 100
             anchors.centerIn: parent
             onCloseRequested: modal.settingsOpen = false
             onShortcutChanged: (action, sequence) => modal.setShortcut(action, sequence)
+            onResumeChanged: (behavior, rewind) => modal.setResume(behavior, rewind)
         }
     }
 }

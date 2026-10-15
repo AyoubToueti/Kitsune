@@ -50,6 +50,9 @@ Popup {
             askSwitch.checked = s.askEveryTime !== false
             popup.themeValue = s.theme || "system"
             popup.shortcuts = s.shortcuts || ({})
+            popup.resumeValue = s.resumeBehavior || "ask"
+            popup.rewindValue = (s.resumeRewindSeconds !== undefined && s.resumeRewindSeconds !== null)
+                ? s.resumeRewindSeconds : 20
         }
         function onSettingsFailed(message) {
             status.text = "Failed: " + message
@@ -64,6 +67,11 @@ Popup {
 
     // Which appearance segment is selected.
     property string themeValue: "system"
+
+    // Resume behaviour: "ask" | "seek" | "fresh".
+    property string resumeValue: "ask"
+    // Seconds to rewind from the saved position on resume.
+    property int rewindValue: 20
 
     // Player shortcut overrides, action -> key sequence. Edited by the
     // Shortcuts section and written back inside `current`.
@@ -142,7 +150,9 @@ Popup {
         s.minSeeders = Math.round(seedersBox.value)
         s.askEveryTime = askSwitch.checked
         s.theme = popup.themeValue
+        s.resumeRewindSeconds = popup.rewindValue
         s.shortcuts = popup.shortcuts
+        s.resumeBehavior = popup.resumeValue
         backend.setSettings(JSON.stringify(s))
     }
 
@@ -527,7 +537,120 @@ Popup {
                         }
                     }
                 }
+                // ===== Resume ==========================================
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 24
+                    Layout.rightMargin: 24
+                    implicitHeight: resumeCol.implicitHeight + 28
+                    radius: 10
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
 
+                    ColumnLayout {
+                        id: resumeCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 10
+
+                        Text {
+                            text: "CONTINUE WATCHING"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+                        Text {
+                            text: "What to do when an episode has a saved position."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Repeater {
+                                model: [
+                                    { "value": "ask", "label": "Ask each time" },
+                                    { "value": "seek", "label": "Seek automatically" },
+                                    { "value": "fresh", "label": "Start fresh" }
+                                ]
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    height: 34
+                                    radius: 8
+                                    readonly property bool active: popup.resumeValue === modelData.value
+                                    color: resumeMouse.containsMouse && !active
+                                        ? Theme.surfaceHover : "transparent"
+                                    border.width: 1
+                                    border.color: active ? Theme.accent : Theme.borderSubtle
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: modelData.label
+                                        color: active ? Theme.accent : Theme.inkMuted
+                                        font.pixelSize: 11
+                                        font.bold: active
+                                    }
+                                    MouseArea {
+                                        id: resumeMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: popup.resumeValue = modelData.value
+                                    }
+                                }
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 4
+                            Text {
+                                text: "Rewind before resuming"
+                                color: Theme.ink
+                                font.pixelSize: 12
+                                Layout.fillWidth: true
+                            }
+                            TextField {
+                                id: rewindField
+                                Layout.preferredWidth: 70
+                                text: String(popup.rewindValue)
+                                color: Theme.ink
+                                font.pixelSize: 12
+                                horizontalAlignment: TextInput.AlignHCenter
+                                validator: IntValidator { bottom: 0; top: 3600 }
+                                background: Rectangle {
+                                    radius: 8; color: Theme.surface; border.width: 1
+                                    border.color: rewindField.activeFocus ? Theme.accent : Theme.borderSubtle
+                                }
+                                onEditingFinished: {
+                                    const n = parseInt(text, 10)
+                                    popup.rewindValue = isFinite(n) && n >= 0 ? n : 0
+                                    text = String(popup.rewindValue)
+                                }
+                            }
+                            Text {
+                                text: "seconds"
+                                color: Theme.inkMuted
+                                font.pixelSize: 11
+                            }
+                        }
+                        Text {
+                            text: "A saved position is rewound by this much so you get a run-up into the scene."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                // ===== 
                 // ===== Playback & downloads =============================
                 Rectangle {
                     Layout.fillWidth: true

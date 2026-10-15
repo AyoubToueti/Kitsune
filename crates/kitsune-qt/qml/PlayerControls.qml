@@ -208,11 +208,15 @@ Item {
                                     setProperty("mute", true)
                                     setProperty("aid", "no")
                                     setProperty("sid", "no")
-                                    if (bar.playingUrl.length > 0)
+                                    // Same race as the main player: loading
+                                    // before the render context exists makes
+                                    // the video output fail. Wait for ready.
+                                    if (renderReady && bar.playingUrl.length > 0)
                                         command(["loadfile", bar.playingUrl, "replace"])
                                 }
 
                                 Component.onCompleted: setupPreview()
+                                onRenderReadyChanged: if (renderReady) setupPreview()
                             }
 
                             // Reload the preview only when the MAIN player's
@@ -220,7 +224,8 @@ Item {
                             Connections {
                                 target: bar
                                 function onPlayingUrlChanged() {
-                                    if (previewPlayer && bar.playingUrl.length > 0)
+                                    if (previewPlayer && previewPlayer.renderReady
+                                            && bar.playingUrl.length > 0)
                                         previewPlayer.command(["loadfile", bar.playingUrl, "replace"])
                                 }
                             }
