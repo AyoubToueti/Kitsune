@@ -94,15 +94,9 @@ Item {
             if (currentTitle.length > 0) return currentTitle
         }
 
-        // Fallback anime section timing heuristic when MKV lacks embedded chapters
-        const d = bar.dur()
-        if (d >= 1200) { // ~20m+ standard episode duration
-            if (t < 90) return "Intro / Prologue"
-            if (t >= 90 && t < 180) return "Opening (OP)"
-            if (t >= 180 && t < d - 180) return "Main Episode"
-            if (t >= d - 180 && t < d - 30) return "Ending (ED)"
-            if (t >= d - 30) return "Preview"
-        }
+        // No embedded chapters -> no section label. There used to be a
+        // hardcoded intro/OP/ED timing guess here, but it was wrong more often
+        // than right (chapter boundaries vary per release), so it is gone.
         return ""
     }
 
