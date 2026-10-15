@@ -21,6 +21,14 @@ Item {
     implicitHeight: 80
     property int tick: 0
 
+    /// True while the chapter dropdown is open. The modal reads this to keep
+    /// the OSD bar on screen (its auto-hide timer would otherwise hide the bar
+    /// -- and the popup anchored to it -- mid-selection).
+    readonly property bool chapterMenuOpen: chapterMenuPopup.visible
+
+    /// Close the chapter dropdown, e.g. when the video is clicked.
+    function closeChapterMenu() { chapterMenuPopup.close() }
+
     Connections {
         target: bar.player
         function onStateChanged() {
@@ -128,7 +136,9 @@ Item {
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: 10
+            // Slightly tighter inner margin so the transport row keeps a gap
+            // to the panel border instead of overflowing it at narrow widths.
+            anchors.margins: 8
             spacing: 6
 
             // --- Timeline Seek Bar ---------------------------------
@@ -560,12 +570,23 @@ Item {
                     Popup {
                         id: chapterMenuPopup
                         y: -height - 6
-                        x: 0
+                        // Keep the menu inside the bar. The button sits near
+                        // the right edge, so a fixed x: 0 pushes a 220px menu
+                        // past the window edge; shift it left just enough.
+                        readonly property real btnLeftInBar: chapterMenuBtn.mapToItem(bar, 0, 0).x
+                        x: Math.min(0, (bar.width - 8) - btnLeftInBar - width)
                         width: Math.max(220, chapterMenuBtn.width)
                         height: Math.min(320, chapMenuColumn.implicitHeight + 16)
-                        modal: true
+                        // Not modal: a modal popup dims the whole window, and
+                        // the chapter menu should not darken the video.
+                        modal: false
                         focus: true
-                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                        // Escape only. With CloseOnPressOutside, pressing the
+                        // trigger button closed the popup on press and then
+                        // onClicked reopened it, so a second click never hid
+                        // it. Outside dismissal is handled by the viewport
+                        // click and the trigger toggle instead.
+                        closePolicy: Popup.CloseOnEscape
                         background: Rectangle {
                             radius: 10
                             color: Qt.rgba(0.07, 0.07, 0.11, 0.96)
@@ -667,7 +688,7 @@ Item {
 
                         Slider {
                             id: volSlider
-                            Layout.preferredWidth: 65
+                            Layout.preferredWidth: 52
                             from: 0
                             to: 130
                             value: bar.vol()
@@ -684,7 +705,7 @@ Item {
                             color: Theme.inkFaint
                             font.pixelSize: 10
                             font.bold: true
-                            Layout.preferredWidth: 34
+                            Layout.preferredWidth: 30
                             horizontalAlignment: Text.AlignRight
                         }
                     }

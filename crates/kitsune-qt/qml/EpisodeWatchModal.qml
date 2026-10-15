@@ -267,7 +267,13 @@ Popup {
         id: hideChrome
         interval: 2500
         onTriggered: {
-            if ((modal.fullscreen && topBarHover.hovered) || bottomControlsHover.hovered || modal.settingsOpen) {
+            // Keep the chrome up while the pointer is on it, the settings card
+            // is open, or the chapter menu is open (the menu is anchored to the
+            // bar, so hiding the bar would take it away mid-selection).
+            if ((modal.fullscreen && topBarHover.hovered)
+                    || bottomControlsHover.hovered
+                    || modal.settingsOpen
+                    || bottomControls.chapterMenuOpen) {
                 hideChrome.restart()
             } else {
                 modal.chromeVisible = false
@@ -1063,6 +1069,9 @@ Popup {
                             onPositionChanged: modal.wakeChrome()
                             onClicked: {
                                 modal.wakeChrome()
+                                // A click on the video dismisses the chapter
+                                // dropdown (it is otherwise Escape / re-tap only).
+                                bottomControls.closeChapterMenu()
                                 if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
                             }
                         }
