@@ -174,6 +174,18 @@ public:
   void render() override
   {
     QOpenGLFramebufferObject* fbo = framebufferObject();
+    // mpv's render API resizes its internal targets to match this FBO on every
+    // frame (ra_gl_ctx_resize -> wrap_fbo). A zero-sized FBO -- which happens
+    // while a preview/offscreen item is laid out at 0x0 or just toggled
+    // invisible -- crashes that resize. Render nothing until it has real size.
+    if (fbo == nullptr || fbo->width() <= 0 || fbo->height() <= 0) {
+      return;
+    }
+    // The context is created lazily in createFramebufferObject; never render
+    // through a null handle.
+    if (obj->mpv_gl == nullptr) {
+      return;
+    }
     mpv_opengl_fbo mpfbo{ static_cast<int>(fbo->handle()),
                           fbo->width(),
                           fbo->height(),

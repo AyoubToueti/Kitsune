@@ -21,11 +21,6 @@ Item {
     implicitHeight: 80
     property int tick: 0
 
-    Component {
-        id: previewPlayerComponent
-        MpvObject {}
-    }
-
     Connections {
         target: bar.player
         function onStateChanged() {
@@ -186,32 +181,52 @@ Item {
                             color: "black"
                             clip: true
 
-                            Loader {
-                                id: previewLoader
+                            // ONE persistent preview player, created once and
+                            // kept alive. Creating and destroying an MpvObject
+                            // on every hover churned a fresh mpv render context
+                            // each time and crashed libmpv's FBO resize
+                            // (ra_gl_ctx_resize) on the render thread. A single
+                            // instance also means the stream is opened ONCE per
+                            // episode, not once per hover.
+                            MpvObject {
+                                id: previewPlayer
                                 anchors.fill: parent
-                                active: (seek.hovering || seek.dragging) && bar.playingUrl.length > 0
-                                sourceComponent: previewPlayerComponent
+                                // Paint only while the tooltip is up; the render
+                                // context stays alive either way, so re-showing
+                                // it is free.
+                                visible: (seek.hovering || seek.dragging) && bar.dur() > 0
 
-                                onLoaded: {
-                                    if (item) {
-                                        item.setProperty("pause", true)
-                                        item.setProperty("mute", true)
-                                        item.setProperty("aid", "no")
-                                        item.setProperty("sid", "no")
-                                        item.command(["loadfile", bar.playingUrl, "replace"])
-                                    }
+                                function setupPreview() {
+                                    setProperty("pause", true)
+                                    setProperty("mute", true)
+                                    setProperty("aid", "no")
+                                    setProperty("sid", "no")
+                                    if (bar.playingUrl.length > 0)
+                                        command(["loadfile", bar.playingUrl, "replace"])
+                                }
+
+                                Component.onCompleted: setupPreview()
+                            }
+
+                            // Reload the preview only when the MAIN player's
+                            // stream changes -- never on hover.
+                            Connections {
+                                target: bar
+                                function onPlayingUrlChanged() {
+                                    if (previewPlayer && bar.playingUrl.length > 0)
+                                        previewPlayer.command(["loadfile", bar.playingUrl, "replace"])
                                 }
                             }
 
-                            // Debounce preview seeking for smooth performance
+                            // Debounce preview seeking so fast scrubbing does
+                            // not flood mpv with seek commands.
                             Timer {
                                 id: previewSeekTimer
-                                interval: 40
+                                interval: 60
                                 repeat: false
                                 onTriggered: {
-                                    if (previewLoader.item && bar.dur() > 0) {
-                                        previewLoader.item.command(["seek", String(seek.hoverTime), "absolute+keyframes"])
-                                    }
+                                    if (previewPlayer && bar.dur() > 0)
+                                        previewPlayer.command(["seek", String(seek.hoverTime), "absolute+keyframes"])
                                 }
                             }
 
