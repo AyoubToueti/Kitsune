@@ -20,6 +20,7 @@ fn main() {
             .qml_file("qml/PlayerControls.qml")
             .qml_file("qml/PlayerSettings.qml")
             .qml_file("qml/PlayerIcon.qml")
+            .qml_file("qml/GlassPanel.qml")
             .qml_file("qml/WatchPage.qml")
             .qml_file("qml/NavBar.qml")
             .qml_file("qml/ThemeSelect.qml")

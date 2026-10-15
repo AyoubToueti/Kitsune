@@ -1,5 +1,3 @@
-// Design tokens, mirroring `src/app.css` (@theme) so the Qt app matches the
-// Svelte one. A singleton so every component shares one set of values.
 pragma Singleton
 import QtQuick
 
@@ -20,6 +18,16 @@ QtObject {
     readonly property color accentHover: "#8f74ff"
     readonly property color score: "#ffc857"
     readonly property color danger: "#e5484d"
+
+    // Glass surfaces
+    readonly property color glassFill: "#cc0c101a"
+    readonly property color glassFillStrong: "#f00b0e17"
+    readonly property color glassFillSubtle: "#0fffffff"
+    readonly property color glassFillHover: "#26ffffff"
+    readonly property color glassBorder: "#22ffffff"
+    readonly property color glassBorderHover: "#44ffffff"
+    readonly property color glassHighlight: "#1affffff"
+    readonly property color glassShadow: "#80000000"
 
     // Spacing
     readonly property int radius: 12
