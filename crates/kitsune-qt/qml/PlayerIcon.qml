@@ -10,7 +10,8 @@ Canvas {
     id: icon
 
     // play | pause | stop | prev | next | rewind | forward |
-    // volume | mute | gear | fullscreen | exit-fullscreen | close
+    // volume | mute | gear | fullscreen | exit-fullscreen | close |
+    // copy | download | spinner | info | chevron-right | chevron-left
     property string kind: "play"
     property color color: Theme.inkMuted
 
@@ -208,6 +209,19 @@ Canvas {
         case "spinner":
             ctx.beginPath()
             ctx.arc(w * 0.5, h * 0.5, w * 0.36, 0, Math.PI * 1.5)
+            ctx.stroke()
+            break
+        case "info":
+            // Circled "i": the dot and the stem.
+            ctx.beginPath()
+            ctx.arc(w * 0.5, h * 0.5, w * 0.36, 0, Math.PI * 2)
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.arc(w * 0.5, h * 0.30, w * 0.055, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.beginPath()
+            ctx.moveTo(w * 0.5, h * 0.44)
+            ctx.lineTo(w * 0.5, h * 0.72)
             ctx.stroke()
             break
         case "chevron-right":
