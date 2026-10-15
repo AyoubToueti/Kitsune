@@ -39,6 +39,12 @@ Item {
     // --- continue watching -------------------------------------------------
     property bool signedIn: false
     property var continueItems: []
+    // The locally last-opened work, so the row can lead with it. AniList's
+    // `updatedAt` does not move when re-watching the same episode, so the local
+    // record is the only reliable "most recent" signal.
+    property var lastPlayedId: 0
+    // The reader's saved positions, keyed by anime id, for the card's resume.
+    property var watchPositions: ({})
 
     // --- top 100 preview ---------------------------------------------------
     // A separate, larger request than the "Top rated" block: ten rows rather
@@ -88,8 +94,48 @@ Item {
             if (signedInNow) page.backend.continueWatching(12)
         }
         function onContinueWatchingReady(json) {
-            page.continueItems = JSON.parse(json) || []
+            page.continueItems = page.sortedContinue(JSON.parse(json) || [])
         }
+
+        function onLastPlayedReady(json) {
+            const record = JSON.parse(json)
+            page.lastPlayedId = (record && record.animeId) ? record.animeId : 0
+            // Re-sort now that we know which work was opened most recently.
+            page.continueItems = page.sortedContinue(page.continueItems)
+        }
+
+        function onWatchPositionsReady(json) {
+            page.watchPositions = JSON.parse(json) || ({})
+        }
+
+        // Any local resume write (a play, a position save) re-reads the row,
+        // so a just-watched work leads it without a restart.
+        function onLibraryChanged() {
+            if (!page.backend) return
+            page.backend.getLastPlayed()
+            page.backend.getWatchPositions()
+            if (page.signedIn) page.backend.continueWatching(12)
+        }
+    }
+
+    // Order the row so the locally last-opened work leads, then everything
+    // else in AniList's order. A stable partition, so the rest keep their rank.
+    function sortedContinue(items) {
+        if (!items || items.length === 0) return []
+        if (!page.lastPlayedId) return items
+        const lead = []
+        const rest = []
+        for (let i = 0; i < items.length; i++) {
+            const it = items[i]
+            if (it && it.anime && it.anime.id === page.lastPlayedId) lead.push(it)
+            else rest.push(it)
+        }
+        return lead.concat(rest)
+    }
+
+    // The saved position for a work, or null, for the card's resume readout.
+    function positionFor(animeId) {
+        return page.watchPositions[String(animeId)] || null
     }
 
     Component.onCompleted: {
@@ -102,6 +148,10 @@ Item {
         // The Top 100 preview: score order, ten rows.
         backend.getListTagged("top100", "topRated", page.top100Limit)
         backend.authStatus()
+        // Resume ordering needs the local last-played record; the positions
+        // give the cards their progress readout.
+        backend.getLastPlayed()
+        backend.getWatchPositions()
     }
 
     Flickable {
@@ -186,43 +236,12 @@ Item {
                     clip: true
                     model: page.continueItems
 
-                    delegate: Item {
+                    delegate: ContinueWatchingCard {
                         required property var modelData
-                        width: 130
-                        height: 230
-
-                        Rectangle {
-                            width: 130
-                            height: 180
-                            radius: Theme.radius
-                            color: Theme.surfaceRaised
-                            clip: true
-
-                            Image {
-                                anchors.fill: parent
-                                source: modelData.anime ? (modelData.anime.coverImage || "") : ""
-                                fillMode: Image.PreserveAspectCrop
-                                asynchronous: true
-                            }
-                        }
-
-                        Text {
-                            anchors.top: parent.top
-                            anchors.topMargin: 186
-                            width: parent.width
-                            text: page.displayTitle(modelData.anime)
-                            color: Theme.inkMuted
-                            font.pixelSize: 12
-                            elide: Text.ElideRight
-                            maximumLineCount: 2
-                            wrapMode: Text.WordWrap
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.openAnime(modelData.anime.id)
-                        }
+                        entry: modelData
+                        position: page.positionFor(modelData.anime.id)
+                        onOpenAnime: (id) => page.openAnime(id)
+                        onOpenWatch: (animeId, episode) => page.openWatch(animeId, episode)
                     }
                 }
             }

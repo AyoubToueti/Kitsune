@@ -16,6 +16,8 @@ QtObject {
     // Accents
     readonly property color accent: "#7c5cff"
     readonly property color accentHover: "#8f74ff"
+    // Progress ring on the resume disc.
+    readonly property color purple: "#a855f7"
     readonly property color score: "#ffc857"
     readonly property color danger: "#e5484d"
 

@@ -27,6 +27,8 @@ fn main() {
             .qml_file("qml/Chip.qml")
             .qml_file("qml/NavButton.qml")
             .qml_file("qml/PosterCard.qml")
+            .qml_file("qml/ContinueWatchingCard.qml")
+            .qml_file("qml/ResumeDisc.qml")
             .qml_file("qml/HeroCarousel.qml")
             .qml_file("qml/TrendingCard.qml")
             .qml_file("qml/AnimeListRow.qml")

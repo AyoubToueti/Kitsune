@@ -48,6 +48,9 @@ Window {
 
     // Which segmented navbar pill is active, so the indicator can follow.
     property string navRoute: ""
+    // The anime id of the detail page on screen, or 0. The resume disc hides
+    // on the work's own page, like the Svelte disc does.
+    property int currentDetailId: 0
 
     // Re-derive the navbar's active route from whatever the stack is showing.
     //
@@ -58,6 +61,7 @@ Window {
     function updateRoute() {
         const item = stack.currentItem
         root.navRoute = (item && item.pageRoute !== undefined) ? item.pageRoute : ""
+        root.currentDetailId = (item && item.animeId !== undefined) ? item.animeId : 0
     }
 
     // Push a page, unless that route is already the one showing.
@@ -125,12 +129,46 @@ Window {
             "backend": root.backend,
             "initialGenre": genre
         })
-        onOpenWatch: (animeId, episodeNumber) => stack.push(watchComponent, {
-            "animeId": animeId,
-            "episodeNumber": episodeNumber,
-            "absoluteEpisode": episodeNumber,
-            "backend": root.backend
-        })
+        // A Continue Watching resume opens the same modal the detail page uses,
+        // at the saved episode. The modal fetches the work by id, so no malId
+        // is needed here.
+        onOpenWatch: (animeId, episodeNumber) => {
+            watchModal.animeId = animeId
+            watchModal.malId = 0
+            watchModal.episodeNumber = episodeNumber
+            watchModal.absoluteEpisode = episodeNumber
+            watchModal.titles = []
+            // Resume: play the remembered torrent/file directly, no picker.
+            watchModal.resumeLast = true
+            watchModal.open()
+        }
+    }
+
+    // The floating resume disc, above the stack so it shows over any page.
+    // Hidden while the player modal is open and on the work's own detail page.
+    ResumeDisc {
+        id: resumeDisc
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.rightMargin: 28
+        anchors.bottomMargin: 45
+        z: 50
+        backend: root.backend
+        allowed: !watchModal.opened
+        currentDetailId: root.currentDetailId
+        // The disc opens the work's detail page AND starts playback at the
+        // saved episode, mirroring the Svelte disc (`/anime/{id}?ep=…`).
+        onOpenRequested: (animeId, episode) => {
+            stack.push(detailComponent, { "animeId": animeId, "backend": root.backend })
+            watchModal.animeId = animeId
+            watchModal.malId = 0
+            watchModal.episodeNumber = episode
+            watchModal.absoluteEpisode = episode
+            watchModal.titles = []
+            // Play the last torrent/file directly, no release picker.
+            watchModal.resumeLast = true
+            watchModal.open()
+        }
     }
 
     Component {
