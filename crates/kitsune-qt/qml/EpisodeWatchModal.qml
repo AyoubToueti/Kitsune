@@ -205,7 +205,7 @@ Popup {
 
     // --- Keybindings -----------------------------------------------------
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("playPause", "Space")
         onActivated: {
             if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
@@ -214,7 +214,7 @@ Popup {
     }
 
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("fullscreen", "F")
         onActivated: modal.toggleFullscreen()
     }
@@ -226,13 +226,13 @@ Popup {
     }
 
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("skip", "S")
         onActivated: modal.doSkipSection()
     }
 
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("seekBack", "Left")
         onActivated: {
             if (playerLoader.item) {
@@ -244,7 +244,7 @@ Popup {
     }
 
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("seekForward", "Right")
         onActivated: {
             if (playerLoader.item) {
@@ -256,7 +256,7 @@ Popup {
     }
 
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("mute", "M")
         onActivated: {
             if (playerLoader.item) {
@@ -270,7 +270,7 @@ Popup {
     }
 
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("volumeUp", "Up")
         onActivated: {
             if (playerLoader.item) {
@@ -283,7 +283,7 @@ Popup {
     }
 
     Shortcut {
-        enabled: modal.stage === "play" && modal.opened
+        enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("volumeDown", "Down")
         onActivated: {
             if (playerLoader.item) {
@@ -326,6 +326,9 @@ Popup {
     // Player shortcut overrides, action -> key sequence, from settings. An
     // action absent here uses the default passed to `sc()`.
     property var shortcutMap: ({})
+    // The whole settings object, kept so a shortcut edit can be written back
+    // without clobbering the other fields (setSettings replaces the file).
+    property var appSettings: ({})
 
     /// The key sequence for `action`: the reader's override when set, else the
     /// built-in `fallback`. Empty/blank overrides are treated as "use default".
@@ -334,11 +337,27 @@ Popup {
         return (v && v.length > 0) ? v : fallback
     }
 
+    /// Record a new binding for `action` (empty clears it back to the default)
+    /// and persist the whole settings object.
+    function setShortcut(action, sequence) {
+        const next = Object.assign({}, shortcutMap)
+        if (sequence && sequence.length > 0) next[action] = sequence
+        else delete next[action]
+        modal.shortcutMap = next
+
+        const s = Object.assign({}, modal.appSettings)
+        s.shortcuts = next
+        modal.appSettings = s
+        if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
+    }
+
     Connections {
         target: modal.backend
         function onSettingsReady(json) {
             const s = JSON.parse(json)
-            if (s && s.shortcuts) modal.shortcutMap = s.shortcuts
+            if (!s) return
+            modal.appSettings = s
+            modal.shortcutMap = s.shortcuts || ({})
         }
     }
 
@@ -1734,11 +1753,13 @@ Popup {
         PlayerSettings {
             id: settingsCard
             player: playerLoader.item
+            shortcuts: modal.shortcutMap
             open: modal.settingsOpen
             visible: modal.settingsOpen && modal.stage === "play"
             z: 100
             anchors.centerIn: parent
             onCloseRequested: modal.settingsOpen = false
+            onShortcutChanged: (action, sequence) => modal.setShortcut(action, sequence)
         }
     }
 }
