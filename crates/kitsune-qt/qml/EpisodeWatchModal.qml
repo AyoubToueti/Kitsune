@@ -173,7 +173,7 @@ Popup {
     // --- Keybindings -----------------------------------------------------
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "Space"
+        sequence: modal.sc("playPause", "Space")
         onActivated: {
             if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
             modal.wakeChrome()
@@ -182,7 +182,7 @@ Popup {
 
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "F"
+        sequence: modal.sc("fullscreen", "F")
         onActivated: modal.toggleFullscreen()
     }
 
@@ -194,13 +194,13 @@ Popup {
 
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "S"
+        sequence: modal.sc("skip", "S")
         onActivated: modal.doSkipSection()
     }
 
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "Left"
+        sequence: modal.sc("seekBack", "Left")
         onActivated: {
             if (playerLoader.item) {
                 playerLoader.item.command(["seek", "-5", "relative"])
@@ -212,7 +212,7 @@ Popup {
 
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "Right"
+        sequence: modal.sc("seekForward", "Right")
         onActivated: {
             if (playerLoader.item) {
                 playerLoader.item.command(["seek", "5", "relative"])
@@ -224,7 +224,7 @@ Popup {
 
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "M"
+        sequence: modal.sc("mute", "M")
         onActivated: {
             if (playerLoader.item) {
                 const nextMute = !playerLoader.item.muted
@@ -238,7 +238,7 @@ Popup {
 
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "Up"
+        sequence: modal.sc("volumeUp", "Up")
         onActivated: {
             if (playerLoader.item) {
                 const vol = Math.min(130, Math.round((playerLoader.item.volume || 100) + 5))
@@ -251,7 +251,7 @@ Popup {
 
     Shortcut {
         enabled: modal.stage === "play" && modal.opened
-        sequence: "Down"
+        sequence: modal.sc("volumeDown", "Down")
         onActivated: {
             if (playerLoader.item) {
                 const vol = Math.max(0, Math.round((playerLoader.item.volume || 0) - 5))
@@ -290,8 +290,28 @@ Popup {
     // anime resets and fetches.
     property int loadedAnimeId: 0
 
+    // Player shortcut overrides, action -> key sequence, from settings. An
+    // action absent here uses the default passed to `sc()`.
+    property var shortcutMap: ({})
+
+    /// The key sequence for `action`: the reader's override when set, else the
+    /// built-in `fallback`. Empty/blank overrides are treated as "use default".
+    function sc(action, fallback) {
+        const v = shortcutMap[action]
+        return (v && v.length > 0) ? v : fallback
+    }
+
+    Connections {
+        target: modal.backend
+        function onSettingsReady(json) {
+            const s = JSON.parse(json)
+            if (s && s.shortcuts) modal.shortcutMap = s.shortcuts
+        }
+    }
+
     onOpened: {
         if (!backend || animeId <= 0) return
+        backend.getSettings()
         if (loadedAnimeId !== animeId) {
             // Different work: drop any cached results and fetch.
             loadedAnimeId = animeId

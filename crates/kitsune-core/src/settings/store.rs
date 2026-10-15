@@ -8,6 +8,7 @@
 //! written by an older build still parses and a missing file simply means
 //! "everything at its default".
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -48,6 +49,14 @@ pub struct Settings {
     pub ask_every_time: bool,
     /// `"light"`, `"dark"` or `"system"`.
     pub theme: String,
+    /// Player keyboard shortcuts, keyed by action name (e.g. `playPause`).
+    ///
+    /// A map rather than fixed fields so adding an action needs no schema
+    /// change, and so an unknown key written by a newer build is simply
+    /// ignored. An absent action falls back to the player's built-in default.
+    /// `BTreeMap` so the JSON order is stable and the settings UI is not
+    /// reshuffled between saves.
+    pub shortcuts: BTreeMap<String, String>,
 }
 
 impl Default for Settings {
@@ -64,6 +73,9 @@ impl Default for Settings {
             // no change and a new one gets the choice.
             ask_every_time: true,
             theme: "system".to_string(),
+            // Empty means "use the player's built-in defaults"; the UI writes
+            // only the actions the reader actually changes.
+            shortcuts: BTreeMap::new(),
         }
     }
 }
@@ -199,10 +211,30 @@ mod tests {
             ready_fraction: 0.1,
             ask_every_time: false,
             theme: "dark".into(),
+            shortcuts: [("playPause".to_string(), "K".to_string())]
+                .into_iter()
+                .collect(),
         };
 
         store.write(&settings).expect("write");
         assert_eq!(store.read(), settings);
+    }
+
+    /// A settings file written before `shortcuts` existed must still parse:
+    /// the field defaults to empty, so every action keeps its built-in key.
+    #[test]
+    fn legacy_file_without_shortcuts_reads_as_empty_map() {
+        let (_dir, store) = store();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        std::fs::write(
+            store.path(),
+            r#"{"player":"mpv","theme":"dark","readyFraction":0.2}"#,
+        )
+        .unwrap();
+
+        let s = store.read();
+        assert_eq!(s.theme, "dark");
+        assert!(s.shortcuts.is_empty());
     }
 
     #[test]

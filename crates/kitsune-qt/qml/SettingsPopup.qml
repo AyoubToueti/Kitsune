@@ -49,6 +49,7 @@ Popup {
             seedersBox.value = s.minSeeders !== undefined ? s.minSeeders : 0
             askSwitch.checked = s.askEveryTime !== false
             popup.themeValue = s.theme || "system"
+            popup.shortcuts = s.shortcuts || ({})
         }
         function onSettingsFailed(message) {
             status.text = "Failed: " + message
@@ -63,6 +64,59 @@ Popup {
 
     // Which appearance segment is selected.
     property string themeValue: "system"
+
+    // Player shortcut overrides, action -> key sequence. Edited by the
+    // Shortcuts section and written back inside `current`.
+    property var shortcuts: ({})
+
+    // The actions the reader can rebind, with their built-in defaults. Kept in
+    // sync with the `sc(...)` calls in EpisodeWatchModal.
+    readonly property var shortcutActions: [
+        { "key": "playPause",   "label": "Play / Pause",      "def": "Space" },
+        { "key": "seekBack",    "label": "Seek back 5s",       "def": "Left" },
+        { "key": "seekForward", "label": "Seek forward 5s",    "def": "Right" },
+        { "key": "volumeUp",    "label": "Volume up",          "def": "Up" },
+        { "key": "volumeDown",  "label": "Volume down",        "def": "Down" },
+        { "key": "mute",        "label": "Mute",               "def": "M" },
+        { "key": "fullscreen",  "label": "Toggle fullscreen",  "def": "F" },
+        { "key": "skip",        "label": "Skip OP / ED",       "def": "S" }
+    ]
+
+    /// The current binding for an action, falling back to its default.
+    function shortcutFor(key, def) {
+        const v = popup.shortcuts[key]
+        return (v && v.length > 0) ? v : def
+    }
+
+    /// Turn a key event into a Qt `Shortcut` sequence string, e.g. "Ctrl+Left".
+    /// Mirrors the spellings QML accepts, so the saved value feeds straight
+    /// back into a `Shortcut.sequence`.
+    function sequenceFromEvent(event) {
+        let mods = ""
+        if (event.modifiers & Qt.ControlModifier) mods += "Ctrl+"
+        if (event.modifiers & Qt.AltModifier) mods += "Alt+"
+        if (event.modifiers & Qt.ShiftModifier) mods += "Shift+"
+        if (event.modifiers & Qt.MetaModifier) mods += "Meta+"
+
+        const text = event.text
+        // A letter/digit with no Ctrl/Alt/Meta is just its upper-case text.
+        if (text && text.length > 0 && text.charCodeAt(0) >= 32
+                && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
+            return mods + text.toUpperCase()
+        }
+        // Symbol keys (Left, Space, F1, ...) by name.
+        const key = event.key
+        const named = {
+            32: "Space", 16777234: "Left", 16777236: "Right",
+            16777235: "Up", 16777237: "Down", 16777220: "Return",
+            16777217: "Tab", 16777216: "Escape", 16777219: "Backspace",
+            16777223: "Delete"
+        }
+        if (named[key]) return mods + named[key]
+        if (key >= 16777264 && key <= 16777299) return mods + "F" + (key - 16777263)
+        if (text && text.length > 0) return mods + text.toUpperCase()
+        return ""
+    }
 
     function signIn() {
         if (!backend) return
@@ -88,6 +142,7 @@ Popup {
         s.minSeeders = Math.round(seedersBox.value)
         s.askEveryTime = askSwitch.checked
         s.theme = popup.themeValue
+        s.shortcuts = popup.shortcuts
         backend.setSettings(JSON.stringify(s))
     }
 
@@ -307,7 +362,105 @@ Popup {
                         }
                     }
                 }
+                // ===== Player shortcuts =================================
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 24
+                    Layout.rightMargin: 24
+                    implicitHeight: scCol.implicitHeight + 28
+                    radius: 10
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
 
+                    ColumnLayout {
+                        id: scCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 8
+
+                        Text {
+                            text: "PLAYER SHORTCUTS"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+                        Text {
+                            text: "Click a field and press the key you want. Esc cancels."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                        }
+
+                        Repeater {
+                            model: popup.shortcutActions
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.label
+                                    color: Theme.ink
+                                    font.pixelSize: 12
+                                }
+
+                                // A capture field: focus it and the next key
+                                // pressed becomes the binding. Reads as the
+                                // current sequence when not capturing.
+                                TextField {
+                                    id: scField
+                                    Layout.preferredWidth: 120
+                                    readOnly: true
+                                    horizontalAlignment: TextInput.AlignHCenter
+                                    color: activeFocus ? Theme.accent : Theme.ink
+                                    text: activeFocus
+                                        ? "Press a key…"
+                                        : popup.shortcutFor(modelData.key, modelData.def)
+                                    font.pixelSize: 12
+                                    font.family: "monospace"
+                                    background: Rectangle {
+                                        radius: 8
+                                        color: Theme.surface
+                                        border.width: 1
+                                        border.color: scField.activeFocus ? Theme.accent : Theme.borderSubtle
+                                    }
+
+                                    Keys.onPressed: (event) => {
+                                        // Esc clears the override (back to default).
+                                        if (event.key === Qt.Key_Escape) {
+                                            const next = Object.assign({}, popup.shortcuts)
+                                            delete next[modelData.key]
+                                            popup.shortcuts = next
+                                            focus = false
+                                            event.accepted = true
+                                            return
+                                        }
+                                        // Ignore bare modifiers; wait for a real key.
+                                        if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control
+                                                || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta) {
+                                            event.accepted = true
+                                            return
+                                        }
+                                        const seq = popup.sequenceFromEvent(event)
+                                        if (seq.length > 0) {
+                                            const next = Object.assign({}, popup.shortcuts)
+                                            next[modelData.key] = seq
+                                            popup.shortcuts = next
+                                        }
+                                        focus = false
+                                        event.accepted = true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ===== 
                 // ===== Appearance =======================================
                 Rectangle {
                     Layout.fillWidth: true
