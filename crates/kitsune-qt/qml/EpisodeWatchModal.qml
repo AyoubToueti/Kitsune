@@ -279,7 +279,25 @@ Popup {
         if (modal.stage === "play") modal.wakeChrome()
     }
 
-    onOpened: if (backend && animeId > 0 && titles.length === 0) backend.getAnime(animeId)
+    // The anime whose title forms and releases are currently cached, so a
+    // re-open for the SAME anime reuses them (no refetch) while a different
+    // anime resets and fetches.
+    property int loadedAnimeId: 0
+
+    onOpened: {
+        if (!backend || animeId <= 0) return
+        if (loadedAnimeId !== animeId) {
+            // Different work: drop any cached results and fetch.
+            loadedAnimeId = animeId
+            titles = []
+            releases = []
+            badges = ({})
+            error = ""
+            searching = false
+            backend.getAnime(animeId)
+        }
+        // Same work: keep the cached titles/releases as-is.
+    }
     onClosed: {
         modal.teardown()
         modal.closed()
@@ -470,6 +488,11 @@ Popup {
         playingUrl = ""
         progress = null
         speedHistory = []
+        // Do NOT clear `releases` or call search(): the list is cached, so
+        // returning to it is instant. Just make sure we are not stuck in the
+        // searching state from the previous play.
+        searching = false
+        error = ""
         stage = "releases"
     }
 
@@ -482,6 +505,15 @@ Popup {
         }
         playerLoader.active = false
         playingUrl = ""
+        // Return to the releases stage and clear any in-flight "searching"
+        // state, so re-opening the modal starts from a clean, cached list
+        // instead of a stuck spinner or a dead player stage.
+        chosenIdx = -1
+        files = []
+        progress = null
+        speedHistory = []
+        searching = false
+        stage = "releases"
     }
 
     function copyMagnet(release) {
@@ -542,6 +574,10 @@ Popup {
         function onProbeDone() { modal.probing = false }
 
         function onTorrentAdded(json) {
+            // The search is over the moment the magnet resolved: clear the
+            // "searching" flag here too, or it stays true forever and the
+            // releases stage shows a permanent spinner after a play.
+            modal.searching = false
             const handle = JSON.parse(json)
             if (modal.autoPlay) {
                 let best = -1
