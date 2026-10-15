@@ -28,6 +28,20 @@ const METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15)
 /// How often to re-check for metadata while waiting.
 const METADATA_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// How long to wait for a torrent to finish initializing before streaming.
+///
+/// librqbit's stream endpoint returns HTTP 500 while a torrent is still
+/// `Initializing` (it hashes any existing data on add/resume). mpv treats a
+/// 500 as fatal and does not retry, so a stream URL handed over during that
+/// window plays nothing. Handing over only once the torrent is live removes
+/// the race entirely. The window is short (a re-hash of existing pieces), so a
+/// few seconds is ample; the cap keeps a torrent that never goes live from
+/// hanging the command.
+const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How often to re-check whether a torrent has gone live.
+const LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// How often to check whether an external player has exited.
 ///
 /// A second is imperceptible for cleanup that happens after a window closes,
@@ -413,8 +427,33 @@ impl PlayerState {
     }
 
     /// The loopback URL that streams one file of one torrent.
+    ///
+    /// Waits until the torrent is no longer `Initializing` before returning.
+    /// librqbit 500s its stream endpoint during the initial (re)hash, and mpv
+    /// does not retry a 500, so returning early yields a player stuck at 00:00.
+    /// A torrent that errors, or that never leaves `initializing` within the
+    /// cap, returns its URL anyway: the caller's own error handling and the
+    /// buffering UI are a better place to surface that than a hang here.
     pub async fn stream_url(&self, torrent_id: usize, file_idx: usize) -> Result<String> {
         let session = self.session().await?;
+
+        let deadline = tokio::time::Instant::now() + LIVE_TIMEOUT;
+        loop {
+            match session.engine.progress(torrent_id) {
+                // Live (or finished/paused after being live): safe to serve.
+                Some(p) if p.state != "initializing" => break,
+                // Errored: hand over the URL so the player reports it.
+                Some(p) if p.state == "error" => break,
+                // Unknown id: nothing to wait for.
+                None => break,
+                _ => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(LIVE_POLL).await;
+        }
+
         Ok(session.bridge.url_for(torrent_id, file_idx))
     }
 
