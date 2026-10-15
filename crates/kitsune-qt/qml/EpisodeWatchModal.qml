@@ -57,7 +57,40 @@ Popup {
 
     property bool fullscreen: false
     property bool chromeVisible: true
+    // Video-details card, shown at the top-right of the viewport.
+    property bool infoOpen: false
+    // Bumped on a timer while the card is open so its values re-read: the
+    // mpv properties only exist once playback starts, so a one-shot read at
+    // creation time shows dashes forever.
+    property int infoTick: 0
     signal requestFullscreen(bool on)
+
+    Timer {
+        interval: 1000
+        repeat: true
+        running: modal.infoOpen && modal.stage === "play"
+        onTriggered: modal.infoTick++
+    }
+
+    /// Read an mpv property as a display string, or "—" when unavailable.
+    function prop(name) {
+        const p = playerLoader.item
+        if (!p || !p.getProperty) return "—"
+        try {
+            const v = p.getProperty(name)
+            if (v === undefined || v === null || v === "") return "—"
+            if (typeof v === "number") return (Math.round(v * 100) / 100).toString()
+            return String(v)
+        } catch (e) { return "—" }
+    }
+
+    /// "1920 × 1080" from the decoder's video dimensions.
+    function videoSize() {
+        const w = prop("width")
+        const h = prop("height")
+        if (w === "—" || h === "—") return "—"
+        return w + " × " + h
+    }
 
     parent: Overlay.overlay
     x: modal.fullscreen ? 0 : Math.round((parent.width - width) / 2)
@@ -1156,6 +1189,94 @@ Popup {
                             onTriggerOSD: (icon, label) => osdToast.trigger(icon, label)
                             onSkipIntro: modal.doSkipIntro()
                             onSkipEnding: modal.doSkipEnding()
+                            onOpenInfo: modal.infoOpen = !modal.infoOpen
+                        }
+
+                        // 3b. OVERLAY LAYER: Video-details card, top-right of
+                        // the viewport. Lives here (not in the OSD bar) so it
+                        // is anchored to the video, not to the controls, and
+                        // stays put regardless of the bar's layout.
+                        GlassPanel {
+                            id: infoCard
+                            visible: modal.infoOpen
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.margins: 14
+                            z: 15
+                            radius: 12
+                            width: 300
+                            implicitHeight: infoCol.implicitHeight + 24
+
+                            ColumnLayout {
+                                id: infoCol
+                                anchors.fill: parent
+                                anchors.margins: 12
+                                spacing: 4
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: "Video details"
+                                        color: Theme.ink
+                                        font.pixelSize: 12
+                                        font.bold: true
+                                    }
+                                    Text {
+                                        text: "✕"
+                                        color: infoCloseMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                                        font.pixelSize: 13
+                                        MouseArea {
+                                            id: infoCloseMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: modal.infoOpen = false
+                                        }
+                                    }
+                                }
+
+                                Repeater {
+                                    // `infoTick` is read first so the binding
+                                    // re-evaluates every second while open,
+                                    // picking up properties that appear once
+                                    // playback actually starts.
+                                    model: {
+                                        const _ = modal.infoTick
+                                        return [
+                                            { k: "Resolution", v: modal.videoSize() },
+                                            { k: "Container FPS", v: modal.prop("container-fps") },
+                                            { k: "Video codec", v: modal.prop("video-codec") },
+                                            { k: "Pixel format", v: modal.prop("video-format") },
+                                            { k: "Audio codec", v: modal.prop("audio-codec") },
+                                            { k: "Audio channels", v: modal.prop("audio-params/channel-count") },
+                                            { k: "Sample rate", v: modal.prop("audio-params/samplerate") },
+                                            { k: "HW decoding", v: modal.prop("hwdec-current") },
+                                            { k: "Video bitrate", v: modal.prop("video-bitrate") },
+                                            { k: "Audio bitrate", v: modal.prop("audio-bitrate") }
+                                        ]
+                                    }
+                                    delegate: RowLayout {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        spacing: 8
+                                        Text {
+                                            text: modelData.k
+                                            color: Theme.inkFaint
+                                            font.pixelSize: 11
+                                            Layout.preferredWidth: 110
+                                        }
+                                        Text {
+                                            text: modelData.v
+                                            color: Theme.ink
+                                            font.pixelSize: 11
+                                            font.family: "monospace"
+                                            elide: Text.ElideRight
+                                            Layout.fillWidth: true
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // 4. OVERLAY LAYER: Floating "Skip Intro / ED" Badge

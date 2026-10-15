@@ -17,6 +17,9 @@ Item {
     signal triggerOSD(string icon, string label)
     signal skipIntro()
     signal skipEnding()
+    /// The modal hosts the video-details card (top-right of the viewport),
+    /// because it owns the viewport geometry; the OSD only asks for it.
+    signal openInfo()
 
     implicitHeight: 80
     property int tick: 0
@@ -499,7 +502,9 @@ Item {
                     }
                 }
 
-                // Timestamp Readout
+                // Timestamp Readout. Flexible + eliding so it absorbs the
+                // slack: when the row is tight it shrinks rather than pushing
+                // the right-hand buttons past the panel edge.
                 Text {
                     text: bar.fmt(bar.pos()) + " / " + bar.fmt(bar.dur())
                     color: Theme.inkMuted
@@ -507,6 +512,8 @@ Item {
                     font.family: "monospace"
                     font.bold: true
                     Layout.leftMargin: 2
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
                 }
 
                 // Chapter Dropdown Menu
@@ -652,8 +659,6 @@ Item {
                     }
                 }
 
-                Item { Layout.fillWidth: true }
-
                 // Compact Volume Controls Pill
                 Rectangle {
                     height: 32
@@ -714,7 +719,7 @@ Item {
                 SquareButton {
                     icon: "info"
                     tip: "Video details"
-                    onClicked: infoPanel.open()
+                    onClicked: bar.openInfo()
                 }
 
                 SquareButton {
@@ -727,95 +732,6 @@ Item {
                     icon: bar.fullscreen ? "exit-fullscreen" : "fullscreen"
                     tip: bar.fullscreen ? "Exit Fullscreen" : "Fullscreen"
                     onClicked: bar.toggleFullscreen()
-                }
-            }
-        }
-    }
-
-    /// Read an mpv property as a display string, or "—" when unavailable.
-    function prop(name) {
-        if (!bar.player || !bar.player.getProperty) return "—"
-        try {
-            const v = bar.player.getProperty(name)
-            if (v === undefined || v === null || v === "") return "—"
-            if (typeof v === "number") return (Math.round(v * 100) / 100).toString()
-            return String(v)
-        } catch (e) { return "—" }
-    }
-
-    /// "1920x1080" from the decoder's video dimensions.
-    function videoSize() {
-        const w = prop("width")
-        const h = prop("height")
-        if (w === "—" || h === "—") return "—"
-        return w + " × " + h
-    }
-
-    // Video details, opened by the (!) button. Reads the same mpv properties
-    // the stats overlay uses, on demand, so it costs nothing while closed.
-    Popup {
-        id: infoPanel
-        // Anchor above the bar, right-aligned with it.
-        y: -height - 8
-        x: Math.max(8, bar.width - width - 8)
-        width: 300
-        height: infoColumn.implicitHeight + 24
-        modal: false
-        focus: false
-        closePolicy: Popup.CloseOnEscape
-
-        background: Rectangle {
-            radius: 12
-            color: Qt.rgba(0.07, 0.07, 0.11, 0.96)
-            border.width: 1
-            border.color: Theme.glassBorder
-        }
-
-        ColumnLayout {
-            id: infoColumn
-            anchors.fill: parent
-            anchors.margins: 12
-            spacing: 4
-
-            Text {
-                text: "Video details"
-                color: Theme.ink
-                font.pixelSize: 12
-                font.bold: true
-                Layout.bottomMargin: 4
-            }
-
-            Repeater {
-                model: [
-                    { k: "Resolution", v: bar.videoSize() },
-                    { k: "Container FPS", v: bar.prop("container-fps") },
-                    { k: "Video codec", v: bar.prop("video-codec") },
-                    { k: "Pixel format", v: bar.prop("video-format") },
-                    { k: "Audio codec", v: bar.prop("audio-codec") },
-                    { k: "Audio channels", v: bar.prop("audio-params/channel-count") },
-                    { k: "Sample rate", v: bar.prop("audio-params/samplerate") },
-                    { k: "HW decoding", v: bar.prop("hwdec-current") },
-                    { k: "Video bitrate", v: bar.prop("video-bitrate") },
-                    { k: "Audio bitrate", v: bar.prop("audio-bitrate") }
-                ]
-                delegate: RowLayout {
-                    required property var modelData
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Text {
-                        text: modelData.k
-                        color: Theme.inkFaint
-                        font.pixelSize: 11
-                        Layout.preferredWidth: 110
-                    }
-                    Text {
-                        text: modelData.v
-                        color: Theme.ink
-                        font.pixelSize: 11
-                        font.family: "monospace"
-                        elide: Text.ElideRight
-                        Layout.fillWidth: true
-                    }
                 }
             }
         }
