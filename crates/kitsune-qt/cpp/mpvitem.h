@@ -53,6 +53,17 @@ class MpvObject : public QQuickFramebufferObject
   // fallback timer) drains the change event the instant chapters arrive.
   Q_PROPERTY(QVariantList chapterList READ chapterList NOTIFY chapterListChanged)
 
+  // --- render-context readiness -----------------------------------------
+  //
+  // The mpv GL render context is created lazily in the renderer's
+  // `createFramebufferObject`, which runs on the render thread at the first
+  // frame -- AFTER the QML item is created. Issuing `loadfile` before that
+  // makes mpv's `libmpv` video output open with no render context and fail
+  // permanently ("No render context set" -> "Video: no video"), while audio
+  // (its own thread) keeps playing. QML must wait for this flag before
+  // loading, or playback is black-with-sound.
+  Q_PROPERTY(bool renderReady READ renderReady NOTIFY renderReadyChanged)
+
   mpv_handle* mpv;
   mpv_render_context* mpv_gl;
 
@@ -67,6 +78,15 @@ class MpvObject : public QQuickFramebufferObject
   /// Latest `chapter-list` as an array of `{ title, time }` maps. Cached so a
   /// QML read is a field access; refreshed only on an mpv change event.
   QVariantList chapterList_;
+
+  /// Set once the render context exists. Guards against a `loadfile` that
+  /// would otherwise race the first frame.
+  bool renderReady_ = false;
+
+  /// A `loadfile` issued before the render context existed, replayed the
+  /// moment `renderReady_` flips. Empty when nothing is pending. Deferring in
+  /// the item (not in each caller) means every QML user is protected.
+  QVariant pendingLoad_;
 
   // Cached mirror of the polled properties, so a `Q_PROPERTY` read is a field
   // access rather than an mpv call.
@@ -97,6 +117,7 @@ public:
   bool isMuted() const { return muted_; }
   bool isBuffering() const { return buffering_; }
   QVariantList chapterList() const { return chapterList_; }
+  bool renderReady() const { return renderReady_; }
 
 public slots:
   /// Run an mpv command, e.g. `command(["loadfile", url])`.
@@ -116,10 +137,15 @@ signals:
   void stateChanged();
   /// The `chapter-list` observed from mpv changed (file loaded, or the
   /// demuxer finished parsing chapters). QML re-reads `chapterList`.
+  /// The mpv GL render context now exists; `loadfile` is safe.
+  void renderReadyChanged();
   void chapterListChanged();
 
 private slots:
   void doUpdate();
+  /// Flip `renderReady_` and emit, on the GUI thread. The renderer calls this
+  /// via a queued invocation, since it runs on the render thread.
+  void markRenderReady();
   void pollState();
   /// Drain every pending mpv event, emitting Qt signals for the ones QML
   /// cares about. Runs on the GUI thread only (the mpv event API is not

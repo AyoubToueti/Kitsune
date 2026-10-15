@@ -167,6 +167,10 @@ public:
         throw std::runtime_error("failed to initialize mpv GL context");
       }
       mpv_render_context_set_update_callback(obj->mpv_gl, on_mpv_redraw, obj);
+      // The context exists NOW, which is what makes `loadfile` safe. This runs
+      // on the render thread; hop to the GUI thread to touch QML-visible state
+      // (a bool + a signal) rather than racing the QML thread from here.
+      QMetaObject::invokeMethod(obj, "markRenderReady", Qt::QueuedConnection);
     }
     return QQuickFramebufferObject::Renderer::createFramebufferObject(size);
   }
@@ -303,6 +307,23 @@ MpvObject::doUpdate()
 }
 
 void
+MpvObject::markRenderReady()
+{
+  if (renderReady_) {
+    return;
+  }
+  renderReady_ = true;
+  emit renderReadyChanged();
+  // Replay a load that was queued before the context existed. Clearing the
+  // member first means `command` sees the real (ready) state and runs it.
+  if (pendingLoad_.isValid()) {
+    const QVariant params = pendingLoad_;
+    pendingLoad_ = QVariant();
+    command(params);
+  }
+}
+
+void
 MpvObject::pollState()
 {
   bool changed = false;
@@ -363,14 +384,17 @@ void
 MpvObject::drainMpvEvents()
 {
   if (mpv == nullptr) {
-   
+    return;
+  }
 
   // Drain the wakeup pipe, or the notifier stays level-triggered and we spin.
+  // This MUST run on every wakeup, including when mpv is alive: leaving the
+  // pipe unread floods the GUI thread with socket activations and starves the
+  // render loop (audio keeps playing, video goes black).
   if (mpv_wakeup_fd_ >= 0) {
     char buf[64];
     while (read(mpv_wakeup_fd_, buf, sizeof(buf)) > 0) {
     }
-  } return;
   }
 
   // mpv_wait_event with a 0 timeout returns MPV_EVENT_NONE once the queue is
@@ -415,6 +439,19 @@ MpvObject::command(const QVariant& params)
   // Build an argv-style command from the QVariantList (mpv_command is the
   // array API; mpv_command_string would need shell escaping).
   const QVariantList list = params.toList();
+
+  // Defer a `loadfile` until the GL render context exists. libmpv opens its
+  // video output at load time; before the context exists it reports "No render
+  // context set", permanently fails the video track, and plays only audio. The
+  // context is created on the first rendered frame -- after the QML item is
+  // built -- so a load from `Component.onCompleted` races it and sometimes
+  // loses. Queuing here fixes every caller at once.
+  if (!renderReady_ && list.size() > 0
+      && list.first().toString() == QLatin1String("loadfile")) {
+    pendingLoad_ = params;
+    return;
+  }
+
   QList<QByteArray> args;
   args.reserve(list.size());
   for (const QVariant& v : list) {

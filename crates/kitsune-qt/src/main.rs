@@ -10,6 +10,16 @@ mod screenshot;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() {
+    // Force Qt's scene graph to OpenGL BEFORE the app is built.
+    //
+    // The embedded mpv surface is a `QQuickFramebufferObject` that renders
+    // through libmpv's *OpenGL* render API. Qt 6 may otherwise pick the Vulkan
+    // RHI (it does by default on some Wayland sessions), and a
+    // QQuickFramebufferObject simply does not render there -- the video stays
+    // black while mpv's audio, which runs on its own thread, keeps playing.
+    // Pinning OpenGL removes that intermittent black-video-with-sound.
+    force_opengl_rhi();
+
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
 
@@ -129,6 +139,24 @@ fn main() {
 
     if let Some(app) = app.as_mut() {
         app.exec();
+    }
+}
+
+/// Force the Qt Quick scene graph onto the OpenGL RHI, which the mpv
+/// `QQuickFramebufferObject` requires. Honours an explicit user override so a
+/// developer can still experiment with another backend.
+fn force_opengl_rhi() {
+    // `setenv` lives in libc; declared here rather than pulling in a crate.
+    extern "C" {
+        fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
+    }
+    // Only set it when the caller has not chosen a backend themselves.
+    if std::env::var_os("QSG_RHI_BACKEND").is_none() {
+        let name = b"QSG_RHI_BACKEND\0";
+        let value = b"opengl\0";
+        unsafe {
+            setenv(name.as_ptr() as *const i8, value.as_ptr() as *const i8, 1);
+        }
     }
 }
 
