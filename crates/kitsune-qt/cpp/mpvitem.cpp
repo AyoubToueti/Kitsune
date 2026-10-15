@@ -6,7 +6,9 @@
 
 #include <clocale>
 #include <stdexcept>
+#include <unistd.h>
 
+#include <QDebug>
 #include <QGuiApplication>
 #include <QList>
 #include <QMetaType>
@@ -14,8 +16,17 @@
 #include <QOpenGLFramebufferObject>
 #include <QQmlEngine>
 #include <QQuickWindow>
+#include <QSocketNotifier>
+#include <QTimer>
 #include <QVariant>
+#include <QVariantList>
 #include <QtGlobal>
+
+namespace {
+/// `reply_userdata` tagged onto the `chapter-list` observation, so
+/// `drainMpvEvents` can tell which observed property an event belongs to.
+constexpr uint64_t kChapterListObserveId = 1;
+}
 
 // The QML type name under the com.kitsune.app module.
 void
@@ -75,10 +86,18 @@ mpv_flag(mpv_handle* mpv, const char* name, bool fallback)
 
 /// Convert an `mpv_node` to a `QVariant` for the QML side.
 ///
-/// Only the scalar formats are converted; a list or map node returns an
-/// invalid `QVariant`. That is deliberate: the one collection the UI needs
-/// (`track-list`) is read as JSON through the backend instead, and handing QML
-/// a raw `mpv_node` graph would leak mpv's ownership rules into QML.
+/// Scalars (string/flag/int64/double) map to their Qt equivalents. Arrays
+/// (`MPV_FORMAT_NODE_ARRAY`) map to `QVariantList`; maps
+/// (`MPV_FORMAT_NODE_MAP`) map to `QVariantMap` keyed by the node's key
+/// strings. Both recurse, so `chapter-list` (an array of maps with `title`
+/// and `time` keys) arrives in QML as a JS array of plain objects.
+///
+/// The caller is responsible for calling `mpv_free_node_contents` on the
+/// TOP-LEVEL node after this returns; nested nodes are owned by the parent
+/// and freed with it.
+QVariant
+node_to_variant(const mpv_node& node);
+
 QVariant
 node_to_variant(const mpv_node& node)
 {
@@ -91,6 +110,26 @@ node_to_variant(const mpv_node& node)
       return static_cast<qlonglong>(node.u.int64);
     case MPV_FORMAT_DOUBLE:
       return node.u.double_;
+    case MPV_FORMAT_NODE_ARRAY: {
+      QVariantList list;
+      if (node.u.list != nullptr) {
+        list.reserve(static_cast<int>(node.u.list->num));
+        for (int i = 0; i < node.u.list->num; ++i) {
+          list.append(node_to_variant(node.u.list->values[i]));
+        }
+      }
+      return list;
+    }
+    case MPV_FORMAT_NODE_MAP: {
+      QVariantMap map;
+      if (node.u.list != nullptr) {
+        for (int i = 0; i < node.u.list->num; ++i) {
+          const QString key = QString::fromUtf8(node.u.list->keys[i]);
+          map.insert(key, node_to_variant(node.u.list->values[i]));
+        }
+      }
+      return map;
+    }
     default:
       return {};
   }
@@ -106,7 +145,8 @@ public:
   explicit MpvRenderer(MpvObject* new_obj)
     : obj{ new_obj }
   {
-    mpv_set_wakeup_callback(obj->mpv, on_mpv_events, nullptr);
+    // The wakeup callback is installed by MpvObject itself (it owns the event
+    // loop); the renderer must not race it by overwriting the callback.
   }
 
   ~MpvRenderer() override = default;
@@ -185,10 +225,52 @@ MpvObject::MpvObject(QQuickItem* parent)
   poll_->setInterval(200);
   connect(poll_, &QTimer::timeout, this, &MpvObject::pollState);
   poll_->start();
+
+  // Ask mpv to OBSERVE chapter-list and deliver a change event the moment the
+  // demuxer has it. This is the fix for chapters never appearing: they arrive
+  // after `duration` is already non-zero, so any duration-keyed refetch misses
+  // them. The event path below catches the real change.
+  mpv_observe_property(
+    mpv, kChapterListObserveId, "chapter-list", MPV_FORMAT_NODE);
+
+  // Wakeup delivery. On Unix/macOS mpv writes to a wakeup pipe; a
+  // QSocketNotifier on the read end is the canonical Qt integration. On
+  // Windows there is no pipe (mpv_get_wakeup_pipe returns a negative fd), so
+  // fall back to a short poll -- otherwise chapter events would silently never
+  // fire there.
+  const int wakeup_fd = mpv_get_wakeup_pipe(mpv);
+  if (wakeup_fd >= 0) {
+    mpv_wakeup_fd_ = wakeup_fd;
+    mpv_events_ = new QSocketNotifier(wakeup_fd, QSocketNotifier::Read, this);
+    connect(mpv_events_,
+            &QSocketNotifier::activated,
+            this,
+            &MpvObject::drainMpvEvents);
+  } else {
+    mpv_event_timer_ = new QTimer(this);
+    mpv_event_timer_->setInterval(50);
+    connect(mpv_event_timer_,
+            &QTimer::timeout,
+            this,
+            &MpvObject::drainMpvEvents);
+    mpv_event_timer_->start();
+  }
+
+  // The callback only needs to exist; the pipe write it triggers is what wakes
+  // the notifier. (mpv calls it from its own thread, so it must stay trivial.)
+  mpv_set_wakeup_callback(mpv, on_mpv_events, this);
 }
 
 MpvObject::~MpvObject()
 {
+  // Stop event delivery BEFORE tearing mpv down, so no callback (socket
+  // activation or timer tick) can run `drainMpvEvents` against a dead handle.
+  if (mpv_events_ != nullptr) {
+    mpv_events_->setEnabled(false);
+  }
+  if (mpv_event_timer_ != nullptr) {
+    mpv_event_timer_->stop();
+  }
   if (mpv_gl != nullptr) {
     mpv_render_context_free(mpv_gl);
   }
@@ -262,6 +344,56 @@ MpvObject::pollState()
 
   if (changed) {
     emit stateChanged();
+  }
+}
+
+void
+MpvObject::drainMpvEvents()
+{
+  if (mpv == nullptr) {
+   
+
+  // Drain the wakeup pipe, or the notifier stays level-triggered and we spin.
+  if (mpv_wakeup_fd_ >= 0) {
+    char buf[64];
+    while (read(mpv_wakeup_fd_, buf, sizeof(buf)) > 0) {
+    }
+  } return;
+  }
+
+  // mpv_wait_event with a 0 timeout returns MPV_EVENT_NONE once the queue is
+  // empty, so this drains everything pending and returns. Must run on ONE
+  // thread only; the GUI thread is that thread.
+  for (;;) {
+    mpv_event* event = mpv_wait_event(mpv, 0);
+    if (event == nullptr || event->event_id == MPV_EVENT_NONE) {
+      break;
+    }
+
+    if (event->event_id == MPV_EVENT_PROPERTY_CHANGE &&
+        event->reply_userdata == kChapterListObserveId) {
+      // For a property-change event, `event->data` is an `mpv_event_property*`
+      // whose own `data` field points at the value (an `mpv_node*` here, since
+      // the property was observed with MPV_FORMAT_NODE). Reading the event
+      // pointer AS a node is the classic mistake -- it silently yields an
+      // empty list. Copy the value out now; mpv owns it.
+      const auto* prop = static_cast<mpv_event_property*>(event->data);
+      QVariantList next;
+      if (prop != nullptr && prop->format == MPV_FORMAT_NODE &&
+          prop->data != nullptr) {
+        const auto* node = static_cast<const mpv_node*>(prop->data);
+        if (node->format == MPV_FORMAT_NODE_ARRAY) {
+          next = node_to_variant(*node).toList();
+        }
+      }
+      if (qEnvironmentVariableIsSet("KITSUNE_MPV_LOG")) {
+        qDebug("chapter-list change: entries=%d", next.size());
+      }
+      if (next != chapterList_) {
+        chapterList_ = next;
+        emit chapterListChanged();
+      }
+    }
   }
 }
 

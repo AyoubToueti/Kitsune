@@ -8,8 +8,10 @@
 #pragma once
 
 #include <QtQuick/QQuickFramebufferObject>
+#include <QSocketNotifier>
 #include <QTimer>
 #include <QVariant>
+#include <QVariantList>
 
 #include <mpv/client.h>
 #include <mpv/render_gl.h>
@@ -43,8 +45,28 @@ class MpvObject : public QQuickFramebufferObject
   /// True while mpv is starved for data or has not produced a frame yet.
   Q_PROPERTY(bool buffering READ isBuffering NOTIFY stateChanged)
 
+  // --- event-driven state ------------------------------------------------
+  //
+  // `chapter-list` is not polled: the demuxer fills it a moment AFTER
+  // `duration` becomes non-zero, so a duration-keyed refetch misses it. mpv
+  // is asked to OBSERVE the property, and the wakeup pipe (or, on Windows, a
+  // fallback timer) drains the change event the instant chapters arrive.
+  Q_PROPERTY(QVariantList chapterList READ chapterList NOTIFY chapterListChanged)
+
   mpv_handle* mpv;
   mpv_render_context* mpv_gl;
+
+  /// Wakes `drainMpvEvents` when mpv has events waiting (pipe on Unix).
+  QSocketNotifier* mpv_events_ = nullptr;
+  /// The wakeup pipe fd, or -1 when mpv has none (Windows). `drainMpvEvents`
+  /// reads from it to clear the readable state.
+  int mpv_wakeup_fd_ = -1;
+  /// Windows fallback: mpv has no wakeup pipe there, so poll events instead.
+  QTimer* mpv_event_timer_ = nullptr;
+
+  /// Latest `chapter-list` as an array of `{ title, time }` maps. Cached so a
+  /// QML read is a field access; refreshed only on an mpv change event.
+  QVariantList chapterList_;
 
   // Cached mirror of the polled properties, so a `Q_PROPERTY` read is a field
   // access rather than an mpv call.
@@ -74,6 +96,7 @@ public:
   double volume() const { return volume_; }
   bool isMuted() const { return muted_; }
   bool isBuffering() const { return buffering_; }
+  QVariantList chapterList() const { return chapterList_; }
 
 public slots:
   /// Run an mpv command, e.g. `command(["loadfile", url])`.
@@ -91,8 +114,15 @@ signals:
   /// control bar re-reads the few it shows, and per-property signals would be
   /// six near-identical declarations.
   void stateChanged();
+  /// The `chapter-list` observed from mpv changed (file loaded, or the
+  /// demuxer finished parsing chapters). QML re-reads `chapterList`.
+  void chapterListChanged();
 
 private slots:
   void doUpdate();
   void pollState();
+  /// Drain every pending mpv event, emitting Qt signals for the ones QML
+  /// cares about. Runs on the GUI thread only (the mpv event API is not
+  /// thread-safe for concurrent `mpv_wait_event`).
+  void drainMpvEvents();
 };
