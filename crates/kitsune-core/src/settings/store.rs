@@ -57,6 +57,14 @@ pub struct Settings {
     /// `BTreeMap` so the JSON order is stable and the settings UI is not
     /// reshuffled between saves.
     pub shortcuts: BTreeMap<String, String>,
+    /// What to do when a saved watch position exists for an episode being
+    /// played: `"ask"` (prompt), `"seek"` (jump automatically), or `"fresh"`
+    /// (always start at 0).
+    pub resume_behavior: String,
+    /// How many seconds to rewind from the saved position when resuming, so
+    /// the reader gets a run-up into the scene instead of landing mid-line.
+    /// A whole number; the UI accepts 0 and large values (e.g. 75).
+    pub resume_rewind_seconds: u32,
 }
 
 impl Default for Settings {
@@ -76,6 +84,11 @@ impl Default for Settings {
             // Empty means "use the player's built-in defaults"; the UI writes
             // only the actions the reader actually changes.
             shortcuts: BTreeMap::new(),
+            // Ask before seeking: the reader may want to start the episode
+            // over, so a silent jump would be surprising.
+            resume_behavior: "ask".to_string(),
+            // 20s back by default: enough context without losing much.
+            resume_rewind_seconds: 20,
         }
     }
 }
@@ -214,6 +227,8 @@ mod tests {
             shortcuts: [("playPause".to_string(), "K".to_string())]
                 .into_iter()
                 .collect(),
+            resume_behavior: "seek".to_string(),
+            resume_rewind_seconds: 35,
         };
 
         store.write(&settings).expect("write");
