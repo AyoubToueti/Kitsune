@@ -223,20 +223,32 @@ Item {
                                     }
                                 }
 
+                                // A REPEATING throttle, not a one-shot debounce.
+                                // A debounce only fires once the pointer STOPS
+                                // moving (every change restarts it), so the
+                                // preview trailed the cursor while scrubbing and
+                                // only caught up when the mouse settled. Seeking
+                                // to the latest position each tick keeps it in
+                                // step with the pointer.
                                 Timer {
                                     id: previewSeekTimer
-                                    interval: 60
-                                    repeat: false
+                                    interval: 120
+                                    repeat: true
+                                    running: (seek.hovering || seek.dragging) && bar.dur() > 0
                                     onTriggered: {
                                         if (previewPlayer && bar.dur() > 0)
                                             previewPlayer.command(["seek", String(seek.hoverTime), "absolute+keyframes"])
                                     }
                                 }
 
+                                // One immediate seek as the pointer enters, so
+                                // the very first frame does not wait a whole
+                                // tick to appear.
                                 Connections {
                                     target: seek
-                                    function onHoverTimeChanged() {
-                                        if (seek.hovering || seek.dragging) previewSeekTimer.restart()
+                                    function onHoveringChanged() {
+                                        if (seek.hovering && previewPlayer && bar.dur() > 0)
+                                            previewPlayer.command(["seek", String(seek.hoverTime), "absolute+keyframes"])
                                     }
                                 }
                             }
