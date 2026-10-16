@@ -2,13 +2,10 @@
 // hero backdrop + poster, a labelled metadata strip, an add-to-list menu,
 // synopsis, an episode grid, a trailer card, a related-anime sidebar, and
 // recommendations.
-//
-// The two columns are the biggest structural difference from the first Qt
-// version: episodes on the left, trailer + relations in a fixed sidebar on the
-// right, recommendations spanning the full width below.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import com.kitsune.app
 
 Item {
     id: page
@@ -17,9 +14,7 @@ Item {
     property int animeId: 0
     property var anime: null
 
-    // The shared Backend, passed in explicitly by the window when it pushes
-    // this page. Relying on `Window.window.backend` here is fragile: the
-    // attached property does not always resolve for an item inside a StackView.
+    // The shared Backend, passed in explicitly by the window when it pushes this page.
     property var backend: null
 
     signal back()
@@ -34,15 +29,9 @@ Item {
     signal openRecommendations(int animeId, string title)
 
     // --- Episodes ---------------------------------------------------------
-
-    // The episode list to render, from Jikan's catalogue (via `buildEpisodes`)
-    // or synthesised from `episodeCount` when Jikan has nothing.
     property var episodes: []
-    // How much to add to an episode's own number to get the work's absolute
-    // number, for a later cour whose releases carry the running total.
     property int episodeOffset: 0
     property bool episodesLoading: false
-    // Jikan's per-episode catalogue, or empty when there is none.
     property var episodeInfo: []
 
     // --- Jump-to-episode --------------------------------------------------
@@ -50,19 +39,18 @@ Item {
     property string jumpError: ""
     property int highlightedIndex: -1
 
-    // --- List status ------------------------------------------------------
+    // --- Watch progress ---------------------------------------------------
+    property int aniProgress: 0
+    property int localEpisode: 0
+    readonly property int watchedThrough: Math.max(aniProgress, localEpisode)
 
+    // --- List status ------------------------------------------------------
     property bool signedIn: false
-    // The reader's list status wire value ("current", ...), or "" when the
-    // work is not on their list.
     property string listStatus: ""
-    // The list entry's id, needed to remove it.
     property int listEntryId: 0
     property bool statusBusy: false
     property string statusError: ""
 
-    // The five lists, in the order they are offered. Labels are the reader's
-    // words; values are AniList's own enum members (the wire format).
     readonly property var listStatuses: [
         { value: "current", label: "Watching" },
         { value: "completed", label: "Completed" },
@@ -76,7 +64,6 @@ Item {
         return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
     }
 
-    // The labelled facts shown in the metadata strip. Mirrors `MetadataStrip`.
     function metaChips() {
         if (!page.anime) return []
         const a = page.anime
@@ -91,7 +78,6 @@ Item {
         return out
     }
 
-    // `SIDE_STORY` -> "Side Story". Generic so an unknown type still reads.
     function relationLabel(type) {
         if (!type) return ""
         return String(type).toLowerCase().split("_")
@@ -99,8 +85,6 @@ Item {
             .join(" ")
     }
 
-    // Where a trailer can be watched, or "" for a site we cannot link to.
-    // Mirrors `trailerWatchUrl` in src/lib/trailer.ts.
     function trailerWatchUrl(t) {
         if (!t || !t.site || !t.id) return ""
         const site = String(t.site).toLowerCase()
@@ -109,9 +93,6 @@ Item {
         return ""
     }
 
-    // The caption under an episode thumbnail. A title that already announces
-    // its own number is left alone, so "Episode 7" does not become
-    // "Episode 7 - Episode 7".
     function episodeLabel(ep, index) {
         const number = ep.number !== undefined ? ep.number : index + 1
         const t = (ep.title || "").trim()
@@ -120,14 +101,17 @@ Item {
         return "Episode " + number + " - " + t
     }
 
-    // The lowest number minus one, but only when it exceeds the list length
-    // (a later cour). Mirrors `absoluteOffset` in the core.
     function computeOffset(list) {
         const numbers = list.map(function (e) { return e.number })
             .filter(function (n) { return n !== undefined })
         if (numbers.length === 0) return 0
         const lowest = Math.min.apply(null, numbers)
         return lowest > list.length ? lowest - 1 : 0
+    }
+
+    function triggerWatch(epNum) {
+        const malId = page.anime && page.anime.idMal ? page.anime.idMal : 0
+        page.openWatch(page.animeId, malId, epNum, epNum + page.episodeOffset)
     }
 
     Connections {
@@ -148,16 +132,12 @@ Item {
             page.rebuildEpisodes()
         }
         function onEpisodesFailed(message) {
-            // A failed catalogue is not fatal: the synthesised list stands.
             page.episodeInfo = []
             page.rebuildEpisodes()
         }
 
         function onAuthStatusReady(signedInNow) {
             page.signedIn = signedInNow
-            // Fetch the entry for THIS work once the work is known. Does NOT
-            // call authStatus() again -- that emitted this signal and would
-            // recurse forever.
             if (signedInNow && page.anime) page.fetchListEntry()
             else if (!signedInNow) {
                 page.listStatus = ""
@@ -168,23 +148,31 @@ Item {
             const entry = JSON.parse(json)
             page.listStatus = entry ? (entry.status || "") : ""
             page.listEntryId = entry ? (entry.id || 0) : 0
+            page.aniProgress = entry ? (entry.progress || 0) : 0
         }
         function onListChanged() {
-            // Any successful write re-reads, so the button is never stale.
             page.loadListEntry()
+        }
+        function onWatchPositionsReady(json) {
+            const all = JSON.parse(json) || ({})
+            const entry = all[String(page.animeId)]
+            page.localEpisode = (entry && entry.episode) ? entry.episode : 0
+        }
+        function onLibraryChanged() {
+            if (page.backend) page.backend.getWatchPositions()
         }
         function onAuthError(message) {
             page.statusError = message
         }
     }
 
-    // Ask the core to build the display list from the work + catalogue. The
-    // rules live in kitsune-core, so Qt and the web app cannot disagree.
     function rebuildEpisodes() {
         if (!backend || !anime) {
             page.episodes = []
             return
         }
+        if (backend) backend.getWatchPositions()
+
         const json = backend.buildEpisodes(
             anime.episodeCount || 0,
             anime.status || "",
@@ -195,28 +183,20 @@ Item {
     }
 
     function loadEpisodes() {
-        // Build from the count first, so the grid is usable immediately even
-        // while Jikan is in flight (and if it never answers).
         page.episodeInfo = []
         page.rebuildEpisodes()
 
         if (!anime || !anime.idMal) return
 
-        // Jikan refines the list with real titles and air dates when it lands.
         page.episodesLoading = true
         backend.getEpisodes(anime.idMal)
     }
 
-    // Re-check the token. The answer arrives via `authStatusReady`, which is
-    // where the entry itself is fetched -- calling `getListEntry` here as well
-    // would double-fetch on every load.
     function loadListEntry() {
         if (!backend) return
         backend.authStatus()
     }
 
-    // Fetch this work's list entry. Safe to call repeatedly; it does NOT
-    // re-check auth, so it cannot loop back through `authStatusReady`.
     function fetchListEntry() {
         if (backend && page.signedIn && page.anime) {
             backend.getListEntry(page.anime.id)
@@ -226,12 +206,10 @@ Item {
     function chooseStatus(value) {
         if (!backend || !page.anime) return
         const previous = page.listStatus
-        page.listStatus = value          // optimistic
+        page.listStatus = value
         page.statusBusy = true
         page.statusError = ""
         backend.setListEntry(page.anime.id, value, 0)
-        // The backend answers with listChanged (success) or authError. Clear
-        // busy either way after a moment so the button cannot stick.
         statusBusyTimer.restart()
         if (previous === value) return
     }
@@ -239,12 +217,11 @@ Item {
     function removeFromList() {
         if (!backend || page.listEntryId === 0) return
         const previousId = page.listEntryId
-        page.listStatus = ""             // optimistic: off the list
+        page.listStatus = ""
         page.listEntryId = 0
         page.statusBusy = true
         page.statusError = ""
         backend.deleteListEntry(previousId)
-        // A failure answers with authError; the button re-enables either way.
         statusBusyTimer.restart()
     }
 
@@ -254,10 +231,6 @@ Item {
         if (url && url.length > 0) Qt.openUrlExternally(url)
     }
 
-    // Start the fetch once BOTH `animeId` and `backend` are set. StackView
-    // applies the initial properties in an unspecified order, so keying the
-    // fetch off `animeId` alone would silently miss when `animeId` lands first
-    // and `backend` is still null.
     function maybeLoad() {
         if (animeId > 0 && backend) {
             page.anime = null
@@ -271,15 +244,13 @@ Item {
     onAnimeIdChanged: maybeLoad()
     onBackendChanged: maybeLoad()
 
-    // Clears the busy flag a beat after a write, so a dropped signal cannot
-    // leave the button disabled forever.
     Timer {
         id: statusBusyTimer
         interval: 1500
         onTriggered: page.statusBusy = false
     }
 
-    // Whole-page scroll: the content is taller than the window.
+    // Whole-page scroll
     Flickable {
         id: scroller
         anchors.fill: parent
@@ -293,14 +264,13 @@ Item {
             width: parent.width
             spacing: 0
 
-            // --- Hero -------------------------------------------------------
+            // --- Hero Section -----------------------------------------------
             Rectangle {
                 width: parent.width
                 height: 360
                 color: Theme.surface
                 clip: true
 
-                // Blurred backdrop.
                 Image {
                     anchors.fill: parent
                     source: page.anime ? (page.anime.bannerImage || page.anime.coverImage || "") : ""
@@ -354,7 +324,7 @@ Item {
                             wrapMode: Text.WordWrap
                         }
 
-                        // Genre chips, each linking to the filter page.
+                        // Genre chips
                         Flow {
                             Layout.fillWidth: true
                             Layout.preferredHeight: childrenRect.height
@@ -388,21 +358,58 @@ Item {
                             }
                         }
 
-                        // --- Action bar: add to list --------------------------
-                        Rectangle {
+                        // --- Action bar: Add to List + Quick Watch CTA ---------
+                        RowLayout {
                             Layout.fillWidth: true
                             Layout.topMargin: 4
                             Layout.bottomMargin: 4
-                            implicitHeight: 52
-                            color: "transparent"
+                            spacing: 12
 
+                            // Primary Play CTA Button
                             Rectangle {
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.topMargin: 8
-                                anchors.bottomMargin: 8
-                                visible: true
-                                width: statusRow.implicitWidth + 28
+                                implicitWidth: playCtaRow.implicitWidth + 28
+                                height: 40
+                                radius: 20
+                                color: playCtaMouse.containsMouse ? Theme.accentHover : Theme.accent
+
+                                Behavior on color { ColorAnimation { duration: 150 } }
+
+                                RowLayout {
+                                    id: playCtaRow
+                                    anchors.centerIn: parent
+                                    spacing: 8
+
+                                    PlayerIcon {
+                                        kind: "play"
+                                        color: "white"
+                                        width: 14; height: 14
+                                    }
+
+                                    Text {
+                                        text: page.watchedThrough > 0
+                                            ? ("Resume Ep " + page.watchedThrough)
+                                            : "Watch Ep 1"
+                                        color: "white"
+                                        font.pixelSize: 14
+                                        font.bold: true
+                                    }
+                                }
+
+                                MouseArea {
+                                    id: playCtaMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        const targetEp = page.watchedThrough > 0 ? page.watchedThrough : 1
+                                        page.triggerWatch(targetEp)
+                                    }
+                                }
+                            }
+
+                            // Add to list menu button
+                            Rectangle {
+                                implicitWidth: statusRow.implicitWidth + 28
                                 height: 40
                                 radius: 20
                                 color: statusButtonMouse.containsMouse && !page.statusBusy
@@ -410,6 +417,8 @@ Item {
                                 border.width: 1
                                 border.color: statusButtonMouse.containsMouse && !page.statusBusy
                                     ? Theme.accent : Theme.borderSubtle
+
+                                Behavior on border.color { ColorAnimation { duration: 150 } }
 
                                 Row {
                                     id: statusRow
@@ -445,14 +454,13 @@ Item {
                                     cursorShape: Qt.PointingHandCursor
                                     enabled: !page.statusBusy
                                     onClicked: {
-                                        if (!page.signedIn) {
-                                            page.signIn()
-                                        } else {
-                                            statusPopup.open()
-                                        }
+                                        if (!page.signedIn) page.signIn()
+                                        else statusPopup.open()
                                     }
                                 }
                             }
+
+                            Item { Layout.fillWidth: true }
                         }
 
                         // --- Metadata strip ----------------------------------
@@ -609,115 +617,204 @@ Item {
                             required property var modelData
                             required property int index
 
+                            readonly property int epNumber: modelData.number !== undefined
+                                ? modelData.number : (index + 1)
+                            readonly property bool watched: page.watchedThrough > 0
+                                && epNumber < page.watchedThrough
+                            readonly property bool current: page.watchedThrough > 0
+                                && epNumber === page.watchedThrough
+
                             width: 200
                             height: 134
 
-                            Rectangle {
-                                id: epCard
+                            Item {
                                 anchors.fill: parent
-                                radius: 10
-                                color: Theme.surfaceHover
-                                border.width: page.highlightedIndex === index ? 2 : 1
-                                border.color: page.highlightedIndex === index
-                                    ? Theme.accent
-                                    : (epHover.hovered ? Theme.accent : Theme.borderSubtle)
-                                clip: true
+                                scale: epHover.hovered ? 1.03 : 1.0
 
-                                Image {
+                                Behavior on scale {
+                                    NumberAnimation { duration: 150; easing.type: Easing.OutQuad }
+                                }
+
+                                Rectangle {
+                                    id: epCard
                                     anchors.fill: parent
-                                    source: modelData.thumbnail || ""
-                                    visible: source != ""
-                                    fillMode: Image.PreserveAspectCrop
-                                    asynchronous: true
-                                }
+                                    radius: 10
+                                    color: Theme.surfaceHover
+                                    border.width: (page.highlightedIndex === index || current) ? 2 : 1
+                                    border.color: page.highlightedIndex === index
+                                        ? Theme.accent
+                                        : (current
+                                            ? Theme.accent
+                                            : (epHover.hovered ? Theme.accent : Theme.borderSubtle))
+                                    clip: true
 
-                                // A bottom gradient so the caption stays readable.
-                                Rectangle {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    height: parent.height * 0.6
-                                    gradient: Gradient {
-                                        GradientStop { position: 0.0; color: "transparent" }
-                                        GradientStop { position: 1.0; color: "#d9000000" }
+                                    Image {
+                                        id: thumbImg
+                                        anchors.fill: parent
+                                        source: modelData.thumbnail || ""
+                                        visible: source != ""
+                                        fillMode: Image.PreserveAspectCrop
+                                        asynchronous: true
+                                        opacity: watched ? 0.45 : 1.0
+
+                                        Behavior on opacity {
+                                            NumberAnimation { duration: 150 }
+                                        }
                                     }
-                                }
 
-                                // EP badge, top-left.
-                                Rectangle {
-                                    anchors.left: parent.left
-                                    anchors.top: parent.top
-                                    anchors.margins: 6
-                                    radius: 4
-                                    color: "#99000000"
-                                    implicitWidth: epBadgeText.implicitWidth + 12
-                                    implicitHeight: epBadgeText.implicitHeight + 6
+                                    // Gradient vignette for text readability
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        height: parent.height * 0.65
+                                        gradient: Gradient {
+                                            GradientStop { position: 0.0; color: "transparent" }
+                                            GradientStop { position: 1.0; color: "#e6000000" }
+                                        }
+                                    }
 
-                                    Text {
-                                        id: epBadgeText
+                                    // Watched State Dark Wash
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        visible: watched
+                                        color: "#40000000"
+                                    }
+
+                                    // Watched State Top-Right Eye-Off Circular Pill
+                                    Rectangle {
+                                        visible: watched
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 6
+                                        width: 24
+                                        height: 24
+                                        radius: 12
+                                        color: "#cc0b0d12"
+                                        border.width: 1
+                                        border.color: Theme.borderSubtle
+
+                                        PlayerIcon {
+                                            anchors.centerIn: parent
+                                            kind: "eye-off"
+                                            color: Theme.inkMuted
+                                            width: 13; height: 13
+                                        }
+                                    }
+
+                                    // "LAST WATCHED" Badge on Current Episode
+                                    Rectangle {
+                                        visible: current
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.margins: 6
+                                        radius: 4
+                                        color: Theme.accent
+                                        implicitWidth: lastWatchedText.implicitWidth + 10
+                                        implicitHeight: lastWatchedText.implicitHeight + 4
+
+                                        Text {
+                                            id: lastWatchedText
+                                            anchors.centerIn: parent
+                                            text: "LAST WATCHED"
+                                            color: "white"
+                                            font.pixelSize: 9
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    // EP Badge, Top-Left
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.margins: 6
+                                        radius: 4
+                                        color: "#99000000"
+                                        implicitWidth: epBadgeText.implicitWidth + 10
+                                        implicitHeight: epBadgeText.implicitHeight + 4
+
+                                        Text {
+                                            id: epBadgeText
+                                            anchors.centerIn: parent
+                                            text: "EP " + epNumber
+                                            color: "white"
+                                            font.pixelSize: 10
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    // FILLER Flag, Top-Right (Shifted if Current/Watched)
+                                    Rectangle {
+                                        visible: modelData.filler === true
+                                        anchors.left: epBadgeText.parent.right
+                                        anchors.leftMargin: 6
+                                        anchors.top: parent.top
+                                        anchors.topMargin: 6
+                                        radius: 4
+                                        color: "#d9e5484d"
+                                        implicitWidth: fillerText.implicitWidth + 8
+                                        implicitHeight: fillerText.implicitHeight + 4
+
+                                        Text {
+                                            id: fillerText
+                                            anchors.centerIn: parent
+                                            text: "FILLER"
+                                            color: "white"
+                                            font.pixelSize: 9
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    // Hover Play Overlay Icon
+                                    Rectangle {
                                         anchors.centerIn: parent
-                                        text: "EP " + (modelData.number !== undefined
-                                            ? modelData.number : (index + 1))
-                                        color: "white"
-                                        font.pixelSize: 10
-                                        font.bold: true
+                                        width: 36
+                                        height: 36
+                                        radius: 18
+                                        color: Qt.rgba(0.07, 0.07, 0.11, 0.85)
+                                        border.width: 1
+                                        border.color: Theme.accent
+                                        opacity: epHover.hovered ? 1.0 : 0.0
+                                        scale: epHover.hovered ? 1.0 : 0.8
+
+                                        Behavior on opacity { NumberAnimation { duration: 150 } }
+                                        Behavior on scale { NumberAnimation { duration: 150 } }
+
+                                        PlayerIcon {
+                                            anchors.centerIn: parent
+                                            kind: "play"
+                                            color: "white"
+                                            width: 16; height: 16
+                                        }
                                     }
-                                }
 
-                                // FILLER flag, top-right.
-                                Rectangle {
-                                    visible: modelData.filler === true
-                                    anchors.right: parent.right
-                                    anchors.top: parent.top
-                                    anchors.margins: 6
-                                    radius: 4
-                                    color: "#d9e5484d"
-                                    implicitWidth: fillerText.implicitWidth + 12
-                                    implicitHeight: fillerText.implicitHeight + 6
-
+                                    // Caption
                                     Text {
-                                        id: fillerText
-                                        anchors.centerIn: parent
-                                        text: "FILLER"
+                                        anchors.left: parent.left
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        anchors.margins: 8
+                                        text: page.episodeLabel(modelData, index)
                                         color: "white"
-                                        font.pixelSize: 9
+                                        font.pixelSize: 11
                                         font.bold: true
+                                        elide: Text.ElideRight
+                                        maximumLineCount: 2
+                                        wrapMode: Text.WordWrap
                                     }
                                 }
 
-                                Text {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    anchors.margins: 6
-                                    text: page.episodeLabel(modelData, index)
-                                    color: "white"
-                                    font.pixelSize: 11
-                                    font.bold: true
-                                    elide: Text.ElideRight
-                                    maximumLineCount: 2
-                                    wrapMode: Text.WordWrap
-                                }
-                            }
+                                HoverHandler { id: epHover }
 
-                            HoverHandler { id: epHover }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    const number = (modelData.number !== undefined
-                                        ? modelData.number : (index + 1))
-                                    const malId = page.anime && page.anime.idMal
-                                        ? page.anime.idMal : 0
-                                    page.openWatch(page.animeId, malId, number,
-                                        number + page.episodeOffset)
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: page.triggerWatch(epNumber)
                                 }
                             }
                         }
                     }
 
-                    // Shown when neither Jikan nor the count produced anything.
                     Text {
                         visible: page.episodes.length === 0 && page.anime !== null
                         text: "Episode info unavailable"
@@ -959,8 +1056,6 @@ Item {
                     clip: true
                     model: page.anime ? page.anime.recommendations : []
 
-                    // Each card shows the recommended work's cover and score
-                    // and the community vote tally, with its own quick-add.
                     delegate: RecommendationCard {
                         required property var modelData
                         width: 180
@@ -975,10 +1070,7 @@ Item {
         }
     }
 
-    // --- Add-to-list menu -----------------------------------------------
-    //
-    // Anchored to the button so it follows it, and drawn in the window's
-    // overlay so the Flickable's clipping cannot cut it off.
+    // Add-to-list popup menu
     Popup {
         id: statusPopup
         parent: statusButtonMouse
@@ -1068,7 +1160,6 @@ Item {
         }
     }
 
-    // Jump to an episode number, scrolling it into view and flagging a miss.
     function jumpToEpisode() {
         const wanted = jumpField.text.length > 0 ? Number(jumpField.text) : 0
         if (!Number.isInteger(wanted) || wanted < 1) {

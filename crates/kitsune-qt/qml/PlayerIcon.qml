@@ -11,7 +11,8 @@ Canvas {
 
     // play | pause | stop | prev | next | rewind | forward |
     // volume | mute | gear | fullscreen | exit-fullscreen | close |
-    // copy | download | spinner | info | chevron-right | chevron-left
+    // copy | download | spinner | info | chevron-right | chevron-left |
+    // eye-off
     property string kind: "play"
     property color color: Theme.inkMuted
 
@@ -236,6 +237,23 @@ Canvas {
             ctx.moveTo(w * 0.62, h * 0.24)
             ctx.lineTo(w * 0.34, h * 0.5)
             ctx.lineTo(w * 0.62, h * 0.76)
+            ctx.stroke()
+            break
+        case "eye-off":
+            // A crossed-out eye: "this episode has been watched". Two arcs
+            // form the eye, a dot the pupil, and a slash crosses the whole.
+            ctx.beginPath()
+            ctx.moveTo(w * 0.12, h * 0.5)
+            ctx.quadraticCurveTo(w * 0.5, h * 0.16, w * 0.88, h * 0.5)
+            ctx.quadraticCurveTo(w * 0.5, h * 0.84, w * 0.12, h * 0.5)
+            ctx.closePath()
+            ctx.stroke()
+            ctx.beginPath()
+            ctx.arc(w * 0.5, h * 0.5, w * 0.12, 0, Math.PI * 2)
+            ctx.fill()
+            ctx.beginPath()
+            ctx.moveTo(w * 0.16, h * 0.82)
+            ctx.lineTo(w * 0.84, h * 0.18)
             ctx.stroke()
             break
         }
