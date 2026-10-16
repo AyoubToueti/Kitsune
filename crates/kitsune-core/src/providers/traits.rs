@@ -59,6 +59,38 @@ pub trait AnimeProvider: Send + Sync {
     /// vocabulary out of this trait.
     async fn list(&self, filter: ListFilter, limit: u32) -> Result<Vec<Anime>, ProviderError>;
 
+    /// One page of a curated list, with the paging metadata needed to ask for
+    /// another.
+    ///
+    /// Backs the scrolling "Top 100" view: [`AnimeProvider::list`] returns a
+    /// bare `Vec` with no way to say whether more exists, so it cannot drive
+    /// infinite scroll. The default wraps `list()` and synthesises the page
+    /// info, which is enough for a provider that only ever serves one page.
+    /// A provider whose list query already carries `Page.pageInfo` (AniList)
+    /// overrides this to return the real totals.
+    async fn list_page(
+        &self,
+        filter: ListFilter,
+        page: u32,
+        per_page: u32,
+    ) -> Result<AnimePage, ProviderError> {
+        let items = self.list(filter, per_page).await?;
+        let count = items.len() as u32;
+        // The default can only ever serve the first page: it has no way to ask
+        // `list()` for a later one. `has_next_page` is a best-effort guess --
+        // a full page suggests more may follow.
+        let current_page = page.max(1);
+        Ok(AnimePage {
+            page_info: crate::types::PageInfo {
+                total: count,
+                current_page,
+                last_page: current_page,
+                has_next_page: current_page <= 1 && count >= per_page,
+            },
+            items,
+        })
+    }
+
     /// Look up a single title. `Ok(None)` means "not found", which is not
     /// an error — callers may legitimately probe for ids that do not exist.
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError>;

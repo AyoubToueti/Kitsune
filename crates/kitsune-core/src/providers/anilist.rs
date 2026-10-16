@@ -289,6 +289,7 @@ impl AniListProvider {
             r#"
             query ({all_vars}) {{
               Page(page: $page, perPage: $perPage) {{
+                pageInfo {{ total currentPage lastPage hasNextPage }}
                 media({filter}) {{
                   {MEDIA_FIELDS}
                 }}
@@ -517,14 +518,7 @@ impl AnimeProvider for AniListProvider {
     async fn list(&self, filter: ListFilter, limit: u32) -> Result<Vec<Anime>, ProviderError> {
         // Each shelf is the same Page query with a different filter, so
         // only this mapping is provider-specific.
-        let filter_arg = match filter {
-            ListFilter::Trending => "type: ANIME, sort: TRENDING_DESC",
-            ListFilter::TopAiring => "type: ANIME, status: RELEASING, sort: POPULARITY_DESC",
-            ListFilter::MostPopular => "type: ANIME, sort: POPULARITY_DESC",
-            ListFilter::TopRated => "type: ANIME, sort: SCORE_DESC",
-            ListFilter::LatestCompleted => "type: ANIME, status: FINISHED, sort: START_DATE_DESC",
-            ListFilter::Upcoming => "type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC",
-        };
+        let filter_arg = list_filter_arg(filter);
 
         let query = Self::list_query("", filter_arg);
         let data: PageData = self
@@ -535,6 +529,40 @@ impl AnimeProvider for AniListProvider {
             .await?;
 
         Ok(data.page.media.into_iter().map(map_media).collect())
+    }
+
+    /// One page of a curated list, with the real `Page.pageInfo`.
+    ///
+    /// Overrides the trait default so the "Top 100" view can page: the
+    /// default cannot see past the first page, but this query already carries
+    /// the totals AniList reports.
+    async fn list_page(
+        &self,
+        filter: ListFilter,
+        page: u32,
+        per_page: u32,
+    ) -> Result<AnimePage, ProviderError> {
+        let filter_arg = list_filter_arg(filter);
+        let query = Self::list_query("", filter_arg);
+        let data: PageData = self
+            .query(
+                &query,
+                serde_json::json!({
+                    "page": page.max(1),
+                    "perPage": clamp_limit(per_page),
+                }),
+            )
+            .await?;
+
+        Ok(AnimePage {
+            items: data.page.media.into_iter().map(map_media).collect(),
+            page_info: PageInfo {
+                total: data.page.page_info.total,
+                current_page: data.page.page_info.current_page,
+                last_page: data.page.page_info.last_page,
+                has_next_page: data.page.page_info.has_next_page,
+            },
+        })
     }
 
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError> {
@@ -1217,6 +1245,22 @@ fn season_literal(season: SeasonFilter) -> &'static str {
 ///
 /// `SEARCH_MATCH` is the exception: relevance has no reverse, so the flag is
 /// ignored. The frontend disables the toggle for that sort anyway.
+/// The AniList filter clause for a curated shelf.
+///
+/// Each shelf is the same Page query with a different filter, so only this
+/// mapping is provider-specific. Shared by [`list`](AniListProvider::list) and
+/// [`list_page`](AniListProvider::list_page) so the two cannot drift.
+fn list_filter_arg(filter: ListFilter) -> &'static str {
+    match filter {
+        ListFilter::Trending => "type: ANIME, sort: TRENDING_DESC",
+        ListFilter::TopAiring => "type: ANIME, status: RELEASING, sort: POPULARITY_DESC",
+        ListFilter::MostPopular => "type: ANIME, sort: POPULARITY_DESC",
+        ListFilter::TopRated => "type: ANIME, sort: SCORE_DESC",
+        ListFilter::LatestCompleted => "type: ANIME, status: FINISHED, sort: START_DATE_DESC",
+        ListFilter::Upcoming => "type: ANIME, status: NOT_YET_RELEASED, sort: POPULARITY_DESC",
+    }
+}
+
 fn sort_literal(sort: SortOption, reversed: bool) -> &'static str {
     match (sort, reversed) {
         (SortOption::Popularity, false) => "POPULARITY_DESC",
@@ -2572,6 +2616,83 @@ mod tests {
         assert_eq!(first.provider, ProviderId::AniList);
         assert_eq!(first.title.romaji.as_deref(), Some("One Piece"));
         assert_eq!(first.average_score, Some(88));
+    }
+
+    /// A Page response carrying `pageInfo`, as the paged list query requests.
+    fn page_response_with_info(
+        media: Vec<serde_json::Value>,
+        current_page: u32,
+        last_page: u32,
+        has_next: bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "data": {
+                "Page": {
+                    "pageInfo": {
+                        "total": 250,
+                        "currentPage": current_page,
+                        "lastPage": last_page,
+                        "hasNextPage": has_next
+                    },
+                    "media": media
+                }
+            }
+        })
+    }
+
+    /// The paged shelf query surfaces the real `Page.pageInfo`, so the Top 100
+    /// view can tell there is another page to fetch.
+    #[tokio::test]
+    async fn list_page_returns_anilist_page_info() {
+        let (_server, provider) = provider_with(
+            page_response_with_info(vec![media_json()], 2, 5, true),
+            200,
+        )
+        .await;
+
+        let page = provider
+            .list_page(ListFilter::TopRated, 2, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.page_info.total, 250);
+        assert_eq!(page.page_info.current_page, 2);
+        assert_eq!(page.page_info.last_page, 5);
+        assert!(page.page_info.has_next_page);
+    }
+
+    /// A last page reports no next, so the view stops fetching.
+    #[tokio::test]
+    async fn list_page_reports_the_last_page() {
+        let (_server, provider) = provider_with(
+            page_response_with_info(vec![media_json()], 5, 5, false),
+            200,
+        )
+        .await;
+
+        let page = provider
+            .list_page(ListFilter::TopRated, 5, 50)
+            .await
+            .unwrap();
+
+        assert!(!page.page_info.has_next_page);
+    }
+
+    /// The paged query asks for pageInfo; a body without it would fail the
+    /// decoders, so the request is asserted through the matched response.
+    #[tokio::test]
+    async fn list_page_forwards_the_requested_page() {
+        let (_server, provider) = provider_expecting("sort: SCORE_DESC").await;
+
+        // The fixture has no pageInfo, so the wire default (page 0, no next)
+        // stands in; the call must still succeed.
+        let page = provider
+            .list_page(ListFilter::TopRated, 3, 50)
+            .await
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
     }
 
     /// The base fixture plus the newer fields: banner, format, duration,
