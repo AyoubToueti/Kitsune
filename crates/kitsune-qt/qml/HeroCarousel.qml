@@ -1,11 +1,10 @@
 // The home page's spotlight carousel: the top few trending titles, one per
-// slide, auto-advancing. Mirrors `HeroCarousel.svelte`.
-//
-// The slide is a fixed height so the carousel cannot resize as it moves, and
-// each slide's synopsis is clamped so a long description does not push the
-// facts row off the slide.
+// slide, auto-advancing with a smooth, infinite forward loop.
+// Mirrors `HeroCarousel.svelte`.
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Layouts
+import com.kitsune.app
 
 Item {
     id: carousel
@@ -40,30 +39,51 @@ Item {
     Rectangle {
         id: frame
         anchors.fill: parent
-        radius: 12
+        radius: 16
         color: Theme.surfaceRaised
         border.width: 1
-        border.color: Theme.borderSubtle
+        border.color: Theme.glassBorder
         clip: true
 
-        ListView {
-            id: track
+        // PathView is circular, so stepping forward from the last slide
+        // slides smoothly into the first one (no snap back).
+        PathView {
+            id: swipe
             anchors.fill: parent
-            orientation: ListView.Horizontal
-            snapMode: ListView.SnapOneItem
-            highlightRangeMode: ListView.StrictlyEnforceRange
-            highlightMoveDuration: 400
-            boundsBehavior: Flickable.StopAtBounds
             clip: true
+
             model: carousel.items
+            interactive: carousel.items.length > 1
+
+            // Current slide plus one on each side, so the next slide is
+            // already in place when wrapping from last to first.
+            pathItemCount: 3
+            preferredHighlightBegin: 0.5
+            preferredHighlightEnd: 0.5
+            highlightRangeMode: PathView.StrictlyEnforceRange
+            snapMode: PathView.SnapOneItem
+            highlightMoveDuration: 600
+            flickDeceleration: 1500
+
+            // A straight horizontal line, 3 slides long. Slides sit at
+            // -0.5w, 0.5w and 1.5w, so the middle one fills the frame.
+            path: Path {
+                startX: -swipe.width
+                startY: swipe.height / 2
+                PathLine {
+                    x: swipe.width * 2
+                    y: swipe.height / 2
+                }
+            }
 
             delegate: Item {
                 required property var modelData
                 required property int index
-                width: track.width
-                height: track.height
 
-                // Backdrop: the banner if the provider has one, else the cover.
+                width: swipe.width
+                height: swipe.height
+
+                // Backdrop banner/cover image
                 Image {
                     anchors.fill: parent
                     source: modelData.bannerImage || modelData.coverImage || ""
@@ -71,62 +91,91 @@ Item {
                     asynchronous: true
                 }
 
-                // Two scrims: one across for text contrast, one up from the
-                // bottom so the artwork fades into the page.
+                // Horizontal gradient for text contrast
                 Rectangle {
                     anchors.fill: parent
                     gradient: Gradient {
                         orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: "#f20b0d12" }
-                        GradientStop { position: 0.55; color: "#d90b0d12" }
-                        GradientStop { position: 1.0; color: "#330b0d12" }
+                        GradientStop { position: 0.0; color: Qt.rgba(0.05, 0.06, 0.09, 0.96) }
+                        GradientStop { position: 0.55; color: Qt.rgba(0.05, 0.06, 0.09, 0.82) }
+                        GradientStop { position: 1.0; color: Qt.rgba(0.05, 0.06, 0.09, 0.25) }
                     }
                 }
+
+                // Bottom gradient blend
                 Rectangle {
                     anchors.fill: parent
                     gradient: Gradient {
                         GradientStop { position: 0.0; color: "transparent" }
-                        GradientStop { position: 1.0; color: "#e60b0d12" }
+                        GradientStop { position: 1.0; color: Qt.rgba(0.05, 0.06, 0.09, 0.9) }
                     }
                 }
 
-                Column {
+                // Strictly bounded content column
+                ColumnLayout {
                     anchors.left: parent.left
-                    anchors.leftMargin: 32
+                    anchors.leftMargin: 36
                     anchors.right: parent.right
-                    anchors.rightMargin: parent.width * 0.35
-                    anchors.verticalCenter: parent.verticalCenter
-                    spacing: 10
+                    anchors.rightMargin: parent.width * 0.28
+                    anchors.top: parent.top
+                    anchors.topMargin: 24
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 52
+                    spacing: 8
 
-                    Text {
-                        text: "#" + (index + 1) + " Spotlight"
-                        color: Theme.accent
-                        font.pixelSize: 13
-                        font.bold: true
+                    // Spotlight rank badge
+                    Rectangle {
+                        radius: 6
+                        color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.2)
+                        border.width: 1
+                        border.color: Theme.accent
+                        implicitWidth: spotText.implicitWidth + 16
+                        implicitHeight: 22
+
+                        Text {
+                            id: spotText
+                            anchors.centerIn: parent
+                            text: "#" + (index + 1) + " SPOTLIGHT"
+                            color: Theme.accent
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.0
+                        }
                     }
 
+                    // Title
                     Text {
-                        width: parent.width
+                        Layout.fillWidth: true
                         text: carousel.displayTitle(modelData)
                         color: Theme.ink
-                        font.pixelSize: 32
+                        font.pixelSize: 26
                         font.bold: true
                         wrapMode: Text.WordWrap
                         maximumLineCount: 2
                         elide: Text.ElideRight
                     }
 
-                    // Score in gold, then the plain facts.
-                    Row {
-                        spacing: 14
+                    // Score & facts
+                    RowLayout {
+                        spacing: 12
 
-                        Text {
+                        Rectangle {
                             visible: modelData.averageScore != null
-                            text: modelData.averageScore != null
-                                ? String(modelData.averageScore) : ""
-                            color: Theme.score
-                            font.pixelSize: 14
-                            font.bold: true
+                            radius: 6
+                            color: Qt.rgba(0.07, 0.08, 0.12, 0.75)
+                            border.width: 1
+                            border.color: Theme.glassBorder
+                            implicitWidth: scoreText.implicitWidth + 12
+                            implicitHeight: 22
+
+                            Text {
+                                id: scoreText
+                                anchors.centerIn: parent
+                                text: "★ " + (modelData.averageScore != null ? modelData.averageScore : "")
+                                color: Theme.score
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
                         }
 
                         Repeater {
@@ -135,22 +184,26 @@ Item {
                                 required property string modelData
                                 text: modelData
                                 color: Theme.inkMuted
-                                font.pixelSize: 14
+                                font.pixelSize: 12
+                                font.bold: true
                             }
                         }
                     }
 
-                    // Genre chips, first three.
+                    // Genre chips
                     Row {
                         spacing: 6
                         Repeater {
                             model: (modelData.genres || []).slice(0, 3)
                             delegate: Rectangle {
                                 required property string modelData
-                                radius: 10
-                                color: Theme.surfaceHover
-                                implicitWidth: heroGenre.implicitWidth + 18
+                                radius: 8
+                                color: Qt.rgba(1, 1, 1, 0.08)
+                                border.width: 1
+                                border.color: Theme.glassBorder
+                                implicitWidth: heroGenre.implicitWidth + 16
                                 implicitHeight: 22
+
                                 Text {
                                     id: heroGenre
                                     anchors.centerIn: parent
@@ -162,36 +215,52 @@ Item {
                         }
                     }
 
+                    // Synopsis (clamped to 2 lines)
                     Text {
-                        width: parent.width
-                        visible: modelData.description !== undefined
-                            && modelData.description !== null
-                        text: modelData.description
-                            ? String(modelData.description).replace(/<[^>]*>/g, "")
-                            : ""
+                        Layout.fillWidth: true
+                        visible: modelData.description !== undefined && modelData.description !== null
+                        text: modelData.description ? String(modelData.description).replace(/<[^>]*>/g, "") : ""
                         color: Theme.inkMuted
-                        font.pixelSize: 13
+                        font.pixelSize: 12
                         wrapMode: Text.WordWrap
-                        maximumLineCount: 3
+                        maximumLineCount: 2
                         elide: Text.ElideRight
                         lineHeight: 1.3
                     }
 
-                    Item { width: 1; height: 6 }
+                    Item { Layout.fillHeight: true }
 
+                    // Action button: View Details
                     Rectangle {
-                        width: 130
                         height: 38
                         radius: 19
                         color: detailsMouse.containsMouse ? Theme.accentHover : Theme.accent
+                        implicitWidth: btnRow.implicitWidth + 28
+                        scale: detailsMouse.containsMouse ? 1.03 : 1.0
 
-                        Text {
+                        Behavior on scale { NumberAnimation { duration: 150 } }
+                        Behavior on color { ColorAnimation { duration: 150 } }
+
+                        RowLayout {
+                            id: btnRow
                             anchors.centerIn: parent
-                            text: "View details"
-                            color: "white"
-                            font.pixelSize: 13
-                            font.bold: true
+                            spacing: 8
+
+                            PlayerIcon {
+                                kind: "play"
+                                color: "white"
+                                width: 12
+                                height: 12
+                            }
+
+                            Text {
+                                text: "View Details"
+                                color: "white"
+                                font.pixelSize: 13
+                                font.bold: true
+                            }
                         }
+
                         MouseArea {
                             id: detailsMouse
                             anchors.fill: parent
@@ -204,94 +273,45 @@ Item {
             }
         }
 
-        // Arrow buttons on the right edge, shown only with more than one slide.
-        Column {
-            visible: carousel.items.length > 1
-            anchors.right: parent.right
-            anchors.rightMargin: 14
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: 8
-
-            Rectangle {
-                width: 34
-                height: 34
-                radius: 17
-                color: nextMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
-                Text {
-                    anchors.centerIn: parent
-                    text: "›"
-                    color: Theme.ink
-                    font.pixelSize: 20
-                }
-                MouseArea {
-                    id: nextMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: carousel.step(1)
-                }
-            }
-            Rectangle {
-                width: 34
-                height: 34
-                radius: 17
-                color: prevMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
-                Text {
-                    anchors.centerIn: parent
-                    text: "‹"
-                    color: Theme.ink
-                    font.pixelSize: 20
-                }
-                MouseArea {
-                    id: prevMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: carousel.step(-1)
-                }
-            }
-        }
-
-        // Dot indicators along the bottom-left.
+        // Expanding pill indicators (bottom-left)
         Row {
             visible: carousel.items.length > 1
             anchors.left: parent.left
-            anchors.leftMargin: 32
+            anchors.leftMargin: 36
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 16
-            spacing: 8
+            anchors.bottomMargin: 18
+            spacing: 6
+            z: 10
 
             Repeater {
                 model: carousel.items.length
                 delegate: Rectangle {
                     required property int index
-                    width: 8
+                    width: swipe.currentIndex === index ? 24 : 8
                     height: 8
                     radius: 4
-                    color: track.currentIndex === index ? Theme.accent : Theme.inkFaint
+                    color: swipe.currentIndex === index ? Theme.accent : Qt.rgba(1, 1, 1, 0.3)
+
+                    Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutQuad } }
+                    Behavior on color { ColorAnimation { duration: 200 } }
+
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: track.currentIndex = index
+                        onClicked: swipe.currentIndex = index
                     }
                 }
             }
         }
     }
 
-    // Wrap the index at both ends.
-    function step(delta) {
-        const count = items.length
-        if (count === 0) return
-        track.currentIndex = (track.currentIndex + delta + count) % count
-    }
-
-    // Auto-advance, restarting whenever the index changes so a manual jump
-    // gets a fresh countdown.
+    // Auto-advance: always steps forward and loops seamlessly.
+    // Paused while the user is dragging or the view is still moving.
     Timer {
         interval: carousel.advanceMs
         repeat: true
         running: carousel.visible && carousel.items.length > 1
-        onTriggered: carousel.step(1)
+                 && !swipe.dragging && !swipe.flicking
+        onTriggered: swipe.incrementCurrentIndex()
     }
 }
