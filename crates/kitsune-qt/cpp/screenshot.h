@@ -15,3 +15,8 @@
 // it to `path`, then quit the application. A failed grab is logged and still
 // quits, so a CI run never hangs.
 void kitsuneSaveScreenshot(rust::Str path, int delayMs);
+
+// Install a Qt message handler that drops a handful of known-harmless startup
+// warnings, so the console is not buried under them on every run. Everything
+// else is forwarded to Qt's own formatting. Call once, before QML loads.
+void kitsuneInstallLogFilter();

@@ -30,6 +30,9 @@ fn main() {
     // "Non-C locale detected".
     libc_setlocale();
 
+    // Drop known-harmless Qt startup warnings before anything can emit them.
+    screenshot::install_log_filter();
+
     // Register the embedded mpv QML item before any QML loads.
     mpv::register();
 

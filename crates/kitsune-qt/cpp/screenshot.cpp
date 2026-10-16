@@ -7,8 +7,54 @@
 #include <QString>
 #include <QTimer>
 #include <QWindow>
+#include <QtGlobal>
 
 #include <cstdio>
+
+namespace {
+/// The handler Qt was using before ours, or null for Qt's built-in default.
+QtMessageHandler g_previousHandler = nullptr;
+
+/// Drop a few fixed, known-harmless startup warnings; forward the rest.
+///
+/// The only one today is "qmlRegisterType requires absolute URLs", which Qt
+/// emits once per compiled QML file from CXX-Qt's generated module
+/// registration. The registration still succeeds -- it is console noise, not a
+/// fault -- and it carries no category, so it cannot be turned off with
+/// QT_LOGGING_RULES without silencing every warning. Filtering the exact line
+/// keeps real warnings visible.
+void
+kitsuneLogFilter(QtMsgType type,
+                 const QMessageLogContext& context,
+                 const QString& message)
+{
+  if (message.contains(
+        QLatin1String("qmlRegisterType requires absolute URLs"))) {
+    return;
+  }
+  if (g_previousHandler != nullptr) {
+    g_previousHandler(type, context, message);
+    return;
+  }
+  // Qt's default formatting, reproduced so nothing is lost when no handler
+  // was installed before this one.
+  const char* prefix = "info";
+  switch (type) {
+    case QtDebugMsg: prefix = "debug"; break;
+    case QtInfoMsg: prefix = "info"; break;
+    case QtWarningMsg: prefix = "warning"; break;
+    case QtCriticalMsg: prefix = "critical"; break;
+    case QtFatalMsg: prefix = "fatal"; break;
+  }
+  std::fprintf(stderr, "%s: %s\n", prefix, message.toUtf8().constData());
+}
+} // namespace
+
+void
+kitsuneInstallLogFilter()
+{
+  g_previousHandler = qInstallMessageHandler(kitsuneLogFilter);
+}
 
 void
 kitsuneSaveScreenshot(rust::Str path, int delayMs)

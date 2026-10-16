@@ -13,10 +13,20 @@ mod ffi {
         /// quit. No-op unless the caller opts in.
         #[rust_name = "save_after"]
         fn kitsuneSaveScreenshot(path: &str, delay_ms: i32);
+
+        /// Install the Qt message filter that drops known-harmless startup
+        /// warnings. Call once, before QML loads.
+        #[rust_name = "install_log_filter"]
+        fn kitsuneInstallLogFilter();
     }
 }
 
 /// Schedule a screenshot of the app window and a quit, `delay_ms` from now.
 pub fn save_after(path: &str, delay_ms: i32) {
     ffi::save_after(path, delay_ms);
+}
+
+/// Install the Qt message filter that drops known-harmless startup warnings.
+pub fn install_log_filter() {
+    ffi::install_log_filter();
 }
