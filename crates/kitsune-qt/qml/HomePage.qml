@@ -226,7 +226,10 @@ Item {
                         width: 180
                         height: 280
                         anime: modelData
-                        rank: index + page.heroLimit + 1
+                        // Numbered from 01 within the rail itself, matching the
+                        // original. It used to continue the hero's numbering
+                        // (`index + heroLimit + 1`), so the first card read 06.
+                        rank: index + 1
                         onClicked: page.openAnime(modelData.id)
                     }
                 }
