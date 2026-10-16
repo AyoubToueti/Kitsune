@@ -196,10 +196,12 @@ Popup {
 
     function toggleFullscreen() {
         modal.fullscreen = !modal.fullscreen
-        if (Window.window) {
-            Window.window.visibility = modal.fullscreen ? Window.FullScreen : Window.Windowed
-        }
         wakeChrome()
+        // The window itself is fullscreened by the `requestFullscreen` handler
+        // in main.qml. `Window.window` cannot be used here: it is an attached
+        // property that only resolves on an `Item`, and this modal is a
+        // `Popup` -- reading it logs "Window.window only supports types
+        // derived from Item" and aborts the rest of this function.
         modal.requestFullscreen(modal.fullscreen)
     }
 
@@ -559,13 +561,16 @@ Popup {
     function loadStream() {
         const p = playerLoader.item
         if (p === null || modal.playingUrl.length === 0) return
-        // NEVER `loadfile` before mpv's GL render context exists. libmpv opens
-        // its video output at load time; with no render context it reports
-        // "No render context set" and fails permanently ("Video: no video"),
-        // while audio -- on its own thread -- keeps playing. That is the
-        // intermittent black-video-with-sound. The item flips `renderReady`
-        // once the first frame has created the context; wait for it.
-        if (!p.renderReady) return
+        // Hand the load to the item unconditionally. It owns the race: its
+        // `command()` defers a `loadfile` until mpv's GL render context exists
+        // (queuing it in `pendingLoad_`) and replays it from `markRenderReady`.
+        //
+        // Do NOT gate on `renderReady` here. An earlier version bailed when the
+        // flag was false, which meant `command()` was never called and the
+        // C++ deferral never ran -- so the load relied entirely on the QML
+        // `renderReadyChanged` signal. That signal is racy when the player item
+        // is destroyed and recreated (closing the modal then resuming from the
+        // disc), which left playback stuck at 00:00 with no file loaded.
         p.command(["loadfile", modal.playingUrl, "replace"])
     }
 
@@ -749,7 +754,14 @@ Popup {
             backend.removeTorrent(torrentId)
             torrentId = -1
         }
-        playerLoader.active = false
+        // Do NOT assign `playerLoader.active = false` here. That property is a
+        // BINDING (`active: modal.stage === "play"`), and assigning it
+        // imperatively DESTROYS the binding permanently. The first close would
+        // then pin `active` to a literal `false`, so re-opening the modal would
+        // never recreate the player item (`playerLoader.item` stays null) and
+        // playback would hang at 00:00. Setting `stage = "releases"` below
+        // already drives the binding to false, which is what actually unloads
+        // the item.
         playingUrl = ""
         // Return to the releases stage and clear any in-flight "searching"
         // state, so re-opening the modal starts from a clean, cached list
@@ -1373,16 +1385,11 @@ Popup {
                             onLoaded: modal.loadStream()
                         }
 
-                        // When the mpv item finishes creating its render
-                        // context, the load deferred by `loadStream` (it bailed
-                        // while `renderReady` was false) can go ahead.
-                        Connections {
-                            target: playerLoader.item
-                            function onRenderReadyChanged() {
-                                if (playerLoader.item && playerLoader.item.renderReady)
-                                    modal.loadStream()
-                            }
-                        }
+                        // No `renderReadyChanged` handler here: the item owns
+                        // the deferral now. A `loadfile` issued before the
+                        // context exists is queued in `pendingLoad_` and
+                        // replayed from `markRenderReady`, so re-loading here
+                        // would only issue the same `loadfile` twice.
 
                         // Pointer wake handler, click-to-pause & synchronized blank cursor hiding
                         MouseArea {

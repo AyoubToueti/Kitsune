@@ -220,16 +220,28 @@ MpvObject::MpvObject(QQuickItem* parent)
   mpv_set_option_string(mpv, "terminal",
                         qEnvironmentVariableIsSet("KITSUNE_MPV_LOG") ? "yes"
                                                                      : "no");
+  // Default to "fatal" only: `hwdec=auto` probes every backend, and a probe
+  // for an absent one (e.g. CUDA outside a CUDA environment) logs an
+  // error-level line that is harmless but noisy on stderr. A real playback
+  // failure is reported through the buffering/health UI, so nothing is lost.
+  // KITSUNE_MPV_LOG=1 restores full verbose logging for debugging.
   mpv_request_log_messages(mpv,
                            qEnvironmentVariableIsSet("KITSUNE_MPV_LOG") ? "v"
-                                                                        : "warn");
+                                                                        : "fatal");
 
   if (mpv_initialize(mpv) < 0) {
     throw std::runtime_error("could not initialize mpv context");
   }
 
   // Hardware decoding when available; falls back to software otherwise.
-  mpv_set_option_string(mpv, "hwdec", "auto");
+  mpv_set_option_string(mpv, "hwdec", "auto-safe");
+  // Do not probe GPU hwdec interop backends. `auto` probes every one,
+  // including CUDA, and on a machine with no CUDA driver that probe writes
+  // "Cannot load libcuda.so.1" straight to stderr with a null log context --
+  // it bypasses mpv's log-level filtering entirely, so it cannot be silenced
+  // any other way. `nvdec-copy` (a copy-mode decoder) needs no interop, so
+  // hardware decoding still works without this probe.
+  mpv_set_option_string(mpv, "gpu-hwdec-interop", "no");
 
   connect(
     this, &MpvObject::onUpdate, this, &MpvObject::doUpdate, Qt::QueuedConnection);
