@@ -18,6 +18,18 @@ mod ffi {
         /// warnings. Call once, before QML loads.
         #[rust_name = "install_log_filter"]
         fn kitsuneInstallLogFilter();
+
+        /// Declare which desktop entry the window belongs to, e.g.
+        /// "com.kitsune.app". On Wayland this becomes the window's app_id, which
+        /// the compositor matches against an installed `.desktop` file to pick
+        /// the taskbar icon.
+        #[rust_name = "set_desktop_file_name"]
+        fn kitsuneSetDesktopFileName(name: &str);
+
+        /// Set the application window icon from a Qt resource path, so the
+        /// compositor shows the app's own icon in the taskbar.
+        #[rust_name = "set_window_icon"]
+        fn kitsuneSetWindowIcon(resource_path: &str);
     }
 }
 
@@ -29,4 +41,15 @@ pub fn save_after(path: &str, delay_ms: i32) {
 /// Install the Qt message filter that drops known-harmless startup warnings.
 pub fn install_log_filter() {
     ffi::install_log_filter();
+}
+
+/// Declare which desktop entry the window belongs to, so the desktop
+/// environment shows the app's own taskbar icon rather than a generic one.
+pub fn set_desktop_file_name(name: &str) {
+    ffi::set_desktop_file_name(name);
+}
+
+/// Set the application window icon from a Qt resource path.
+pub fn set_window_icon(resource_path: &str) {
+    ffi::set_window_icon(resource_path);
 }

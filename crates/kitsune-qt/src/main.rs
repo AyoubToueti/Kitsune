@@ -23,6 +23,20 @@ fn main() {
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
 
+    // Tell the desktop environment which entry this window belongs to. On
+    // Wayland the window's app_id comes from this, and the compositor matches
+    // it against an installed `.desktop` file to choose the taskbar icon.
+    // Without it the executable name ("kitsune-qt") is used, which matches no
+    // entry and shows a generic icon. The Tauri build shipped
+    // `com.kitsune.app.desktop` plus hicolor icons, so reuse that identity.
+    screenshot::set_desktop_file_name("com.kitsune.app");
+
+    // Give the window a real icon. On Wayland Qt otherwise sends
+    // `xdg_toplevel_icon.set_icon(nil)`, which tells the compositor "no icon"
+    // and overrides the app_id -> `.desktop` match above, so the taskbar falls
+    // back to the generic placeholder. The asset is embedded by build.rs.
+    screenshot::set_window_icon(":/qt/qml/com/kitsune/app/assets/logo.png");
+
     // Reset LC_NUMERIC to "C" AFTER constructing the app: Qt's QGuiApplication
     // constructor sets the locale from the environment, which overrides an
     // earlier setlocale. libmpv parses numbers with strtod and requires a dot

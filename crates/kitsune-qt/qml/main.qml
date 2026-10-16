@@ -10,6 +10,9 @@ Window {
     visible: true
     title: "Kitsune"
     color: Theme.surface
+    // No `icon` here: a QML `Window` has no such property. The taskbar icon is
+    // resolved from the window's app_id against a `.desktop` entry, which is
+    // set by `kitsuneSetDesktopFileName` in main.rs.
 
     // Exposed so child pages can reach the same Backend instance.
     property alias backend: backend

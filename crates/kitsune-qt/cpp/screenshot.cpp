@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <QIcon>
 #include <QImage>
 #include <QQuickWindow>
 #include <QString>
@@ -54,6 +55,30 @@ void
 kitsuneInstallLogFilter()
 {
   g_previousHandler = qInstallMessageHandler(kitsuneLogFilter);
+}
+
+void
+kitsuneSetDesktopFileName(rust::Str name)
+{
+  const QString id =
+    QString::fromUtf8(name.data(), static_cast<int>(name.size()));
+  // Static, so it can be set before any window exists. On Wayland Qt uses this
+  // as the window's `app_id`; the compositor then finds the matching `.desktop`
+  // entry (and thus its `Icon=`), so the taskbar shows the app's own icon
+  // rather than the generic Wayland placeholder.
+  QGuiApplication::setDesktopFileName(id);
+}
+
+void
+kitsuneSetWindowIcon(rust::Str resourcePath)
+{
+  const QString path =
+    QString::fromUtf8(resourcePath.data(),
+                      static_cast<int>(resourcePath.size()));
+  // Every new window inherits this. On Wayland Qt turns it into the
+  // `xdg_toplevel_icon`; without it Qt sends `set_icon(nil)`, which overrides
+  // the app_id -> `.desktop` match and leaves the generic placeholder.
+  QGuiApplication::setWindowIcon(QIcon(path));
 }
 
 void

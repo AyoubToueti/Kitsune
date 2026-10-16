@@ -20,3 +20,20 @@ void kitsuneSaveScreenshot(rust::Str path, int delayMs);
 // warnings, so the console is not buried under them on every run. Everything
 // else is forwarded to Qt's own formatting. Call once, before QML loads.
 void kitsuneInstallLogFilter();
+
+// Declare which desktop entry this window belongs to, e.g. "com.kitsune.app".
+//
+// On Wayland the compositor derives the window's `app_id` from this and matches
+// it against an installed `.desktop` file's `Icon=`, which is how the taskbar
+// picks the window's icon. Qt defaults it to the executable name
+// ("kitsune-qt"), which matches nothing and leaves the generic icon.
+void kitsuneSetDesktopFileName(rust::Str name);
+
+// Set the application-wide window icon from an image inside the Qt resource
+// system, e.g. ":/qt/qml/com/kitsune/app/assets/logo.png".
+//
+// This is what populates the compositor's `xdg_toplevel_icon` for every
+// window. Without it Qt sends `set_icon(nil)` on Wayland, which tells the
+// compositor "no icon" and overrides the app_id -> `.desktop` lookup, leaving
+// the generic placeholder. Also sets the X11/XWayland window icon.
+void kitsuneSetWindowIcon(rust::Str resourcePath);
