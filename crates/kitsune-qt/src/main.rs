@@ -10,6 +10,22 @@ mod screenshot;
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
 fn main() {
+    // Do not let Qt register with the XDG desktop portal.
+    //
+    // Setting a desktop file name (below, for the Wayland taskbar icon) makes
+    // Qt try to register the app with `org.freedesktop.host.portal.Registry`.
+    // That lookup fails here with "App info not found for 'com.kitsune.app'",
+    // because the entry it finds has an `Exec=` pointing at a build artifact
+    // rather than this binary -- and the failure is only a noisy warning. This
+    // switch turns the portal integration off entirely, so the message cannot
+    // appear. It costs nothing: the app uses no portal features (no file
+    // chooser, screenshot, or notification portal), and the taskbar icon is
+    // supplied directly via `setWindowIcon`.
+    //
+    // MUST be set before `QGuiApplication` is constructed -- Qt reads it while
+    // building the application object -- so it goes first, ahead of everything.
+    std::env::set_var("QT_NO_XDG_DESKTOP_PORTAL", "1");
+
     // Force Qt's scene graph to OpenGL BEFORE the app is built.
     //
     // The embedded mpv surface is a `QQuickFramebufferObject` that renders
