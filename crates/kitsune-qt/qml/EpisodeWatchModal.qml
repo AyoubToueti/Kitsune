@@ -17,9 +17,6 @@ Popup {
     property string episodeThumbnail: ""
     property bool autoPlay: false
 
-    // NOTE: no `signal closed()` here -- `Popup` already defines one, and
-    // redeclaring it is an "invalid override" error that aborts the component.
-
     property string stage: "releases"
     property var releases: []
     property bool searching: false
@@ -32,27 +29,15 @@ Popup {
     property bool probing: false
 
     property string releaseTitle: ""
-    // The chosen release's magnet, kept so the release can be remembered for a
-    // future resume. Empty until a release is picked.
     property string releaseMagnet: ""
 
     // --- resume -----------------------------------------------------------
-    // What to do with a saved position when a file starts: "ask" | "seek" |
-    // "fresh". Comes from settings; defaults to "ask".
     readonly property string resumeBehavior: modal.appSettings.resumeBehavior || "ask"
-    // A saved position waiting to be applied to the next loaded file.
     property var pendingResume: null
-    // True while the "Continue from MM:SS?" prompt is up.
     property bool resumePromptOpen: false
-    // A position to seek to once the file has a duration, or -1 for none.
     property real resumeSeekTarget: -1
-    // Guards against asking more than once per loaded file.
     property bool resumeHandled: false
-    // When true, the modal skips the release picker and resumes the last
-    // remembered torrent for the work (the disc and the Continue Watching
-    // Resume button both set this). Cleared once consumed, or on teardown.
     property bool resumeLast: false
-    // The file index to play from the resumed torrent, or -1 when unknown.
     property int resumeFileIdx: -1
 
     function fmtTime(seconds) {
@@ -65,26 +50,20 @@ Popup {
         return (h > 0 ? h + ":" + mm : mm) + ":" + ss
     }
 
-    // Ask the backend for the saved positions; the reply applies the resume.
     function requestResume() {
         if (modal.backend) modal.backend.getWatchPositions()
     }
 
-    // The rewind to apply on resume, from settings (seconds back from the
-    // saved position so the reader gets a run-up into the scene).
     readonly property int resumeRewind: {
         const v = modal.appSettings.resumeRewindSeconds
         return (v === undefined || v === null) ? 20 : Math.max(0, Math.round(v))
     }
 
-    // The position to actually resume from: the saved position minus the
-    // configured rewind, floored at 0.
     function resumeTarget(pos) {
         const at = (pos && pos.positionSeconds) ? pos.positionSeconds : 0
         return Math.max(0, at - modal.resumeRewind)
     }
 
-    // Apply the resume behaviour for `pos` (a saved WatchPosition).
     function applyResume(pos) {
         if (!pos || !pos.positionSeconds || pos.positionSeconds < 5) {
             modal.pendingResume = null
@@ -97,12 +76,10 @@ Popup {
         } else if (behavior === "seek") {
             modal.resumeSeekTarget = modal.resumeTarget(pos)
         } else {
-            // "ask": show the prompt, seek only on Continue.
             modal.resumePromptOpen = true
         }
     }
 
-    // Seek to the saved position once the file reports a duration.
     Timer {
         id: resumeApply
         interval: 400
@@ -145,11 +122,7 @@ Popup {
 
     property bool fullscreen: false
     property bool chromeVisible: true
-    // Video-details card, shown at the top-right of the viewport.
     property bool infoOpen: false
-    // Bumped on a timer while the card is open so its values re-read: the
-    // mpv properties only exist once playback starts, so a one-shot read at
-    // creation time shows dashes forever.
     property int infoTick: 0
     signal requestFullscreen(bool on)
 
@@ -160,32 +133,37 @@ Popup {
         onTriggered: modal.infoTick++
     }
 
-    /// Read an mpv property as a display string, or "—" when unavailable.
     function prop(name) {
         const p = playerLoader.item
-        if (!p || !p.getProperty) return "—"
+        if (!p || !p.getProperty) return "\u2014"
         try {
             const v = p.getProperty(name)
-            if (v === undefined || v === null || v === "") return "—"
+            if (v === undefined || v === null || v === "") return "\u2014"
             if (typeof v === "number") return (Math.round(v * 100) / 100).toString()
             return String(v)
-        } catch (e) { return "—" }
+        } catch (e) { return "\u2014" }
     }
 
-    /// "1920 × 1080" from the decoder's video dimensions.
     function videoSize() {
         const w = prop("width")
         const h = prop("height")
-        if (w === "—" || h === "—") return "—"
-        return w + " × " + h
+        if (w === "\u2014" || h === "\u2014") return "\u2014"
+        return w + " \u00d7 " + h
     }
 
+    // --- Dynamic Window Positioning & Aspect Ratio Tuning ----------------
     parent: Overlay.overlay
     x: modal.fullscreen ? 0 : Math.round((parent.width - width) / 2)
     y: modal.fullscreen ? 0 : Math.round((parent.height - height) / 2)
     
-    width: modal.fullscreen ? parent.width : Math.min(860, parent ? parent.width - 40 : 860)
-    height: modal.fullscreen ? parent.height : Math.min(800, parent ? parent.height - 40 : 800)
+    // Decreased width (72% of parent, max 980px) to match 16:9 video proportion
+    width: modal.fullscreen 
+        ? parent.width 
+        : (parent ? Math.max(800, Math.min(Math.round(parent.width * 0.72), 980)) : 860)
+        
+    height: modal.fullscreen 
+        ? parent.height 
+        : (parent ? Math.max(520, Math.min(Math.round(parent.height * 0.88), 900)) : 760)
     
     modal: true
     focus: true
@@ -197,11 +175,6 @@ Popup {
     function toggleFullscreen() {
         modal.fullscreen = !modal.fullscreen
         wakeChrome()
-        // The window itself is fullscreened by the `requestFullscreen` handler
-        // in main.qml. `Window.window` cannot be used here: it is an attached
-        // property that only resolves on an `Item`, and this modal is a
-        // `Popup` -- reading it logs "Window.window only supports types
-        // derived from Item" and aborts the rest of this function.
         modal.requestFullscreen(modal.fullscreen)
     }
 
@@ -213,12 +186,6 @@ Popup {
     function doSkipIntro() {
         const p = playerLoader.item
         if (!p) return
-        
-        // Skip the OPENING MUSIC: jump PAST the OP chapter to the chapter that
-        // follows it (e.g. "Main EP"), NOT to the start of the OP. Never skip
-        // the cold-open intro -- if there is no OP chapter, do nothing.
-        // `chapterList` is array-LIKE (has .length, indexable) but
-        // `Array.isArray()` is false for a QVariantList-backed property.
         const chapters = p.chapterList
         if (chapters && chapters.length !== undefined) {
             for (var i = 0; i < chapters.length; i++) {
@@ -228,7 +195,6 @@ Popup {
                         p.setProperty("chapter", i + 1)
                         osdToast.trigger("forward", "Skipped " + ch.title)
                     } else {
-                        // OP is the last chapter: nothing follows but the end.
                         p.command(["seek", String(p.duration), "absolute"])
                         osdToast.trigger("forward", "Skipped " + ch.title)
                     }
@@ -237,17 +203,12 @@ Popup {
                 }
             }
         }
-        // No OP chapter: nothing to skip, and definitely not the intro.
         modal.wakeChrome()
     }
 
     function doSkipEnding() {
         const p = playerLoader.item
         if (!p) return
-        
-        // Skip the ENDING MUSIC: jump PAST the ED chapter to whatever follows
-        // (e.g. a preview), or to the end if the ED is the last chapter.
-        // NOTE: array-LIKE, so test .length, not Array.isArray().
         const chapters = p.chapterList
         if (chapters && chapters.length !== undefined) {
             for (var i = 0; i < chapters.length; i++) {
@@ -265,12 +226,9 @@ Popup {
                 }
             }
         }
-        // No ED chapter: nothing to skip.
         modal.wakeChrome()
     }
 
-    // The title of the chapter the playhead is currently inside, or "".
-    // Uses the same array-LIKE `chapterList` as the skip functions.
     function currentChapterTitle() {
         const p = playerLoader.item
         if (!p) return ""
@@ -286,14 +244,11 @@ Popup {
         return title
     }
 
-    // Context-aware skip for the S key / overlay: skip the ENDING if the ED is
-    // playing, otherwise the OPENING. Does nothing during the cold-open intro.
     function doSkipSection() {
         if (/ed|ending|outro/i.test(modal.currentChapterTitle())) modal.doSkipEnding()
         else modal.doSkipIntro()
     }
 
-    // --- Keybindings -----------------------------------------------------
     Shortcut {
         enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("playPause", "Space")
@@ -385,14 +340,10 @@ Popup {
         }
     }
 
-    // Auto-hide controls timer
     Timer {
         id: hideChrome
         interval: 2500
         onTriggered: {
-            // Keep the chrome up while the pointer is on it, the settings card
-            // is open, or the chapter menu is open (the menu is anchored to the
-            // bar, so hiding the bar would take it away mid-selection).
             if ((modal.fullscreen && topBarHover.hovered)
                     || bottomControlsHover.hovered
                     || modal.settingsOpen
@@ -408,10 +359,6 @@ Popup {
         if (modal.stage === "play") modal.wakeChrome()
     }
 
-    // While playing, save where the reader stopped every few seconds, so the
-    // Continue Watching resume and the disc's MM:SS are current without
-    // writing on every frame. mpv's polled position/duration are already
-    // mirrored on the player item.
     Timer {
         interval: 5000
         repeat: true
@@ -427,27 +374,15 @@ Popup {
         }
     }
 
-    // The anime whose title forms and releases are currently cached, so a
-    // re-open for the SAME anime reuses them (no refetch) while a different
-    // anime resets and fetches.
     property int loadedAnimeId: 0
-
-    // Player shortcut overrides, action -> key sequence, from settings. An
-    // action absent here uses the default passed to `sc()`.
     property var shortcutMap: ({})
-    // The whole settings object, kept so a shortcut edit can be written back
-    // without clobbering the other fields (setSettings replaces the file).
     property var appSettings: ({})
 
-    /// The key sequence for `action`: the reader's override when set, else the
-    /// built-in `fallback`. Empty/blank overrides are treated as "use default".
     function sc(action, fallback) {
         const v = shortcutMap[action]
         return (v && v.length > 0) ? v : fallback
     }
 
-    /// Record a new binding for `action` (empty clears it back to the default)
-    /// and persist the whole settings object.
     function setShortcut(action, sequence) {
         const next = Object.assign({}, shortcutMap)
         if (sequence && sequence.length > 0) next[action] = sequence
@@ -460,9 +395,6 @@ Popup {
         if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
     }
 
-    /// Persist the Continue Watching behaviour + rewind delay chosen in the
-    /// in-player settings card. Mirrors `setShortcut`: the whole settings
-    /// object is rewritten so nothing else is clobbered.
     function setResume(behavior, rewind) {
         const s = Object.assign({}, modal.appSettings)
         s.resumeBehavior = behavior
@@ -484,20 +416,14 @@ Popup {
     onOpened: {
         if (!backend || animeId <= 0) return
         backend.getSettings()
-        // Resume the last remembered torrent directly, skipping the release
-        // picker entirely, when the open came from the resume disc or a
-        // Continue Watching card.
         if (modal.resumeLast) {
             modal.searching = true
             modal.stage = "releases"
-            // Fetch the work too, purely for the header thumbnail; the
-            // release search is suppressed while resuming.
             modal.backend.getAnime(animeId)
             modal.backend.getLastRelease(animeId)
             return
         }
         if (loadedAnimeId !== animeId) {
-            // Different work: drop any cached results and fetch.
             loadedAnimeId = animeId
             titles = []
             releases = []
@@ -506,25 +432,16 @@ Popup {
             searching = false
             backend.getAnime(animeId)
         }
-        // Same work: keep the cached titles/releases as-is.
     }
+
     onClosed: {
-        // Save the final position BEFORE tearing the player down. Closing the
-        // window is the reader's "I stopped here" -- whether or not the stream
-        // was paused or the torrent finished -- so the disc and the row show
-        // the last time that was on screen.
         modal.savePositionNow()
-        // Re-record the last-played stamp: it emits `libraryChanged`, so the
-        // disc AND the Continue Watching row re-read the saved time on close,
-        // without a per-tick refresh during playback.
         if (modal.backend && modal.animeId > 0) {
             modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber)
         }
         modal.teardown()
     }
 
-    // Persist the player's current position for this work+episode. Called on
-    // close (the definitive save) and safe to call with no player loaded.
     function savePositionNow() {
         const p = playerLoader.item
         if (!p || !modal.backend || modal.animeId <= 0) return
@@ -545,7 +462,6 @@ Popup {
         return Math.max(0, modal.absoluteEpisode - modal.episodeNumber)
     }
 
-    // The display name of a chosen file index, or "" when unknown.
     function fileNameFor(idx) {
         for (let i = 0; i < modal.files.length; i++) {
             if (modal.files[i].idx === idx) return modal.files[i].name || ""
@@ -561,16 +477,6 @@ Popup {
     function loadStream() {
         const p = playerLoader.item
         if (p === null || modal.playingUrl.length === 0) return
-        // Hand the load to the item unconditionally. It owns the race: its
-        // `command()` defers a `loadfile` until mpv's GL render context exists
-        // (queuing it in `pendingLoad_`) and replays it from `markRenderReady`.
-        //
-        // Do NOT gate on `renderReady` here. An earlier version bailed when the
-        // flag was false, which meant `command()` was never called and the
-        // C++ deferral never ran -- so the load relied entirely on the QML
-        // `renderReadyChanged` signal. That signal is racy when the player item
-        // is destroyed and recreated (closing the modal then resuming from the
-        // disc), which left playback stuck at 00:00 with no file loaded.
         p.command(["loadfile", modal.playingUrl, "replace"])
     }
 
@@ -583,12 +489,12 @@ Popup {
     }
 
     function formatSpeed(mbps) {
-        if (!mbps || mbps <= 0) return "—"
+        if (!mbps || mbps <= 0) return "\u2014"
         return mbps.toFixed(1) + " MiB/s"
     }
 
     function formatEta(seconds) {
-        if (seconds === null || seconds === undefined || seconds <= 0) return "—"
+        if (seconds === null || seconds === undefined || seconds <= 0) return "\u2014"
         const h = Math.floor(seconds / 3600)
         const m = Math.floor((seconds % 3600) / 60)
         const s = Math.floor(seconds % 60)
@@ -625,22 +531,23 @@ Popup {
         const per = modal.progress.fileProgress || []
         return per[modal.chosenIdx] || 0
     }
+
     function chosenTotal() {
         for (const f of modal.files) if (f.idx === modal.chosenIdx) return f.lengthBytes
         return 0
     }
 
     function connectionLabel() {
-        if (modal.progress === null) return "Waiting for stats…"
+        if (modal.progress === null) return "Waiting for stats\u2026"
         if (modal.progress.state === "error") return "Error"
         if (modal.paused || modal.progress.state === "paused") return "Paused"
         if (modal.progress.peersLive > 0) return "Connected (" + modal.progress.peersLive + " peers)"
-        if (modal.progress.peersConnecting > 0 || modal.progress.peersQueued > 0) return "Connecting…"
+        if (modal.progress.peersConnecting > 0 || modal.progress.peersQueued > 0) return "Connecting\u2026"
         return "Searching for peers"
     }
 
     function healthLabel() {
-        if (modal.progress === null) return "—"
+        if (modal.progress === null) return "\u2014"
         if (modal.progress.state === "error") return "Error"
         if (modal.paused) return "Paused"
         if (modal.staleSeconds >= 10) return "Stalled"
@@ -739,9 +646,6 @@ Popup {
         playingUrl = ""
         progress = null
         speedHistory = []
-        // Do NOT clear `releases` or call search(): the list is cached, so
-        // returning to it is instant. Just make sure we are not stuck in the
-        // searching state from the previous play.
         searching = false
         error = ""
         stage = "releases"
@@ -754,25 +658,13 @@ Popup {
             backend.removeTorrent(torrentId)
             torrentId = -1
         }
-        // Do NOT assign `playerLoader.active = false` here. That property is a
-        // BINDING (`active: modal.stage === "play"`), and assigning it
-        // imperatively DESTROYS the binding permanently. The first close would
-        // then pin `active` to a literal `false`, so re-opening the modal would
-        // never recreate the player item (`playerLoader.item` stays null) and
-        // playback would hang at 00:00. Setting `stage = "releases"` below
-        // already drives the binding to false, which is what actually unloads
-        // the item.
         playingUrl = ""
-        // Return to the releases stage and clear any in-flight "searching"
-        // state, so re-opening the modal starts from a clean, cached list
-        // instead of a stuck spinner or a dead player stage.
         chosenIdx = -1
         files = []
         progress = null
         speedHistory = []
         searching = false
         stage = "releases"
-        // A one-shot resume must not survive into the next open.
         resumeLast = false
         resumeFileIdx = -1
         resumeHandled = false
@@ -807,8 +699,6 @@ Popup {
             modal.titles = JSON.parse(modal.backend.titleForms(
                 t.userPreferred || "", t.english || "", t.romaji || ""))
             modal.episodeThumbnail = parsed.coverImage || ""
-            // A resume goes straight to the remembered torrent; a release
-            // search here would spin up a list nobody sees.
             if (!modal.resumeLast) modal.search()
         }
 
@@ -841,9 +731,6 @@ Popup {
         function onProbeDone() { modal.probing = false }
 
         function onTorrentAdded(json) {
-            // The search is over the moment the magnet resolved: clear the
-            // "searching" flag here too, or it stays true forever and the
-            // releases stage shows a permanent spinner after a play.
             modal.searching = false
             const handle = JSON.parse(json)
             if (modal.autoPlay) {
@@ -862,8 +749,6 @@ Popup {
             modal.torrentId = handle.id
             modal.files = handle.files || []
             modal.stage = "files"
-            // A resume plays the exact file that was last watched; anything
-            // else (a fresh pick) falls back to the episode matcher.
             if (modal.resumeLast && modal.resumeFileIdx >= 0
                     && modal.resumeFileIdx < modal.files.length) {
                 modal.resumeLast = false
@@ -875,8 +760,6 @@ Popup {
             if (picked >= 0) modal.play(picked)
         }
 
-        // The remembered release reply. A resume adds its magnet straight away
-        // (skipping the release list); a miss falls back to a normal search.
         function onLastReleaseReady(json) {
             if (!modal.resumeLast) return
             const release = JSON.parse(json)
@@ -888,7 +771,6 @@ Popup {
                 modal.searching = true
                 modal.backend.addMagnet(release.magnet)
             } else {
-                // Nothing remembered: fall through to the usual picker.
                 modal.resumeLast = false
                 modal.searching = false
                 if (loadedAnimeId !== modal.animeId) {
@@ -911,10 +793,6 @@ Popup {
             modal.stage = "play"
             modal.backend.holdTorrent(modal.torrentId)
             modal.loadStream()
-            // Playback is starting: record the work as the most recently
-            // opened (drives the Continue Watching order and the resume disc),
-            // remember the release so a future resume can reselect it, and
-            // advance its AniList progress so the row stays in step.
             if (modal.backend && modal.animeId > 0) {
                 modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber)
                 modal.backend.setListEntry(modal.animeId, "current", modal.episodeNumber)
@@ -924,18 +802,14 @@ Popup {
                         modal.fileNameFor(modal.chosenIdx))
                 }
             }
-            // Apply the saved position for this episode, per the resume setting.
             modal.resumeHandled = false
             modal.requestResume()
         }
 
-        // The saved positions reply. Match the current work+episode and apply
-        // the resume behaviour for it (ask / seek / fresh).
         function onWatchPositionsReady(json) {
             const all = JSON.parse(json) || {}
             const saved = all[String(modal.animeId)]
             if (!saved) return
-            // Only resume the episode being played.
             if (saved.episode !== undefined && saved.episode !== null
                     && saved.episode !== modal.episodeNumber) return
             if (modal.resumeHandled) return
@@ -1161,13 +1035,13 @@ Popup {
                         topPadding: 30
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: "◌"
+                            text: "\u25CC"
                             color: Theme.accent
                             font.pixelSize: 26
                         }
                         Text {
                             anchors.horizontalCenter: parent.horizontalCenter
-                            text: "Searching indexers…"
+                            text: "Searching indexers\u2026"
                             color: Theme.inkMuted
                             font.pixelSize: 12
                         }
@@ -1190,7 +1064,7 @@ Popup {
                         TextField {
                             id: releaseFilter
                             Layout.fillWidth: true
-                            placeholderText: "Filter releases…"
+                            placeholderText: "Filter releases\u2026"
                             color: Theme.ink
                             placeholderTextColor: Theme.inkFaint
                             font.pixelSize: 12
@@ -1315,7 +1189,7 @@ Popup {
                                     border.color: Theme.glassBorder
                                     Text {
                                         anchors.centerIn: parent
-                                        text: "⧉"
+                                        text: "\u29C9"
                                         color: copyMouse.containsMouse ? Theme.accent : Theme.inkMuted
                                         font.pixelSize: 12
                                     }
@@ -1336,7 +1210,7 @@ Popup {
                                     border.color: Theme.glassBorder
                                     Text {
                                         anchors.centerIn: parent
-                                        text: "⤓"
+                                        text: "\u2913"
                                         color: saveMouse.containsMouse ? Theme.accent : Theme.inkMuted
                                         font.pixelSize: 13
                                     }
@@ -1367,12 +1241,11 @@ Popup {
                     visible: modal.stage === "files" || modal.stage === "play"
                     spacing: 12
 
-                    // Viewport Container
+                    // Responsive Viewport Container (Claims all available height)
                     Item {
                         id: playerViewport
                         Layout.fillWidth: true
-                        Layout.fillHeight: modal.stage === "play" && modal.fullscreen
-                        Layout.preferredHeight: (modal.stage === "play" && !modal.fullscreen) ? 420 : 0
+                        Layout.fillHeight: true
                         visible: modal.stage === "play"
                         clip: true
 
@@ -1385,13 +1258,6 @@ Popup {
                             onLoaded: modal.loadStream()
                         }
 
-                        // No `renderReadyChanged` handler here: the item owns
-                        // the deferral now. A `loadfile` issued before the
-                        // context exists is queued in `pendingLoad_` and
-                        // replayed from `markRenderReady`, so re-loading here
-                        // would only issue the same `loadfile` twice.
-
-                        // Pointer wake handler, click-to-pause & synchronized blank cursor hiding
                         MouseArea {
                             id: viewportMouseArea
                             anchors.fill: parent
@@ -1401,8 +1267,6 @@ Popup {
                             onPositionChanged: modal.wakeChrome()
                             onClicked: {
                                 modal.wakeChrome()
-                                // A click on the video dismisses the chapter
-                                // dropdown (it is otherwise Escape / re-tap only).
                                 bottomControls.closeChapterMenu()
                                 if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
                             }
@@ -1432,7 +1296,7 @@ Popup {
                                 anchors.rightMargin: 16
 
                                 Text {
-                                    text: "Episode " + modal.episodeNumber + " — " + modal.releaseTitle
+                                    text: "Episode " + modal.episodeNumber + " \u2014 " + modal.releaseTitle
                                     color: Theme.ink
                                     font.pixelSize: 13
                                     font.bold: true
@@ -1471,10 +1335,7 @@ Popup {
                             onOpenInfo: modal.infoOpen = !modal.infoOpen
                         }
 
-                        // 3b. OVERLAY LAYER: Video-details card, top-right of
-                        // the viewport. Lives here (not in the OSD bar) so it
-                        // is anchored to the video, not to the controls, and
-                        // stays put regardless of the bar's layout.
+                        // Video details overlay
                         GlassPanel {
                             id: infoCard
                             visible: modal.infoOpen
@@ -1502,7 +1363,7 @@ Popup {
                                         font.bold: true
                                     }
                                     Text {
-                                        text: "✕"
+                                        text: "\u2715"
                                         color: infoCloseMouse.containsMouse ? Theme.accent : Theme.inkMuted
                                         font.pixelSize: 13
                                         MouseArea {
@@ -1516,10 +1377,6 @@ Popup {
                                 }
 
                                 Repeater {
-                                    // `infoTick` is read first so the binding
-                                    // re-evaluates every second while open,
-                                    // picking up properties that appear once
-                                    // playback actually starts.
                                     model: {
                                         const _ = modal.infoTick
                                         return [
@@ -1558,8 +1415,7 @@ Popup {
                             }
                         }
 
-                        // 3c. OVERLAY LAYER: Resume prompt. Shown only in "ask"
-                        // mode when a saved position exists for this episode.
+                        // Resume prompt
                         GlassPanel {
                             id: resumePrompt
                             visible: modal.resumePromptOpen && modal.pendingResume !== null
@@ -1586,7 +1442,6 @@ Popup {
                                     font.bold: true
                                 }
 
-                                // Continue: seek to the saved position.
                                 Rectangle {
                                     height: 30
                                     radius: 9
@@ -1613,9 +1468,6 @@ Popup {
                                     }
                                 }
 
-                                // Dismiss: leave playback where it is (the file
-                                // starts from 0 anyway, so this is "no resume",
-                                // not a deliberate rewind).
                                 Rectangle {
                                     height: 30
                                     radius: 9
@@ -1645,7 +1497,7 @@ Popup {
                             }
                         }
 
-                        // 4. OVERLAY LAYER: Floating "Skip Intro / ED" Badge
+                        // Skip intro/ED badge
                         GlassPanel {
                             id: skipOverlay
                             anchors.bottom: parent.bottom
@@ -1660,13 +1512,10 @@ Popup {
                             readonly property real pos: playerLoader.item ? (playerLoader.item.position || 0) : 0
                             readonly property real dur: playerLoader.item ? (playerLoader.item.duration || 0) : 0
                             
-                            // Find the current chapter title from the player's
-                            // observed chapter list (same source the OSD uses).
                             readonly property string chap: {
                                 if (!playerLoader.item) return ""
                                 const chapters = playerLoader.item.chapterList
                                 if (chapters && chapters.length > 0) {
-                                    // Find which chapter we're currently in
                                     for (var i = chapters.length - 1; i >= 0; i--) {
                                         const ch = chapters[i]
                                         if (ch && ch.time !== undefined && ch.time <= pos) {
@@ -1677,10 +1526,6 @@ Popup {
                                 return ""
                             }
                             
-                            // Chapter-based ONLY. The old time heuristic fired
-                            // during the cold-open intro (pos 10-210s) and
-                            // wrongly offered "SKIP INTRO"; chapters are now
-                            // reliable, so match on the current chapter title.
                             readonly property bool isOpTime: /op|opening/i.test(chap)
                             readonly property bool isEdTime: /ed|ending|outro/i.test(chap)
                             
@@ -1713,7 +1558,7 @@ Popup {
                             }
                         }
 
-                        // 5. OVERLAY LAYER: Dynamic Center Action OSD Toast
+                        // OSD Toast
                         Rectangle {
                             id: osdToast
                             anchors.centerIn: parent
@@ -1782,7 +1627,7 @@ Popup {
                             }
                         }
 
-                        // 6. OVERLAY LAYER: Buffering Indicator Toast
+                        // Buffering toast
                         GlassPanel {
                             anchors.centerIn: parent
                             z: 15
@@ -1798,7 +1643,7 @@ Popup {
 
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: "◌"
+                                    text: "\u25CC"
                                     color: Theme.accent
                                     font.pixelSize: 18
                                     NumberAnimation on rotation {
@@ -1810,7 +1655,7 @@ Popup {
                                 }
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: "Buffering… " + modal.percent(modal.fileFraction()) + "%"
+                                    text: "Buffering\u2026 " + modal.percent(modal.fileFraction()) + "%"
                                     color: Theme.ink
                                     font.pixelSize: 13
                                     font.bold: true
@@ -1823,7 +1668,7 @@ Popup {
                     GlassPanel {
                         Layout.fillWidth: true
                         visible: !modal.fullscreen
-                        implicitHeight: torrentStatsCol.implicitHeight + 20
+                        implicitHeight: torrentStatsCol.implicitHeight + 16
                         strong: true
 
                         ColumnLayout {
@@ -1843,8 +1688,8 @@ Popup {
                                 Text {
                                     text: modal.paused ? "Paused"
                                         : (modal.stage === "play"
-                                            ? (modal.playerBuffering() ? "Buffering…" : "Playing")
-                                            : (modal.fileFraction() >= 1 ? "Fully buffered" : "Buffering…"))
+                                            ? (modal.playerBuffering() ? "Buffering\u2026" : "Playing")
+                                            : (modal.fileFraction() >= 1 ? "Fully buffered" : "Buffering\u2026"))
                                     color: Theme.ink
                                     font.pixelSize: 12
                                     font.bold: true
@@ -1953,7 +1798,7 @@ Popup {
                         Layout.fillWidth: true
                         visible: !modal.fullscreen
                         Text {
-                            text: "← Back to releases"
+                            text: "\u2190 Back to releases"
                             color: backMouse.containsMouse ? Theme.accent : Theme.inkMuted
                             font.pixelSize: 11
                             MouseArea {
@@ -1972,9 +1817,12 @@ Popup {
                         }
                     }
 
+                    // Compact File List During Playback
                     ListView {
                         Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        Layout.fillHeight: modal.stage !== "play"
+                        Layout.preferredHeight: modal.stage === "play" ? 120 : 220
+                        Layout.maximumHeight: modal.stage === "play" ? 150 : -1
                         visible: !modal.fullscreen
                         clip: true
                         spacing: 6
@@ -1996,7 +1844,7 @@ Popup {
                                 spacing: 10
 
                                 Text {
-                                    text: "▸"
+                                    text: "\u25B8"
                                     color: Theme.accent
                                     font.pixelSize: 12
                                 }
@@ -2025,7 +1873,7 @@ Popup {
                                     Text {
                                         id: playingText
                                         anchors.centerIn: parent
-                                        text: modal.stage === "play" ? "Playing" : "Loading…"
+                                        text: modal.stage === "play" ? "Playing" : "Loading\u2026"
                                         color: "white"
                                         font.pixelSize: 10
                                         font.bold: true

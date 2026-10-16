@@ -11,60 +11,39 @@ Item {
     property real bufferedFraction: 0
     property bool fullscreen: false
     property var chapterList: []
+    property bool showRemainingTime: false
 
     signal openSettings()
     signal toggleFullscreen()
     signal triggerOSD(string icon, string label)
     signal skipIntro()
     signal skipEnding()
-    /// The modal hosts the video-details card (top-right of the viewport),
-    /// because it owns the viewport geometry; the OSD only asks for it.
     signal openInfo()
 
     implicitHeight: 80
     property int tick: 0
 
-    /// True while the chapter dropdown is open. The modal reads this to keep
-    /// the OSD bar on screen (its auto-hide timer would otherwise hide the bar
-    /// -- and the popup anchored to it -- mid-selection).
     readonly property bool chapterMenuOpen: chapterMenuPopup.visible
 
-    /// Close the chapter dropdown, e.g. when the video is clicked.
     function closeChapterMenu() { chapterMenuPopup.close() }
 
     Connections {
         target: bar.player
         function onStateChanged() {
-            // The polled readouts (time, speed, volume) ride on the shared
-            // stateChanged signal; chapters do NOT — they arrive on their own
-            // signal below, because the demuxer fills chapter-list *after*
-            // duration becomes non-zero.
             bar.tick++
         }
-        // The moment mpv reports a new chapter-list, refresh. This is the fix
-        // for chapters never appearing: previously we refetched only when
-        // `duration` changed, which happens before chapters exist.
         function onChapterListChanged() {
             bar.syncChapterList()
         }
     }
 
-    // Re-sync whenever the player item is (re)assigned, and once when it first
-    // appears, so a file already loaded before the connection fired is caught.
     onPlayerChanged: if (bar.player) bar.syncChapterList()
 
-    // Normalize the C++ `chapterList` (QVariantList<QVariantMap> -> a JS array
-    // of objects) into the `{ title, time }` shape the rest of the bar uses.
     function syncChapterList() {
         if (!bar.player || bar.player.chapterList === undefined) {
             bar.chapterList = []
             return
         }
-        // A QVariantList exposed as a Q_PROPERTY arrives in QML as an
-        // array-LIKE sequence: it has `.length` and is indexable, but
-        // `Array.isArray()` is false. Requiring Array.isArray here silently
-        // dropped the whole list, which is why the chapter UI never appeared
-        // and the time-based OP/ED heuristic took over.
         var raw = bar.player.chapterList
         if (raw !== null && raw !== undefined && raw.length !== undefined) {
             var normalized = []
@@ -96,10 +75,6 @@ Item {
             }
             if (currentTitle.length > 0) return currentTitle
         }
-
-        // No embedded chapters -> no section label. There used to be a
-        // hardcoded intro/OP/ED timing guess here, but it was wrong more often
-        // than right (chapter boundaries vary per release), so it is gone.
         return ""
     }
 
@@ -121,6 +96,16 @@ Item {
         return mm + ":" + ss
     }
 
+    function formattedTimeDisplay() {
+        const currentPos = bar.pos()
+        const totalDur = bar.dur()
+        if (bar.showRemainingTime) {
+            const remaining = Math.max(0, totalDur - currentPos)
+            return "-" + bar.fmt(remaining)
+        }
+        return bar.fmt(currentPos)
+    }
+
     function volReadout() {
         if (bar.isMuted()) return "Muted"
         return Math.round(bar.vol()) + "%"
@@ -133,233 +118,248 @@ Item {
 
         ColumnLayout {
             anchors.fill: parent
-            // Slightly tighter inner margin so the transport row keeps a gap
-            // to the panel border instead of overflowing it at narrow widths.
             anchors.margins: 8
             spacing: 6
 
-            // --- Timeline Seek Bar ---------------------------------
-            Item {
-                id: seek
+            // --- Timeline Seek Bar & Floating Time Badges ------------------
+            RowLayout {
                 Layout.fillWidth: true
-                height: 18
+                spacing: 8
 
-                property bool dragging: false
-                property bool hovering: false
-                property real hoverFraction: 0
-                property real dragFraction: 0
+                // Current / Remaining Position Timestamp on Timeline
+                Text {
+                    text: bar.formattedTimeDisplay()
+                    color: Theme.accent
+                    font.pixelSize: 11
+                    font.family: "monospace"
+                    font.bold: true
 
-                readonly property real hoverTime: (seek.dragging ? seek.dragFraction : seek.hoverFraction) * bar.dur()
-                readonly property real fraction: {
-                    if (seek.dragging) return seek.dragFraction
-                    const d = bar.dur()
-                    if (d <= 0) return 0
-                    return Math.min(Math.max(bar.pos() / d, 0), 1)
+                    ToolTip.visible: timeHover.containsMouse
+                    ToolTip.text: bar.showRemainingTime ? "Click to show elapsed time" : "Click to show remaining time"
+                    ToolTip.delay: 300
+
+                    MouseArea {
+                        id: timeHover
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: bar.showRemainingTime = !bar.showRemainingTime
+                    }
                 }
 
-                // Floating Video Preview & Section Title Tooltip Card
-                Rectangle {
-                    id: hoverTooltip
-                    visible: (seek.hovering || seek.dragging) && bar.dur() > 0
-                    z: 30
-                    x: Math.min(Math.max(0, (seek.width * (seek.dragging ? seek.dragFraction : seek.hoverFraction)) - width / 2), seek.width - width)
-                    anchors.bottom: seek.top
-                    anchors.bottomMargin: 8
-                    width: 160
-                    height: 118
-                    radius: 10
-                    color: Qt.rgba(0.07, 0.07, 0.11, 0.95)
-                    border.width: 1
-                    border.color: Theme.glassBorder
-                    clip: true
+                // Seek Track Area
+                Item {
+                    id: seek
+                    Layout.fillWidth: true
+                    height: 18
 
-                    readonly property string chapTitle: bar.getChapterAtTime(seek.hoverTime)
+                    property bool dragging: false
+                    property bool hovering: false
+                    property real hoverFraction: 0
+                    property real dragFraction: 0
 
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.margins: 4
-                        spacing: 4
+                    readonly property real hoverTime: (seek.dragging ? seek.dragFraction : seek.hoverFraction) * bar.dur()
+                    readonly property real fraction: {
+                        if (seek.dragging) return seek.dragFraction
+                        const d = bar.dur()
+                        if (d <= 0) return 0
+                        return Math.min(Math.max(bar.pos() / d, 0), 1)
+                    }
 
-                        // Video Thumbnail Preview Canvas
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 88
-                            radius: 6
-                            color: "black"
-                            clip: true
+                    // Floating Video Preview & Section Title Tooltip Card
+                    Rectangle {
+                        id: hoverTooltip
+                        visible: (seek.hovering || seek.dragging) && bar.dur() > 0
+                        z: 30
+                        x: Math.min(Math.max(0, (seek.width * (seek.dragging ? seek.dragFraction : seek.hoverFraction)) - width / 2), seek.width - width)
+                        anchors.bottom: seek.top
+                        anchors.bottomMargin: 8
+                        width: 160
+                        height: 118
+                        radius: 10
+                        color: Qt.rgba(0.07, 0.07, 0.11, 0.95)
+                        border.width: 1
+                        border.color: Theme.glassBorder
+                        clip: true
 
-                            // ONE persistent preview player, created once and
-                            // kept alive. Creating and destroying an MpvObject
-                            // on every hover churned a fresh mpv render context
-                            // each time and crashed libmpv's FBO resize
-                            // (ra_gl_ctx_resize) on the render thread. A single
-                            // instance also means the stream is opened ONCE per
-                            // episode, not once per hover.
-                            MpvObject {
-                                id: previewPlayer
-                                anchors.fill: parent
-                                // Paint only while the tooltip is up; the render
-                                // context stays alive either way, so re-showing
-                                // it is free.
-                                visible: (seek.hovering || seek.dragging) && bar.dur() > 0
+                        readonly property string chapTitle: bar.getChapterAtTime(seek.hoverTime)
 
-                                function setupPreview() {
-                                    setProperty("pause", true)
-                                    setProperty("mute", true)
-                                    setProperty("aid", "no")
-                                    setProperty("sid", "no")
-                                    // Same race as the main player: loading
-                                    // before the render context exists makes
-                                    // the video output fail. Wait for ready.
-                                    if (renderReady && bar.playingUrl.length > 0)
-                                        command(["loadfile", bar.playingUrl, "replace"])
-                                }
-
-                                Component.onCompleted: setupPreview()
-                                onRenderReadyChanged: if (renderReady) setupPreview()
-                            }
-
-                            // Reload the preview only when the MAIN player's
-                            // stream changes -- never on hover.
-                            Connections {
-                                target: bar
-                                function onPlayingUrlChanged() {
-                                    if (previewPlayer && previewPlayer.renderReady
-                                            && bar.playingUrl.length > 0)
-                                        previewPlayer.command(["loadfile", bar.playingUrl, "replace"])
-                                }
-                            }
-
-                            // Debounce preview seeking so fast scrubbing does
-                            // not flood mpv with seek commands.
-                            Timer {
-                                id: previewSeekTimer
-                                interval: 60
-                                repeat: false
-                                onTriggered: {
-                                    if (previewPlayer && bar.dur() > 0)
-                                        previewPlayer.command(["seek", String(seek.hoverTime), "absolute+keyframes"])
-                                }
-                            }
-
-                            Connections {
-                                target: seek
-                                function onHoverTimeChanged() {
-                                    if (seek.hovering || seek.dragging) previewSeekTimer.restart()
-                                }
-                            }
-                        }
-
-                        // Section Name & Timestamp Text
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 18
-                            Layout.leftMargin: 4
-                            Layout.rightMargin: 4
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 4
                             spacing: 4
 
-                            Text {
+                            Rectangle {
                                 Layout.fillWidth: true
-                                text: hoverTooltip.chapTitle.length > 0 ? hoverTooltip.chapTitle : "Episode"
-                                color: Theme.accent
-                                font.pixelSize: 10
-                                font.bold: true
-                                elide: Text.ElideRight
+                                Layout.preferredHeight: 88
+                                radius: 6
+                                color: "black"
+                                clip: true
+
+                                MpvObject {
+                                    id: previewPlayer
+                                    anchors.fill: parent
+                                    visible: (seek.hovering || seek.dragging) && bar.dur() > 0
+
+                                    function setupPreview() {
+                                        setProperty("pause", true)
+                                        setProperty("mute", true)
+                                        setProperty("aid", "no")
+                                        setProperty("sid", "no")
+                                        if (renderReady && bar.playingUrl.length > 0)
+                                            command(["loadfile", bar.playingUrl, "replace"])
+                                    }
+
+                                    Component.onCompleted: setupPreview()
+                                    onRenderReadyChanged: if (renderReady) setupPreview()
+                                }
+
+                                Connections {
+                                    target: bar
+                                    function onPlayingUrlChanged() {
+                                        if (previewPlayer && previewPlayer.renderReady
+                                                && bar.playingUrl.length > 0)
+                                            previewPlayer.command(["loadfile", bar.playingUrl, "replace"])
+                                    }
+                                }
+
+                                Timer {
+                                    id: previewSeekTimer
+                                    interval: 60
+                                    repeat: false
+                                    onTriggered: {
+                                        if (previewPlayer && bar.dur() > 0)
+                                            previewPlayer.command(["seek", String(seek.hoverTime), "absolute+keyframes"])
+                                    }
+                                }
+
+                                Connections {
+                                    target: seek
+                                    function onHoverTimeChanged() {
+                                        if (seek.hovering || seek.dragging) previewSeekTimer.restart()
+                                    }
+                                }
                             }
 
-                            Text {
-                                text: bar.fmt(seek.hoverTime)
-                                color: Theme.ink
-                                font.pixelSize: 10
-                                font.bold: true
-                                font.family: "monospace"
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 18
+                                Layout.leftMargin: 4
+                                Layout.rightMargin: 4
+                                spacing: 4
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: hoverTooltip.chapTitle.length > 0 ? hoverTooltip.chapTitle : "Episode"
+                                    color: Theme.accent
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+
+                                Text {
+                                    text: bar.fmt(seek.hoverTime)
+                                    color: Theme.ink
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                    font.family: "monospace"
+                                }
                             }
                         }
                     }
-                }
 
-                // Background Track
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width
-                    height: 4
-                    radius: 2
-                    color: Theme.glassFillHover
-                }
-
-                // Buffered Progress
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width * Math.min(bar.bufferedFraction, 1)
-                    height: 4
-                    radius: 2
-                    color: Theme.glassBorderHover
-                }
-
-                // Played Progress
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width * seek.fraction
-                    height: 4
-                    radius: 2
-                    color: Theme.accent
-                }
-
-                // Embedded MKV Chapter Markers
-                Repeater {
-                    model: bar.chapterList
-                    delegate: Rectangle {
-                        required property var modelData
-                        readonly property real chTime: modelData.time || 0
-                        visible: bar.dur() > 0 && chTime > 0 && chTime < bar.dur()
-                        x: (chTime / bar.dur()) * seek.width - 1
+                    // Background Track
+                    Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 2
-                        height: 6
-                        radius: 1
-                        color: Qt.rgba(1, 1, 1, 0.6)
-                        z: 5
+                        width: parent.width
+                        height: 4
+                        radius: 2
+                        color: Theme.glassFillHover
                     }
-                }
 
-                // Scrubber Knob
-                Rectangle {
-                    visible: bar.dur() > 0
-                    x: Math.min(parent.width - width, Math.max(0, parent.width * seek.fraction - width / 2))
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 12
-                    height: 12
-                    radius: 6
-                    color: Theme.accent
-                    border.width: 2
-                    border.color: "white"
-                    z: 10
-                }
+                    // Buffered Progress
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width * Math.min(bar.bufferedFraction, 1)
+                        height: 4
+                        radius: 2
+                        color: Theme.glassBorderHover
+                    }
 
-                MouseArea {
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onEntered: seek.hovering = true
-                    onExited: seek.hovering = false
-                    onPositionChanged: function (mouse) {
-                        seek.hoverFraction = Math.min(Math.max(mouse.x / width, 0), 1)
-                        if (seek.dragging) {
+                    // Played Progress
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width * seek.fraction
+                        height: 4
+                        radius: 2
+                        color: Theme.accent
+                    }
+
+                    // Embedded Chapter Markers
+                    Repeater {
+                        model: bar.chapterList
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property real chTime: modelData.time || 0
+                            visible: bar.dur() > 0 && chTime > 0 && chTime < bar.dur()
+                            x: (chTime / bar.dur()) * seek.width - 1
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 2
+                            height: 6
+                            radius: 1
+                            color: Qt.rgba(1, 1, 1, 0.6)
+                            z: 5
+                        }
+                    }
+
+                    // Scrubber Knob
+                    Rectangle {
+                        visible: bar.dur() > 0
+                        x: Math.min(parent.width - width, Math.max(0, parent.width * seek.fraction - width / 2))
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 12
+                        height: 12
+                        radius: 6
+                        color: Theme.accent
+                        border.width: 2
+                        border.color: "white"
+                        z: 10
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onEntered: seek.hovering = true
+                        onExited: seek.hovering = false
+                        onPositionChanged: function (mouse) {
+                            seek.hoverFraction = Math.min(Math.max(mouse.x / width, 0), 1)
+                            if (seek.dragging) {
+                                seek.dragFraction = seek.hoverFraction
+                            }
+                        }
+                        onPressed: function (mouse) {
+                            seek.dragging = true
+                            seek.hoverFraction = Math.min(Math.max(mouse.x / width, 0), 1)
                             seek.dragFraction = seek.hoverFraction
                         }
-                    }
-                    onPressed: function (mouse) {
-                        seek.dragging = true
-                        seek.hoverFraction = Math.min(Math.max(mouse.x / width, 0), 1)
-                        seek.dragFraction = seek.hoverFraction
-                    }
-                    onReleased: {
-                        seek.dragging = false
-                        const d = bar.dur()
-                        if (bar.player !== null && d > 0) {
-                            bar.player.command(["seek", String(seek.dragFraction * d), "absolute"])
+                        onReleased: {
+                            seek.dragging = false
+                            const d = bar.dur()
+                            if (bar.player !== null && d > 0) {
+                                bar.player.command(["seek", String(seek.dragFraction * d), "absolute"])
+                            }
                         }
                     }
+                }
+
+                // Total Duration Timestamp on Timeline
+                Text {
+                    text: bar.fmt(bar.dur())
+                    color: Theme.inkMuted
+                    font.pixelSize: 11
+                    font.family: "monospace"
+                    font.bold: true
                 }
             }
 
@@ -368,7 +368,6 @@ Item {
                 Layout.fillWidth: true
                 spacing: 6
 
-                // Main Compact Play / Pause Button
                 Rectangle {
                     width: 32
                     height: 32
@@ -392,7 +391,6 @@ Item {
                     }
                 }
 
-                // Step & Jump Controls Pill
                 Rectangle {
                     height: 32
                     radius: 10
@@ -441,7 +439,6 @@ Item {
                     }
                 }
 
-                // Chapter Navigation Pill (prev/next chapter)
                 Rectangle {
                     visible: bar.chapterList.length > 0
                     height: 32
@@ -479,7 +476,6 @@ Item {
                     }
                 }
 
-                // Skip OP / ED Quick Buttons
                 Rectangle {
                     height: 32
                     radius: 10
@@ -507,21 +503,11 @@ Item {
                     }
                 }
 
-                // Timestamp Readout. Flexible + eliding so it absorbs the
-                // slack: when the row is tight it shrinks rather than pushing
-                // the right-hand buttons past the panel edge.
-                Text {
-                    text: bar.fmt(bar.pos()) + " / " + bar.fmt(bar.dur())
-                    color: Theme.inkMuted
-                    font.pixelSize: 11
-                    font.family: "monospace"
-                    font.bold: true
-                    Layout.leftMargin: 2
+                // Layout Spacer (pushes right-hand buttons to the right side)
+                Item {
                     Layout.fillWidth: true
-                    elide: Text.ElideRight
                 }
 
-                // Chapter Dropdown Menu
                 Rectangle {
                     visible: bar.chapterList.length > 0
                     id: chapterMenuBtn
@@ -576,22 +562,12 @@ Item {
                     Popup {
                         id: chapterMenuPopup
                         y: -height - 6
-                        // Keep the menu inside the bar. The button sits near
-                        // the right edge, so a fixed x: 0 pushes a 220px menu
-                        // past the window edge; shift it left just enough.
                         readonly property real btnLeftInBar: chapterMenuBtn.mapToItem(bar, 0, 0).x
                         x: Math.min(0, (bar.width - 8) - btnLeftInBar - width)
                         width: Math.max(220, chapterMenuBtn.width)
                         height: Math.min(320, chapMenuColumn.implicitHeight + 16)
-                        // Not modal: a modal popup dims the whole window, and
-                        // the chapter menu should not darken the video.
                         modal: false
                         focus: true
-                        // Escape only. With CloseOnPressOutside, pressing the
-                        // trigger button closed the popup on press and then
-                        // onClicked reopened it, so a second click never hid
-                        // it. Outside dismissal is handled by the viewport
-                        // click and the trigger toggle instead.
                         closePolicy: Popup.CloseOnEscape
                         background: Rectangle {
                             radius: 10
@@ -664,7 +640,6 @@ Item {
                     }
                 }
 
-                // Compact Volume Controls Pill
                 Rectangle {
                     height: 32
                     radius: 10
@@ -693,10 +668,6 @@ Item {
                         Slider {
                             id: volSlider
                             Layout.preferredWidth: 52
-                            // Non-focusable: a focusable Slider that is clicked
-                            // grabs keyboard focus and then swallows Space and
-                            // the arrow keys, so the player's pause/seek
-                            // shortcuts stopped firing. The mouse still drags it.
                             focusPolicy: Qt.NoFocus
                             from: 0
                             to: 130
@@ -720,7 +691,6 @@ Item {
                     }
                 }
 
-                // Utility Buttons
                 SquareButton {
                     icon: "info"
                     tip: "Video details"
