@@ -619,11 +619,17 @@ Popup {
         backend.getStreamUrl(torrentId, idx)
     }
 
+    // Pause / resume the TORRENT only.
+    //
+    // Deliberately does NOT touch the player. Pausing the download and pausing
+    // playback are independent: a reader may pause the torrent to save
+    // bandwidth while continuing to watch what is already buffered, or pause
+    // the video while the torrent keeps seeding. Coupling them meant this
+    // button silently froze the picture too.
     function togglePause() {
         if (torrentId < 0) return
         if (paused) { backend.resumeTorrent(torrentId); paused = false }
         else { backend.pauseTorrent(torrentId); paused = true }
-        if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
     }
 
     function stopPlayer() {
