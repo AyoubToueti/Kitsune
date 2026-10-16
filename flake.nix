@@ -76,10 +76,15 @@
 
           # Qt6: the migration target. `qtdeclarative` is QML/Quick.
           # `qtbase` gives QtCore/Gui/Widgets and the platform plugins.
+          # `qtsvg` supplies the SVG image-format PLUGIN, which is what lets a
+          # QML `Image` decode an SVG at runtime (the linked Qt6Svg library
+          # alone is not enough -- Qt loads the decoder as a plugin from
+          # `plugins/imageformats`).
           # No QtMultimedia -- playback is embedded libmpv (render API), so
           # Qt only needs to provide the window and the QML scene graph.
           qt6.qtbase
           qt6.qtdeclarative
+          qt6.qtsvg
 
           # Misc utilities
           git
@@ -164,6 +169,14 @@ QMAKEWRAP
           # since qt-build-utils reads the env var first.
           export QMAKE="$QT6_MERGED_PREFIX/qmake"
           export PATH="$QT6_MERGED_PREFIX:$PATH"
+
+          # Let Qt find its IMAGE-FORMAT plugins. On NixOS each Qt module keeps
+          # its plugins under `<prefix>/lib/qt-6/plugins`, and the merge above
+          # only links top-level `<prefix>/plugins` -- so the SVG decoder
+          # (`libqsvg.so`, shipped by qtsvg, not qtbase) never reaches the
+          # merged tree and a QML `Image` cannot render an SVG at runtime.
+          # Point QT_PLUGIN_PATH straight at the module's plugin dir.
+          export QT_PLUGIN_PATH="${pkgs.qt6.qtsvg}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
 
           echo "Kitsune dev shell"
           echo "  rustc : $(rustc --version)"

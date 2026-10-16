@@ -1,3 +1,6 @@
+// The global top bar: brand on the left, a search box in the centre, and the
+// My List / Filter pill plus the settings gear on the right. Rendered once by
+// the window above every page, so it never remounts on navigation.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -9,7 +12,6 @@ Rectangle {
     // Which segmented pill is active: "list", "filter", or "" for neither.
     property string activeRoute: ""
 
-    // Emitted when the reader submits the search box.
     signal search(string term)
     signal openHome()
     signal openMyList()
@@ -19,7 +21,8 @@ Rectangle {
     height: 60
     color: Theme.surfaceRaised
 
-    // Fullscreen backdrop to clear focus when clicking anywhere outside the search bar
+    // A full-window backdrop that clears the search field's focus when the
+    // reader clicks anywhere else.
     Item {
         id: focusBackdrop
         parent: Overlay.overlay
@@ -30,14 +33,14 @@ Rectangle {
         MouseArea {
             anchors.fill: parent
             propagateComposedEvents: true
-            onPressed: function(mouse) {
+            onPressed: function (mouse) {
                 bar.forceActiveFocus()
                 mouse.accepted = false
             }
         }
     }
 
-    // Global keyboard shortcut to focus search
+    // Focus the search box from anywhere.
     Shortcut {
         sequences: ["Ctrl+K", "Cmd+K"]
         onActivated: {
@@ -46,14 +49,14 @@ Rectangle {
         }
     }
 
-    // Escape keyboard shortcut to clear search focus
+    // Escape clears the search focus.
     Shortcut {
         enabled: searchField.activeFocus
         sequence: "Escape"
         onActivated: bar.forceActiveFocus()
     }
 
-    // Hairline bottom border
+    // Hairline bottom border.
     Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
@@ -62,13 +65,13 @@ Rectangle {
         color: Theme.borderSubtle
     }
 
-    // --- Left Section: Brand ------------------------------------------
+    // --- Left: brand ----------------------------------------------------
     Row {
         id: leftSection
         anchors.left: parent.left
         anchors.leftMargin: Theme.pad
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 10
+        spacing: 12
 
         Item {
             width: brandRow.implicitWidth
@@ -78,24 +81,26 @@ Rectangle {
                 id: brandRow
                 spacing: 10
 
-                Rectangle {
-                    width: 34
-                    height: 34
-                    radius: 10
+                // The crest, embedded from `assets/logo.svg` (see build.rs).
+                // Vector, so it stays sharp at any size or DPI; it needs the
+                // qtsvg image-format plugin at runtime (see flake.nix).
+                Item {
+                    width: 60
+                    height: 60
+                    anchors.verticalCenter: parent.verticalCenter
                     scale: brandMouse.containsMouse ? 1.05 : 1.0
-                    gradient: Gradient {
-                        GradientStop { position: 0.0; color: "#ff2a5f" }
-                        GradientStop { position: 1.0; color: "#ff7e40" }
-                    }
 
                     Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
 
-                    Text {
-                        anchors.centerIn: parent
-                        text: "K"
-                        color: "white"
-                        font.pixelSize: 18
-                        font.bold: true
+                    Image {
+                        anchors.fill: parent
+                        source: "qrc:/qt/qml/com/kitsune/app/assets/logo.svg"
+                        // 2x the display size, so a HiDPI screen still gets a
+                        // crisp raster from the vector.
+                        sourceSize.width: 120
+                        sourceSize.height: 120
+                        fillMode: Image.PreserveAspectFit
+                        smooth: true
                     }
                 }
 
@@ -103,7 +108,7 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "Kitsune"
                     color: brandMouse.containsMouse ? Theme.accent : Theme.ink
-                    font.pixelSize: 20
+                    font.pixelSize: 22
                     font.bold: true
 
                     Behavior on color { ColorAnimation { duration: 150 } }
@@ -123,19 +128,27 @@ Rectangle {
         }
     }
 
-    // --- Center Section: Search Bar -----------------------------------
+    // --- Centre: search -------------------------------------------------
     Rectangle {
         id: searchContainer
         anchors.centerIn: parent
         width: Math.min(420, parent.width - leftSection.width - rightSection.width - 48)
         height: 36
         radius: 18
-        color: searchField.activeFocus ? Theme.surface : Theme.surfaceHover
+        color: searchField.activeFocus
+            ? Theme.surface
+            : (searchHover.hovered ? Theme.surfaceHover : Qt.rgba(1, 1, 1, 0.03))
         border.width: 1
-        border.color: searchField.activeFocus ? Theme.accent : Theme.borderSubtle
+        border.color: searchField.activeFocus
+            ? Theme.accent
+            : (searchHover.hovered
+                ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.5)
+                : Theme.borderSubtle)
 
         Behavior on color { ColorAnimation { duration: 150 } }
         Behavior on border.color { ColorAnimation { duration: 150 } }
+
+        HoverHandler { id: searchHover }
 
         RowLayout {
             anchors.fill: parent
@@ -143,14 +156,19 @@ Rectangle {
             anchors.rightMargin: 8
             spacing: 8
 
-            Text {
+            // A magnifier glyph drawn inline as an SVG data URI. URL-encoded so
+            // the `#`/`<` cannot break the URI. Needs the same qtsvg plugin.
+            Image {
                 Layout.alignment: Qt.AlignVCenter
-                verticalAlignment: Text.AlignVCenter
-                text: "⌕"
-                color: searchField.activeFocus ? Theme.accent : Theme.inkMuted
-                font.pixelSize: 16
+                width: 14
+                height: 14
+                source: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'><path d='M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z'/></svg>"
+                sourceSize.width: 28
+                sourceSize.height: 28
+                smooth: true
+                opacity: searchField.activeFocus ? 1.0 : (searchHover.hovered ? 0.85 : 0.65)
 
-                Behavior on color { ColorAnimation { duration: 150 } }
+                Behavior on opacity { NumberAnimation { duration: 150 } }
             }
 
             TextField {
@@ -171,7 +189,7 @@ Rectangle {
                 Keys.onEscapePressed: bar.forceActiveFocus()
             }
 
-            // Clear Search Button
+            // Clear button, shown once there is text.
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
                 visible: searchField.text.length > 0
@@ -182,7 +200,7 @@ Rectangle {
 
                 Text {
                     anchors.centerIn: parent
-                    text: "✕"
+                    text: "\u2715"
                     color: Theme.inkMuted
                     font.pixelSize: 11
                 }
@@ -199,7 +217,7 @@ Rectangle {
                 }
             }
 
-            // Shortcut Hint Badge
+            // Shortcut hint, shown while the box is empty and unfocused.
             Rectangle {
                 Layout.alignment: Qt.AlignVCenter
                 visible: searchField.text.length === 0 && !searchField.activeFocus
@@ -213,7 +231,7 @@ Rectangle {
                 Text {
                     id: shortcutText
                     anchors.centerIn: parent
-                    text: "⌘K"
+                    text: "\u2318K"
                     color: Theme.inkFaint
                     font.pixelSize: 10
                     font.bold: true
@@ -222,7 +240,7 @@ Rectangle {
         }
     }
 
-    // --- Right Section: Segmented Pill & Settings ----------------------
+    // --- Right: segmented pill + settings -------------------------------
     Row {
         id: rightSection
         anchors.right: parent.right
@@ -230,7 +248,8 @@ Rectangle {
         anchors.verticalCenter: parent.verticalCenter
         spacing: 16
 
-        // Segmented My List / Filter pill
+        // The My List / Filter pill, with an indicator that slides to the
+        // active half.
         Rectangle {
             width: 184
             height: 36
@@ -262,7 +281,9 @@ Rectangle {
                     Text {
                         anchors.centerIn: parent
                         text: "My List"
-                        color: bar.activeRoute === "list" ? "white" : (listMouse.containsMouse ? Theme.ink : Theme.inkMuted)
+                        color: bar.activeRoute === "list"
+                            ? "white"
+                            : (listMouse.containsMouse ? Theme.ink : Theme.inkMuted)
                         font.pixelSize: 12
                         font.bold: true
 
@@ -288,7 +309,9 @@ Rectangle {
                     Text {
                         anchors.centerIn: parent
                         text: "Filter"
-                        color: bar.activeRoute === "filter" ? "white" : (filterMouse.containsMouse ? Theme.ink : Theme.inkMuted)
+                        color: bar.activeRoute === "filter"
+                            ? "white"
+                            : (filterMouse.containsMouse ? Theme.ink : Theme.inkMuted)
                         font.pixelSize: 12
                         font.bold: true
 
@@ -309,7 +332,7 @@ Rectangle {
             }
         }
 
-        // Settings
+        // Settings gear.
         Rectangle {
             width: 36
             height: 36
@@ -324,7 +347,7 @@ Rectangle {
             Text {
                 id: settingsIcon
                 anchors.centerIn: parent
-                text: "⚙"
+                text: "\u2699"
                 color: settingsMouse.containsMouse ? Theme.accent : Theme.inkMuted
                 font.pixelSize: 17
                 rotation: settingsMouse.containsMouse ? 45 : 0

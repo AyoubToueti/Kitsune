@@ -44,6 +44,15 @@ fn main() {
             .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true)),
     )
     .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])
+    // The brand mark, embedded so the UI can use it without shipping a loose
+    // file next to the binary. `qrc_resources` inherits the QML module's
+    // prefix, so these land at
+    // qrc:/qt/qml/com/kitsune/app/assets/logo.{png,svg}.
+    //
+    // Both are shipped: the SVG scales to any size without blurring, but it
+    // needs the qtsvg image-format plugin at runtime (see flake.nix's
+    // QT_PLUGIN_PATH), so the PNG stays as a fallback for the window icon.
+    .qrc_resources(["assets/logo.png", "assets/logo.svg"])
     // Link QtQuick so its headers (QQuickWindow, QQuickFramebufferObject) are on
     // the include path, and QtOpenGL for QOpenGLFramebufferObject (the mpv
     // render target).
