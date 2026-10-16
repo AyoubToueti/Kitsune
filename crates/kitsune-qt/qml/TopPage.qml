@@ -11,28 +11,47 @@ Item {
 
     signal openAnime(int id)
 
+    // The ranked list. Loaded 50 at a time, capped at 100: reaching the end
+    // of the visible rows fetches the next page until the cap or AniList runs
+    // out, whichever comes first.
+    readonly property int perPage: 50
+    readonly property int maxItems: 100
+    property int pageNumber: 1
+    property bool loading: false
+    property bool hasMore: true
+
     ListModel { id: rows }
 
     Connections {
         target: page.backend
         function onListReady(json) {
-            const items = JSON.parse(json)
-            rows.clear()
+            const pageObj = JSON.parse(json)
+            const items = (pageObj && pageObj.items) ? pageObj.items : []
+            page.loading = false
+            // A first page replaces; a later page appends, so the existing
+            // rows keep their rank and scroll position.
+            if (page.pageNumber === 1) rows.clear()
+            const base = rows.count
             for (let i = 0; i < items.length; i++) {
                 const item = items[i]
                 rows.append({
                     "id": item.id,
-                    "rank": i + 1,
-                    "title": displayTitle(item),
+                    "rank": base + i + 1,
+                    "title": page.displayTitle(item),
                     "score": item.averageScore || 0,
                     "cover": item.coverImage || "",
                     "format": item.format || "",
                     "episodes": item.episodeCount || 0,
                 })
             }
-            status.text = items.length + " titles"
+            // Stop when AniList says there is no next page, or the cap is hit.
+            const info = pageObj ? pageObj.pageInfo : null
+            page.hasMore = (info ? info.hasNextPage !== false : true)
+                && rows.count < page.maxItems
+            status.text = rows.count + " titles"
         }
         function onListFailed(message) {
+            page.loading = false
             status.text = "Failed: " + message
         }
     }
@@ -42,9 +61,17 @@ Item {
         return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
     }
 
-    Component.onCompleted: {
-        if (backend) backend.getList("topRated", 50)
+    // Fetch a page of the ranked list. Guarded so a scroll burst does not
+    // fire several overlapping requests.
+    function loadPage(number) {
+        if (!backend || loading) return
+        if (number > 1 && !hasMore) return
+        loading = true
+        pageNumber = number
+        backend.getListPaged("topRated", number, perPage)
     }
+
+    Component.onCompleted: loadPage(1)
 
     ColumnLayout {
         anchors.fill: parent
@@ -161,6 +188,24 @@ Item {
                 MouseArea {
                     anchors.fill: parent
                     onClicked: page.openAnime(model.id)
+                }
+            }
+
+            // Fetch the next page when the last row comes into view. The cap
+            // and the `hasMore` flag both live in `loadPage`, so an overshoot
+            // here is harmless.
+            onAtYEndChanged: {
+                if (atYEnd && page.hasMore) page.loadPage(page.pageNumber + 1)
+            }
+
+            footer: Item {
+                width: ListView.view.width
+                height: page.loading ? 48 : 0
+                Text {
+                    anchors.centerIn: parent
+                    text: "Loading…"
+                    color: Theme.inkFaint
+                    font.pixelSize: 13
                 }
             }
         }
