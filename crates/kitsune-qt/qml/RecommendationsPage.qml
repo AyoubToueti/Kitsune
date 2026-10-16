@@ -24,13 +24,18 @@ Item {
     property bool hasMore: true
     property string error: ""
 
-    // The loaded recommendations, as a plain JS array of `RecommendedAnime`.
+    // The loaded recommendations, as a ListModel of `{ recJson }` rows.
     //
-    // Deliberately NOT a `ListModel`: a ListModel coerces a role holding a
-    // nested object to a string, so `modelData.rec.anime` came back undefined
-    // and every card rendered "Untitled". A plain array keeps the objects
-    // intact and the delegate receives each one whole.
-    property var items: []
+    // A ListModel (not a plain array) so appending a page emits an incremental
+    // `rowsInserted` signal and the GridView KEEPS its scroll position.
+    // Reassigning a plain array replaces the whole model, which resets the
+    // view to the top -- the "scrolls me back up on the next page" bug.
+    //
+    // Each row stores the recommendation as a JSON STRING rather than the
+    // object itself: a ListModel coerces a role holding a nested object to the
+    // string "[object Object]", which made every card render "Untitled". A
+    // string survives the round-trip; the delegate parses it back.
+    ListModel { id: recModel }
 
     // An inline back chevron. URL-encoded, NOT base64: `Qt.btoa` is deprecated
     // in Qt 6 (its output differs from the standard Web API).
@@ -46,12 +51,12 @@ Item {
             const pageObj = JSON.parse(json)
             const raw = (pageObj && pageObj.items) ? pageObj.items : []
             page.loading = false
-            // A first page replaces; a later page appends. Reassigning the
-            // array (rather than mutating it) is what makes the GridView see
-            // the change.
-            const next = page.pageNumber === 1 ? [] : page.items.slice()
-            for (let i = 0; i < raw.length; i++) next.push(raw[i])
-            page.items = next
+            // A first page replaces; a later page appends. `append` (not a
+            // model reassignment) is what keeps the scroll position.
+            if (page.pageNumber === 1) recModel.clear()
+            for (let i = 0; i < raw.length; i++) {
+                recModel.append({ "recJson": JSON.stringify(raw[i]) })
+            }
             const info = pageObj ? pageObj.pageInfo : null
             page.hasMore = info ? info.hasNextPage !== false : false
         }
@@ -73,7 +78,7 @@ Item {
 
     function maybeLoad() {
         if (animeId > 0 && backend) {
-            items = []
+            recModel.clear()
             hasMore = true
             pageNumber = 1
             loadPage(1)
@@ -154,7 +159,7 @@ Item {
                     Text {
                         text: page.error.length > 0
                             ? ("Failed: " + page.error)
-                            : (page.items.length + " suggestions found")
+                            : (recModel.count + " suggestions found")
                         color: page.error.length > 0 ? Theme.danger : Theme.inkMuted
                         font.pixelSize: 12
                     }
@@ -168,7 +173,7 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
             clip: true
-            model: page.items
+            model: recModel
             cellWidth: 200
             cellHeight: 356
             leftMargin: Theme.pad
@@ -177,13 +182,13 @@ Item {
             bottomMargin: Theme.pad
 
             delegate: RecommendationCard {
-                required property var modelData
+                required property string recJson
                 width: 184
                 mediaId: page.animeId
                 votable: true
-                // `modelData` IS the `RecommendedAnime` here (a plain array
-                // model), not a role wrapper.
-                recommendation: modelData
+                // The row holds the recommendation as a JSON string; parse it
+                // back into the object the card expects.
+                recommendation: JSON.parse(recJson)
                 backend: page.backend
                 onOpenAnime: (id) => page.openAnime(id)
             }
@@ -215,7 +220,7 @@ Item {
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 120
-            visible: !page.loading && page.items.length === 0 && page.error.length === 0
+            visible: !page.loading && recModel.count === 0 && page.error.length === 0
 
             Rectangle {
                 anchors.centerIn: parent
