@@ -20,15 +20,19 @@ Item {
     property string initialGenre: ""
     // Optional search text to pre-fill (from the navbar search box).
     property string initialSearch: ""
+    // Optional preset filters (from a home-page "View more" or a preset link).
+    property string initialStatus: ""
+    property string initialSort: "popularity"
+    property bool initialReversed: false
 
     signal openAnime(int id)
 
     // --- Filter state --------------------------------------------------------
     property string searchText: initialSearch
-    property string sort: "popularity"
-    property bool reversed: false
+    property string sort: initialSort.length > 0 ? initialSort : "popularity"
+    property bool reversed: initialReversed
     property string format: ""
-    property string status: ""
+    property string status: initialStatus
     property string season: ""
     property int seasonYear: 0
     property int minScore: 0
@@ -139,6 +143,52 @@ Item {
         runSearch(true)
     }
 
+    // --- In-place navigation ---------------------------------------------
+    //
+    // The window reuses this instance when a search / genre / preset arrives
+    // while the filter page is already showing, instead of pushing a fresh
+    // copy (which `goTo` refuses to do). These mirror what a fresh push would
+    // have produced from the `initial*` props.
+
+    // Narrow the current results by `term`, keeping the other filters.
+    function applySearch(term) {
+        searchText = term
+        applyFilters()
+    }
+
+    // A genre link: drop the other filters and start a fresh browse on it,
+    // matching what pushing a new page with `initialGenre` would show.
+    function applyGenre(genre) {
+        resetFilters()
+        genres = genre.length > 0 ? [genre] : []
+        applyFilters()
+    }
+
+    // A home-page "View more": reset to a clean slate, then apply the preset
+    // status / sort. Any argument may be empty to leave that filter unset.
+    function applyPreset(statusValue, sortValue, reversedValue) {
+        resetFilters()
+        if (statusValue && statusValue.length > 0) status = statusValue
+        if (sortValue && sortValue.length > 0) sort = sortValue
+        reversed = reversedValue === true
+        applyFilters()
+    }
+
+    // Clear every filter back to its default WITHOUT running a search; the
+    // caller runs one once it has set the filters it wants.
+    function resetFilters() {
+        searchText = ""
+        format = ""
+        status = ""
+        season = ""
+        seasonYear = 0
+        minScore = 0
+        genres = []
+        tagStates = ({})
+        sort = "popularity"
+        reversed = false
+    }
+
     // --- Tag helpers ---------------------------------------------------------
 
     // off -> include -> exclude -> off, mirroring FilterPanel.svelte.
@@ -238,6 +288,8 @@ Item {
                     "score": item.averageScore || 0,
                     "cover": item.coverImage || "",
                     "format": item.format || "",
+                    // Airing state, so the card can hide its Completed button.
+                    "status": item.status || "",
                 })
             }
             page.resultStatus = results.count + " results"
@@ -498,10 +550,12 @@ Item {
 
         delegate: PosterCard {
             width: 200
+            animeId: model.id
             title: model.title
             score: model.score
             cover: model.cover
             format: model.format
+            animeStatus: model.status
             onClicked: page.openAnime(model.id)
         }
 

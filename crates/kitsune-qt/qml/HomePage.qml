@@ -14,6 +14,9 @@ Item {
     signal openTop()
     signal openSchedule()
     signal openBrowse()
+    // A curated block's "View more": open the filter page preset to that
+    // shelf's own status/sort, rather than a generic browse.
+    signal openBrowseFiltered(string status, string sort, bool reversed)
     signal openGenre(string genre)
     signal openWatch(int animeId, int episodeNumber)
     // Declared for the window's wiring even though the navbar now owns these
@@ -106,6 +109,9 @@ Item {
 
         function onWatchPositionsReady(json) {
             page.watchPositions = JSON.parse(json) || ({})
+            // Re-sort: the local watch times are the primary sort key, so a
+            // fresh positions reply can reorder the whole row.
+            page.continueItems = page.sortedContinue(page.continueItems)
         }
 
         // Any local resume write (a play, a position save) re-reads the row,
@@ -118,19 +124,33 @@ Item {
         }
     }
 
-    // Order the row so the locally last-opened work leads, then everything
-    // else in AniList's order. A stable partition, so the rest keep their rank.
+    // Order the row by when each work was last watched, most recent first.
+    //
+    // The local watch-position store carries an `at` timestamp per work, which
+    // is the only reliable recency signal: AniList's `updatedAt` does not move
+    // when the reader re-watches the episode they are already on, so its order
+    // goes stale. A work with no local position (watched on another device, or
+    // played before this store existed) has no timestamp, so it falls to the
+    // end while keeping AniList's order among its peers -- a stable sort, so
+    // equal keys never shuffle.
     function sortedContinue(items) {
         if (!items || items.length === 0) return []
-        if (!page.lastPlayedId) return items
-        const lead = []
-        const rest = []
-        for (let i = 0; i < items.length; i++) {
-            const it = items[i]
-            if (it && it.anime && it.anime.id === page.lastPlayedId) lead.push(it)
-            else rest.push(it)
-        }
-        return lead.concat(rest)
+        const ranked = items.map(function (item, index) {
+            const id = (item && item.anime) ? item.anime.id : 0
+            const pos = page.watchPositions[String(id)]
+            let at = (pos && pos.at) ? pos.at : 0
+            // A just-opened work whose position write has not landed yet still
+            // leads, rather than falling in with the untimed entries.
+            if (id !== 0 && id === page.lastPlayedId && at === 0) {
+                at = Number.MAX_SAFE_INTEGER
+            }
+            return { "item": item, "at": at, "index": index }
+        })
+        ranked.sort(function (a, b) {
+            if (b.at !== a.at) return b.at - a.at
+            return a.index - b.index
+        })
+        return ranked.map(function (entry) { return entry.item })
     }
 
     // The saved position for a work, or null, for the card's resume readout.
@@ -258,28 +278,30 @@ Item {
                     title: "Top airing"
                     items: page.topAiringItems
                     onOpenAnime: (id) => page.openAnime(id)
-                    onViewMore: page.openTop()
+                    // Airing, most popular first -- the shelf's own filter.
+                    onViewMore: page.openBrowseFiltered("releasing", "popularity", false)
                 }
                 ListBlock {
                     width: (parent.width - 48) / 4
                     title: "Most popular"
                     items: page.mostPopularItems
                     onOpenAnime: (id) => page.openAnime(id)
-                    onViewMore: page.openBrowse()
+                    onViewMore: page.openBrowseFiltered("", "popularity", false)
                 }
                 ListBlock {
                     width: (parent.width - 48) / 4
                     title: "Top rated"
                     items: page.topRatedItems
                     onOpenAnime: (id) => page.openAnime(id)
-                    onViewMore: page.openTop()
+                    onViewMore: page.openBrowseFiltered("", "score", false)
                 }
                 ListBlock {
                     width: (parent.width - 48) / 4
                     title: "Latest completed"
                     items: page.latestCompletedItems
                     onOpenAnime: (id) => page.openAnime(id)
-                    onViewMore: page.openBrowse()
+                    // Finished, most recently started first.
+                    onViewMore: page.openBrowseFiltered("finished", "newest", false)
                 }
             }
 

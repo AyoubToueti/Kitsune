@@ -40,6 +40,10 @@ Window {
         id: backend
     }
 
+    // The shared list-status cache the poster cards' quick-add controls read,
+    // so one `userList()` fills every card on the page. Wired in the window's
+    // own Component.onCompleted below.
+
     // Mirrors `displayTitle` in src/lib/types.ts.
     function displayTitle(item) {
         const t = item.title || {}
@@ -77,6 +81,24 @@ Window {
         stack.push(component, props)
     }
 
+    // Whether the filter page is the one currently showing.
+    function onFilterPage() {
+        const item = stack.currentItem
+        return item !== null && item.pageRoute === "filter"
+    }
+
+    // Run `apply(item)` on the live filter page, or push a fresh one with
+    // `props` when it is not showing. `goTo` refuses to re-push the same
+    // route, so without this a search / genre / preset fired while already on
+    // the filter page would silently do nothing.
+    function openFilter(props, apply) {
+        if (root.onFilterPage()) {
+            apply(stack.currentItem)
+        } else {
+            stack.push(browseComponent, props)
+        }
+    }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
@@ -91,10 +113,11 @@ Window {
             onOpenMyList: root.goTo(myListComponent, "list", { "backend": root.backend })
             onOpenFilter: root.goTo(browseComponent, "filter", { "backend": root.backend })
             onOpenSettings: settingsPopup.open()
-            onSearch: (term) => root.goTo(browseComponent, "filter", {
-                "backend": root.backend,
-                "initialSearch": term
-            })
+            // Search works from any page: on the filter page the live instance
+            // narrows in place, elsewhere a fresh page is pushed with the term.
+            onSearch: (term) => root.openFilter(
+                { "backend": root.backend, "initialSearch": term },
+                (page) => page.applySearch(term))
         }
 
         // The navigation stack: Home -> Detail / Browse / ...
@@ -121,14 +144,23 @@ Window {
         backend: root.backend
         onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
         onOpenBrowse: () => root.goTo(browseComponent, "filter", { "backend": root.backend })
+        // A curated block's "View more" lands on the filter page preset to
+        // that shelf, applying in place when the page is already showing.
+        onOpenBrowseFiltered: (status, sort, reversed) => root.openFilter(
+            {
+                "backend": root.backend,
+                "initialStatus": status,
+                "initialSort": sort,
+                "initialReversed": reversed
+            },
+            (page) => page.applyPreset(status, sort, reversed))
         onOpenSchedule: () => root.goTo(scheduleComponent, "", { "backend": root.backend })
         onOpenTop: () => root.goTo(topComponent, "", { "backend": root.backend })
         onOpenMyList: () => root.goTo(myListComponent, "list", { "backend": root.backend })
         onOpenSettings: settingsPopup.open()
-        onOpenGenre: (genre) => root.goTo(browseComponent, "filter", {
-            "backend": root.backend,
-            "initialGenre": genre
-        })
+        onOpenGenre: (genre) => root.openFilter(
+            { "backend": root.backend, "initialGenre": genre },
+            (page) => page.applyGenre(genre))
         // A Continue Watching resume opens the same modal the detail page uses,
         // at the saved episode. The modal fetches the work by id, so no malId
         // is needed here.
@@ -187,9 +219,15 @@ Window {
                 watchModal.titles = []
                 watchModal.open()
             }
-            onOpenGenre: (genre) => root.goTo(browseComponent, "filter", {
-                "backend": root.backend,
-                "initialGenre": genre
+            onOpenGenre: (genre) => root.openFilter(
+                { "backend": root.backend, "initialGenre": genre },
+                (page) => page.applyGenre(genre))
+            // "View more" on the inline recommendations row opens the full,
+            // paged list for this work.
+            onOpenRecommendations: (animeId, title) => stack.push(recommendationsComponent, {
+                "animeId": animeId,
+                "workTitle": title,
+                "backend": root.backend
             })
         }
     }
@@ -197,6 +235,16 @@ Window {
     Component {
         id: browseComponent
         BrowsePage {
+            onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
+        }
+    }
+
+    // The full, paged recommendations list for one work, pushed from the
+    // detail page's "View more".
+    Component {
+        id: recommendationsComponent
+        RecommendationsPage {
+            onBack: stack.pop()
             onOpenAnime: (id) => stack.push(detailComponent, { "animeId": id, "backend": root.backend })
         }
     }
@@ -257,6 +305,12 @@ Window {
     Component.onCompleted: {
         // HomePage fetches its own trending in its own Component.onCompleted,
         // so there is no duplicate request here.
+
+        // Start the shared list-status cache: it checks auth and, when signed
+        // in, reads the whole list once so every poster card's quick-add knows
+        // its status without its own lookup.
+        ListStatusStore.setBackend(root.backend)
+
         if (initialOpenId > 0) {
             stack.push(detailComponent, { "animeId": initialOpenId, "backend": root.backend })
         } else if (initialBrowse) {
