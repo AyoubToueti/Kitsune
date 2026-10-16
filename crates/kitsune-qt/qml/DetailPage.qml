@@ -29,6 +29,9 @@ Item {
     signal openWatch(int animeId, int malId, int episodeNumber, int absoluteEpisode)
     // Emitted when a genre chip is clicked: opens the filter page for it.
     signal openGenre(string genre)
+    // Emitted by the Recommendations "View more": opens the full, paged
+    // recommendations list for this work.
+    signal openRecommendations(int animeId, string title)
 
     // --- Episodes ---------------------------------------------------------
 
@@ -920,12 +923,30 @@ Item {
                 topPadding: Theme.pad
                 bottomPadding: Theme.pad
 
-                Text {
+                RowLayout {
                     x: Theme.pad
-                    text: "Recommendations"
-                    color: Theme.ink
-                    font.pixelSize: 18
-                    font.bold: true
+                    width: parent.width - Theme.pad * 2
+
+                    Text {
+                        text: "Recommendations"
+                        color: Theme.ink
+                        font.pixelSize: 18
+                        font.bold: true
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: "View more ›"
+                        color: recMoreMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                        font.pixelSize: 12
+                        MouseArea {
+                            id: recMoreMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.openRecommendations(
+                                page.animeId, page.displayTitle(page.anime))
+                        }
+                    }
                 }
 
                 ListView {
@@ -938,21 +959,16 @@ Item {
                     clip: true
                     model: page.anime ? page.anime.recommendations : []
 
-                    // A recommendation wraps the work under `anime`; the card
-                    // shows the WORK's cover/score, not the vote tally.
-                    delegate: PosterCard {
+                    // Each card shows the recommended work's cover and score
+                    // and the community vote tally, with its own quick-add.
+                    delegate: RecommendationCard {
+                        required property var modelData
                         width: 180
-                        readonly property var work: modelData.anime || ({})
-                        title: work.title
-                            ? (work.title.userPreferred
-                                || work.title.english
-                                || work.title.romaji
-                                || "(untitled)")
-                            : "(untitled)"
-                        score: work.averageScore || 0
-                        cover: work.coverImage || ""
-                        format: work.format || ""
-                        onClicked: page.openAnime(work.id)
+                        mediaId: page.animeId
+                        votable: true
+                        recommendation: modelData
+                        backend: page.backend
+                        onOpenAnime: (id) => page.openAnime(id)
                     }
                 }
             }

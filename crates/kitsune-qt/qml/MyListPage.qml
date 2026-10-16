@@ -324,10 +324,14 @@ Item {
                 PosterCard {
                     anchors.left: parent.left
                     width: 180
+                    animeId: modelData.anime.id
                     title: page.displayTitle(modelData.anime)
                     score: modelData.anime.averageScore || 0
                     cover: modelData.anime.coverImage || ""
                     format: modelData.anime.format || ""
+                    // Airing state, so the card hides its Completed button for
+                    // a work that is still releasing.
+                    animeStatus: modelData.anime.status || ""
                     onClicked: page.openAnime(animeId)
                 }
 

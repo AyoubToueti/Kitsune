@@ -27,6 +27,9 @@ fn main() {
             .qml_file("qml/Chip.qml")
             .qml_file("qml/NavButton.qml")
             .qml_file("qml/PosterCard.qml")
+            .qml_file("qml/QuickAddButton.qml")
+            .qml_file("qml/RecommendationCard.qml")
+            .qml_file("qml/RecommendationsPage.qml")
             .qml_file("qml/ContinueWatchingCard.qml")
             .qml_file("qml/ResumeDisc.qml")
             .qml_file("qml/HeroCarousel.qml")
@@ -35,9 +38,10 @@ fn main() {
             .qml_file("qml/ListBlock.qml")
             .qml_file("qml/ScheduleWidget.qml")
             .qml_file("qml/TopList.qml")
-            // Theme is a `pragma Singleton`; the qmldir must mark it as one or
-            // QML refuses to import it.
-            .qml_file(QmlFile::from("qml/Theme.qml").singleton(true)),
+            // These two are `pragma Singleton`; the qmldir must mark them or
+            // QML refuses to import them.
+            .qml_file(QmlFile::from("qml/Theme.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true)),
     )
     .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])
     // Link QtQuick so its headers (QQuickWindow, QQuickFramebufferObject) are on

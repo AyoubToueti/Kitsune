@@ -56,6 +56,18 @@ pub mod qobject {
         #[cxx_name = "getListTagged"]
         fn get_list_tagged(self: Pin<&mut Self>, tag: QString, filter: QString, limit: i32);
 
+        /// One page of a curated list, as a JSON `AnimePage`
+        /// (`{ items, pageInfo }`). Backs the scrolling "Top 100" view: the
+        /// `pageInfo` says whether another page exists. Emits `listReady`.
+        #[qinvokable]
+        #[cxx_name = "getListPaged"]
+        fn get_list_paged(
+            self: Pin<&mut Self>,
+            filter: QString,
+            page: i32,
+            per_page: i32,
+        );
+
         /// Browse with filters and paging. `query` is a JSON `BrowseQuery`.
         #[qinvokable]
         #[cxx_name = "getBrowse"]
@@ -75,6 +87,21 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "getRecommendations"]
         fn get_recommendations(self: Pin<&mut Self>, id: i64, page: i32, per_page: i32);
+
+        /// Cast the reader's vote on a recommendation, returning the new
+        /// tally. `rating` is the serde form of `RecommendationRating`
+        /// ("rateUp" | "rateDown" | "noRating") -- NOT AniList's GraphQL
+        /// literal, which the enum produces on the way out. AniList keys a
+        /// recommendation by the (base, recommended) PAIR, so both ids travel.
+        /// Emits `recommendationRated` (success) or `recommendationRateFailed`.
+        #[qinvokable]
+        #[cxx_name = "rateRecommendation"]
+        fn rate_recommendation(
+            self: Pin<&mut Self>,
+            media_id: i64,
+            recommended_id: i64,
+            rating: QString,
+        );
 
         /// The genre names available for browsing.
         #[qinvokable]
@@ -436,12 +463,28 @@ pub mod qobject {
         #[cxx_name = "animeFailed"]
         fn anime_failed(self: Pin<&mut Self>, message: QString);
 
+        /// A page of recommendations. `id` echoes the requested work so a
+        /// reply for a work the reader has navigated away from is ignored.
         #[qsignal]
         #[cxx_name = "recommendationsReady"]
-        fn recommendations_ready(self: Pin<&mut Self>, json: QString);
+        fn recommendations_ready(self: Pin<&mut Self>, id: i64, json: QString);
         #[qsignal]
         #[cxx_name = "recommendationsFailed"]
-        fn recommendations_failed(self: Pin<&mut Self>, message: QString);
+        fn recommendations_failed(self: Pin<&mut Self>, id: i64, message: QString);
+
+        /// The new vote tally after a successful `rateRecommendation`. The
+        /// (base, recommended) pair identifies which card to update.
+        #[qsignal]
+        #[cxx_name = "recommendationRated"]
+        fn recommendation_rated(
+            self: Pin<&mut Self>,
+            media_id: i64,
+            recommended_id: i64,
+            rating: i32,
+        );
+        #[qsignal]
+        #[cxx_name = "recommendationRateFailed"]
+        fn recommendation_rate_failed(self: Pin<&mut Self>, message: QString);
 
         #[qsignal]
         #[cxx_name = "genresReady"]
@@ -550,7 +593,8 @@ use kitsune_core::player::{LastReleaseStore, WatchPositionStore};
 use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
 use kitsune_core::settings::{Settings, SettingsStore};
 use kitsune_core::types::{
-    BrowseQuery, EpisodeInfo, ListFilter, ListStatus, Release, ReleasePreference, Title,
+    BrowseQuery, EpisodeInfo, ListFilter, ListStatus, RecommendationRating, Release,
+    ReleasePreference, Title,
 };
 
 /// The default page size, mirroring `commands::DEFAULT_LIMIT` in the Tauri app.
@@ -752,6 +796,29 @@ impl qobject::Backend {
         });
     }
 
+    /// One page of a curated list, as an `AnimePage` JSON object. Backs the
+    /// scrolling "Top 100": `pageInfo` says whether another page follows.
+    fn get_list_paged(self: Pin<&mut Self>, filter: QString, page: i32, per_page: i32) {
+        let filter = filter.to_string();
+        let page = page.max(1) as u32;
+        let per_page = limit_or_default(per_page);
+        self.spawn_metadata(
+            move |provider| async move {
+                let filter: ListFilter = serde_json::from_value(serde_json::Value::String(
+                    filter,
+                ))
+                .map_err(|err| format!("unknown list filter: {err}"))?;
+                provider
+                    .list_page(filter, page, per_page)
+                    .await
+                    .map(|page| json_or_empty(&page))
+                    .map_err(|err| err.to_string())
+            },
+            Self::list_ready,
+            Self::list_failed,
+        );
+    }
+
     fn get_browse(self: Pin<&mut Self>, query: QString, page: i32, per_page: i32) {
         let query = query.to_string();
         let page = page.max(1) as u32;
@@ -790,17 +857,76 @@ impl qobject::Backend {
     fn get_recommendations(self: Pin<&mut Self>, id: i64, page: i32, per_page: i32) {
         let page = page.max(1) as u32;
         let per_page = limit_or_default(per_page);
-        self.spawn_metadata(
-            move |provider| async move {
-                provider
-                    .recommendations(id, page, per_page)
-                    .await
-                    .map(|page| json_or_empty(&page))
-                    .map_err(|err| err.to_string())
-            },
-            Self::recommendations_ready,
-            Self::recommendations_failed,
-        );
+
+        // Custom spawn (not `spawn_metadata`) because the reply must carry the
+        // requested work id: the recommendations page can be re-pushed for a
+        // different work while a reply is in flight, and a stale page would
+        // then render against the new heading.
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let provider = Arc::clone(&self.rust().provider);
+
+        runtime.spawn(async move {
+            match provider.recommendations(id, page, per_page).await {
+                Ok(result) => {
+                    let json = json_or_empty(&result);
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.recommendations_ready(id, QString::from(&json))
+                    });
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.recommendations_failed(id, QString::from(&message))
+                    });
+                }
+            }
+        });
+    }
+
+    /// Cast the reader's vote on a recommendation and emit the new tally.
+    fn rate_recommendation(
+        self: Pin<&mut Self>,
+        media_id: i64,
+        recommended_id: i64,
+        rating: QString,
+    ) {
+        let rating = rating.to_string();
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let anilist = Arc::clone(&self.rust().anilist);
+
+        runtime.spawn(async move {
+            let parsed: RecommendationRating =
+                match serde_json::from_value(serde_json::Value::String(rating)) {
+                    Ok(r) => r,
+                    Err(err) => {
+                        let message = format!("unknown recommendation rating: {err}");
+                        let _ = qt_thread
+                            .queue(move |qobject| {
+                                qobject.recommendation_rate_failed(QString::from(&message))
+                            });
+                        return;
+                    }
+                };
+
+            match anilist
+                .rate_recommendation(media_id, recommended_id, parsed)
+                .await
+            {
+                Ok(tally) => {
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.recommendation_rated(media_id, recommended_id, tally)
+                    });
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.recommendation_rate_failed(QString::from(&message))
+                    });
+                }
+            }
+        });
     }
 
     fn get_genres(self: Pin<&mut Self>) {
