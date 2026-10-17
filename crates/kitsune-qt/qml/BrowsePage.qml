@@ -138,7 +138,6 @@ Item {
         loading = true
         backend.getBrowse(JSON.stringify(buildQuery()), pageNumber, 40)
     }
-
     function applyFilters() {
         runSearch(true)
     }
@@ -297,6 +296,7 @@ Item {
         function onBrowseFailed(message) {
             page.loading = false
             page.resultStatus = "Failed: " + message
+            // Raise the retry overlay; the first-load skeleton stays up.
         }
     }
 
@@ -533,6 +533,24 @@ Item {
     }
 
     // --- Results grid ------------------------------------------------------
+    // First-load placeholder: shown until the first page of results arrives.
+    // Later pages append to the grid below and keep the inline status text, so
+    // a skeleton would only jitter the scroll.
+    PosterGridSkeleton {
+        anchors.top: header.bottom
+        anchors.topMargin: Theme.gap
+        anchors.left: parent.left
+        anchors.leftMargin: Theme.pad
+        anchors.right: parent.right
+        anchors.rightMargin: Theme.pad
+        anchors.bottom: parent.bottom
+        clip: true
+        visible: page.loading && results.count === 0
+        count: 12
+        cellWidth: 216
+        cellHeight: 380
+    }
+
     GridView {
         id: grid
         anchors.top: header.bottom
@@ -547,6 +565,7 @@ Item {
         leftMargin: Theme.pad
         rightMargin: Theme.pad
         bottomMargin: Theme.pad
+        visible: !(page.loading && results.count === 0)
 
         delegate: PosterCard {
             width: 200

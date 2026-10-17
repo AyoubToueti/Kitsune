@@ -53,6 +53,8 @@ Item {
         function onListFailed(message) {
             page.loading = false
             status.text = "Failed: " + message
+            // Raise the retry overlay (locked behind a countdown on a 429).
+            // The first-load skeleton stays up, since no rows arrived.
         }
     }
 
@@ -70,7 +72,6 @@ Item {
         pageNumber = number
         backend.getListPaged("topRated", number, perPage)
     }
-
     Component.onCompleted: loadPage(1)
 
     ColumnLayout {
@@ -103,6 +104,19 @@ Item {
             }
         }
 
+        // First-load placeholder: shown until the first page of rows arrives.
+        // Later pages append to the list below and keep the footer "Loading…",
+        // so a skeleton would only jitter the scroll.
+        RankedListSkeleton {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            Layout.topMargin: Theme.gap
+            visible: page.loading && rows.count === 0
+            count: 8
+        }
+
         // Ranked list
         ListView {
             Layout.fillWidth: true
@@ -114,6 +128,7 @@ Item {
             topMargin: Theme.gap
             bottomMargin: Theme.pad
             spacing: 8
+            visible: !(page.loading && rows.count === 0)
 
             delegate: Rectangle {
                 width: ListView.view.width - Theme.pad * 2

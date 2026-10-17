@@ -38,8 +38,16 @@ fn main() {
             .qml_file("qml/ListBlock.qml")
             .qml_file("qml/ScheduleWidget.qml")
             .qml_file("qml/TopList.qml")
-            // These two are `pragma Singleton`; the qmldir must mark them or
-            // QML refuses to import them.
+            .qml_file("qml/Skeleton.qml")
+            .qml_file("qml/HeroSkeleton.qml")
+            .qml_file("qml/TrendingRailSkeleton.qml")
+            .qml_file("qml/ListBlockSkeleton.qml")
+            .qml_file("qml/ScheduleWidgetSkeleton.qml")
+            .qml_file("qml/RankedListSkeleton.qml")
+            .qml_file("qml/DetailSkeleton.qml")
+            .qml_file("qml/PosterGridSkeleton.qml")
+            // These are `pragma Singleton`; the qmldir must mark them or QML
+            // refuses to import them.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true))
             .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true)),
     )

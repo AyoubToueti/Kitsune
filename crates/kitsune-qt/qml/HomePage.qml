@@ -107,11 +107,13 @@ Item {
             page.topRatedItems = shelves.topRated || []
             page.latestCompletedItems = shelves.latestCompleted || []
             page.top100Items = shelves.top100 || []
+            // A clean load clears any retry overlay and resets its backoff.
         }
         function onHomeFailed(message) {
-            // Leave every shelf empty and stop the spinner; one failed request
-            // must not wedge the page.
-            page.trendingLoading = false
+            // Leave the skeleton up (data never arrived) and raise the retry
+            // overlay, so the reader can retry in place instead of restarting.
+            // `trendingLoading` stays true, which keeps every placeholder
+            // visible behind the overlay.
         }
 
         function onAuthStatusReady(signedInNow) {
@@ -179,7 +181,6 @@ Item {
     function positionFor(animeId) {
         return page.watchPositions[String(animeId)] || null
     }
-
     Component.onCompleted: {
         if (!backend) return
         // ONE request fills every shelf: trending + the five curated blocks.
@@ -209,14 +210,28 @@ Item {
             bottomPadding: Theme.pad
 
             // --- Hero carousel ------------------------------------------
+            // While the single home request is in flight, a skeleton stands in
+            // for the carousel so the page reads as loading rather than blank.
+            HeroSkeleton {
+                x: Theme.pad
+                width: parent.width - Theme.pad * 2
+                visible: page.trendingLoading
+            }
+
             HeroCarousel {
                 x: Theme.pad
                 width: parent.width - Theme.pad * 2
                 items: page.heroItems
+                visible: !page.trendingLoading
                 onOpenAnime: (id) => page.openAnime(id)
             }
 
             // --- Trending rail ------------------------------------------
+            TrendingRailSkeleton {
+                width: parent.width
+                visible: page.trendingLoading
+            }
+
             Column {
                 width: parent.width
                 visible: page.railItems.length > 0
@@ -289,11 +304,32 @@ Item {
             }
 
             // --- Four curated blocks ------------------------------------
+            // Placeholder grid while the home reply is in flight. The four
+            // shelves arrive together in the one `getHome()` response, so this
+            // shares the `trendingLoading` flag with the hero.
             Grid {
                 x: Theme.pad
                 width: parent.width - Theme.pad * 2
                 columns: 4
                 spacing: 16
+                visible: page.trendingLoading
+
+                Repeater {
+                    model: ["Top airing", "Most popular", "Top rated", "Latest completed"]
+                    delegate: ListBlockSkeleton {
+                        required property string modelData
+                        width: (parent.width - 48) / 4
+                        title: modelData
+                    }
+                }
+            }
+
+            Grid {
+                x: Theme.pad
+                width: parent.width - Theme.pad * 2
+                columns: 4
+                spacing: 16
+                visible: !page.trendingLoading
 
                 ListBlock {
                     width: (parent.width - 48) / 4
@@ -340,18 +376,61 @@ Item {
                     font.bold: true
                 }
 
+                ScheduleWidgetSkeleton {
+                    x: Theme.pad
+                    width: parent.width - Theme.pad * 2
+                    visible: page.trendingLoading
+                }
+
                 ScheduleWidget {
                     x: Theme.pad
                     width: parent.width - Theme.pad * 2
+                    visible: !page.trendingLoading
                     backend: page.backend
                     onOpenAnime: (id) => page.openAnime(id)
                 }
             }
 
             // --- Top 100 preview ----------------------------------------
+            // Placeholder while the home reply is in flight: a heading bar and
+            // ten ranked rows inside the same bordered shell the real preview
+            // uses, so the swap does not shift the page.
             Column {
                 width: parent.width
                 spacing: 12
+                visible: page.trendingLoading
+
+                RowLayout {
+                    x: Theme.pad
+                    width: parent.width - Theme.pad * 2
+                    Skeleton { width: 150; height: 18; radius: 4 }
+                    Item { Layout.fillWidth: true }
+                    Skeleton { width: 60; height: 12; radius: 4 }
+                }
+
+                Rectangle {
+                    x: Theme.pad
+                    width: parent.width - Theme.pad * 2
+                    radius: 12
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
+                    implicitHeight: topSkeleton.implicitHeight + 8
+
+                    RankedListSkeleton {
+                        id: topSkeleton
+                        x: 4
+                        y: 4
+                        width: parent.width - 8
+                        count: 10
+                    }
+                }
+            }
+
+            Column {
+                width: parent.width
+                spacing: 12
+                visible: !page.trendingLoading
 
                 RowLayout {
                     x: Theme.pad

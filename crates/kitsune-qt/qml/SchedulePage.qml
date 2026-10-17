@@ -19,6 +19,9 @@ Item {
 
     // `dayOffset` is relative to today (negative = past).
     property int selectedOffset: 0
+    // Whether a day's broadcasts are in flight, so the list can show a skeleton
+    // on the first load rather than an empty area.
+    property bool loading: false
 
     ListModel { id: dayModel }
     ListModel { id: airingModel }
@@ -37,10 +40,13 @@ Item {
                     "time": formatTime(entry.airingAt),
                 })
             }
+            page.loading = false
             status.text = items.length + " airing"
         }
         function onScheduleFailed(message) {
+            page.loading = false
             status.text = "Failed: " + message
+            // Raise the retry overlay; the first-load skeleton stays up.
         }
     }
 
@@ -65,11 +71,11 @@ Item {
 
     function loadDay(offset) {
         if (!backend) return
+        page.loading = true
         const from = dayStart(offset)
         const to = from + 24 * 3600
         backend.getSchedule(from, to, 50)
     }
-
     // Build the strip once. Every day gets a tab before any request.
     Component.onCompleted: {
         for (let i = -pastDays; i <= futureDays; i++) {
@@ -171,6 +177,20 @@ Item {
             }
         }
 
+        // First-load placeholder: shown until the selected day's broadcasts
+        // arrive. Switching days keeps the previous day's rows visible (the
+        // model clears only on the reply), so a skeleton on every load would
+        // flash; it is limited to the empty first load.
+        RankedListSkeleton {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            Layout.topMargin: Theme.gap
+            visible: page.loading && airingModel.count === 0
+            count: 7
+        }
+
         // Airing list
         ListView {
             Layout.fillWidth: true
@@ -182,6 +202,7 @@ Item {
             topMargin: Theme.gap
             bottomMargin: Theme.pad
             spacing: 10
+            visible: !(page.loading && airingModel.count === 0)
 
             delegate: Rectangle {
                 width: ListView.view.width - Theme.pad * 2

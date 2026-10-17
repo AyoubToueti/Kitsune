@@ -167,11 +167,34 @@ Item {
         }
 
         // --- The day's broadcasts ---------------------------------------
-        Text {
-            visible: widget.loading
-            text: "Loading…"
-            color: Theme.inkFaint
-            font.pixelSize: 12
+        // Placeholder rows while the day loads, so the widget reads as loading
+        // rather than empty. Each mirrors a broadcast row (a fixed-width time
+        // column then a title line).
+        Repeater {
+            model: widget.loading ? Math.min(widget.rowLimit, 6) : 0
+
+            delegate: Item {
+                width: widget.width
+                height: 42
+
+                RowLayout {
+                    anchors.fill: parent
+                    spacing: 16
+
+                    Skeleton {
+                        Layout.preferredWidth: 76
+                        Layout.preferredHeight: 12
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 4
+                    }
+                    Skeleton {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 12
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 4
+                    }
+                }
+            }
         }
 
         Text {

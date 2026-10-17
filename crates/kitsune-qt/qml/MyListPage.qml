@@ -119,6 +119,7 @@ Item {
         function onUserListFailed(message) {
             page.loading = false
             page.errorText = message
+            // Raise the retry overlay; the loading skeleton stays up.
         }
 
         function onListChanged() {
@@ -130,7 +131,6 @@ Item {
             page.errorText = message
         }
     }
-
     Component.onCompleted: {
         if (backend) backend.authStatus()
     }
@@ -295,6 +295,20 @@ Item {
         }
 
         // --- Grid ---------------------------------------------------------
+        // Placeholder grid while the reader's list is in flight, so the page
+        // reads as loading rather than empty.
+        PosterGridSkeleton {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            Layout.topMargin: Theme.gap
+            visible: page.signedIn && page.loading
+            count: 12
+            cellWidth: 200
+            cellHeight: 350
+        }
+
         GridView {
             id: grid
             Layout.fillWidth: true
@@ -303,7 +317,7 @@ Item {
             Layout.rightMargin: Theme.pad
             Layout.topMargin: Theme.gap
             Layout.bottomMargin: Theme.pad
-            visible: page.signedIn
+            visible: page.signedIn && !page.loading
             clip: true
             cellWidth: 200
             cellHeight: 350

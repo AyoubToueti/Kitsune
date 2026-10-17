@@ -2,6 +2,16 @@ pragma Singleton
 import QtQuick
 
 QtObject {
+    // Whether animated effects (the skeleton pulse, and any future motion) are
+    // allowed to run.
+    //
+    // Qt exposes a platform reduced-motion preference only from 6.12 onward
+    // (QAccessibilityHints::motionPreference); this app targets 6.11, so the
+    // flag is a plain constant for now. Skeleton blocks read it, so a future
+    // settings toggle or a Qt bump can honour the OS hint by changing this one
+    // value -- no call site needs to change.
+    readonly property bool animationsEnabled: true
+
     // Surfaces
     readonly property color surface: "#0b0d12"
     readonly property color surfaceRaised: "#141821"

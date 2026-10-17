@@ -64,6 +64,7 @@ Item {
             if (id !== page.animeId) return
             page.loading = false
             page.error = message
+            // Raise the retry overlay; the first-load skeleton stays up.
         }
     }
 
@@ -167,6 +168,21 @@ Item {
             }
         }
 
+        // First-load placeholder: shown until the first page of recommendations
+        // arrives. Later pages append and keep the footer "Loading…", so a
+        // skeleton would only jitter the scroll.
+        PosterGridSkeleton {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
+            Layout.topMargin: Theme.gap
+            visible: page.loading && recModel.count === 0
+            count: 8
+            cellWidth: 200
+            cellHeight: 356
+        }
+
         // Results Grid
         GridView {
             id: grid
@@ -180,6 +196,7 @@ Item {
             rightMargin: Theme.pad
             topMargin: Theme.gap
             bottomMargin: Theme.pad
+            visible: !(page.loading && recModel.count === 0)
 
             delegate: RecommendationCard {
                 required property string recJson

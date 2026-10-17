@@ -127,6 +127,10 @@ Item {
                 page.loadListEntry()
             }
         }
+        function onAnimeFailed(message) {
+            // The hero is empty, so the detail skeleton stands in; raise the
+            // retry overlay so the reader can retry without leaving the page.
+        }
         function onEpisodesReady(json) {
             page.episodeInfo = JSON.parse(json) || []
             page.rebuildEpisodes()
@@ -240,7 +244,6 @@ Item {
             backend.getAnime(animeId)
         }
     }
-
     onAnimeIdChanged: maybeLoad()
     onBackendChanged: maybeLoad()
 
@@ -248,6 +251,13 @@ Item {
         id: statusBusyTimer
         interval: 1500
         onTriggered: page.statusBusy = false
+    }
+
+    // Loading placeholder: shown until the single-title lookup returns, since
+    // every region below is drawn from `page.anime`.
+    DetailSkeleton {
+        anchors.fill: parent
+        visible: page.anime === null
     }
 
     // Whole-page scroll
@@ -258,6 +268,7 @@ Item {
         contentHeight: body.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        visible: page.anime !== null
 
         Column {
             id: body
