@@ -219,60 +219,78 @@ impl AniListProvider {
         document: &str,
         variables: serde_json::Value,
     ) -> Result<T, ProviderError> {
-        // The document ALWAYS travels under the `query` key, even for a
-        // mutation. AniList reads the operation from `query` and takes the
-        // kind from the keyword inside the string; sending a mutation under a
-        // `mutation` key is answered with "No query or mutation provided".
-        let body = serde_json::json!({
-            "query": document,
-            "variables": variables,
-        });
+        // AniList rate-limits hard, answering 429 with a `Retry-After`. Wait
+        // that long and try ONCE more; a second 429 is reported to the caller
+        // with the delay, rather than retried forever.
+        let mut attempt = 0u8;
+        loop {
+            attempt += 1;
 
-        let mut request = self.http.post(&self.endpoint).json(&body);
-
-        // Cloned out of the lock before the await: holding a `std` Mutex
-        // across one is how a deadlock gets built.
-        if let Some(token) = self.current_token() {
-            request = request.bearer_auth(token);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        if !status.is_success() {
-            return Err(ProviderError::Status {
-                status: status.as_u16(),
-                body: text,
+            // The document ALWAYS travels under the `query` key, even for a
+            // mutation. AniList reads the operation from `query` and takes the
+            // kind from the keyword inside the string; sending a mutation under
+            // a `mutation` key is answered with "No query or mutation provided".
+            let body = serde_json::json!({
+                "query": document,
+                "variables": variables,
             });
-        }
 
-        // Parse into an envelope first: GraphQL reports query problems with
-        // a 200, so the status check above is not enough on its own.
-        let envelope: Envelope<T> = serde_json::from_str(&text)
-            .map_err(|e| ProviderError::Decode(format!("{e}; body was: {text}")))?;
+            let mut request = self.http.post(&self.endpoint).json(&body);
 
-        if let Some(errors) = envelope.errors {
-            if !errors.is_empty() {
-                let joined = errors
-                    .into_iter()
-                    .map(|e| e.message)
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return Err(ProviderError::Remote(joined));
+            // Cloned out of the lock before the await: holding a `std` Mutex
+            // across one is how a deadlock gets built.
+            if let Some(token) = self.current_token() {
+                request = request.bearer_auth(token);
             }
-        }
 
-        envelope
-            .data
-            .ok_or_else(|| ProviderError::Remote("response contained no data".into()))
+            let response = request
+                .send()
+                .await
+                .map_err(|e| ProviderError::Transport(e.to_string()))?;
+
+            let status = response.status();
+            // Read `Retry-After` BEFORE the body is consumed: `text()` takes
+            // ownership of the response, so the header must be captured first.
+            let retry_after = retry_after_seconds(response.headers());
+            let text = response
+                .text()
+                .await
+                .map_err(|e| ProviderError::Transport(e.to_string()))?;
+
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                // `Retry-After` is a hint; cap it so a hostile or absurd value
+                // cannot hang the request for minutes, and default to a short
+                // pause when the header is absent.
+                let wait = retry_after
+                    .unwrap_or(DEFAULT_RETRY_AFTER_SECS)
+                    .min(MAX_RETRY_AFTER_SECS);
+                if attempt == 1 {
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                    continue;
+                }
+                // Second 429: stop, and say how long the server asked for.
+                return Err(ProviderError::Status {
+                    status: 429,
+                    body: format!(
+                        "rate limited by AniList; try again in about {wait}s"
+                    ),
+                });
+            }
+
+            if !status.is_success() {
+                return Err(ProviderError::Status {
+                    status: status.as_u16(),
+                    body: text,
+                });
+            }
+
+            // Parse into an envelope first: GraphQL reports query problems with
+            // a 200, so the status check above is not enough on its own.
+            let envelope: Envelope<T> = serde_json::from_str(&text)
+                .map_err(|e| ProviderError::Decode(format!("{e}; body was: {text}")))?;
+
+            return finish(envelope);
+        }
     }
 
     /// Build the paged-media query for a filter clause.
@@ -1245,6 +1263,52 @@ fn season_literal(season: SeasonFilter) -> &'static str {
 ///
 /// `SEARCH_MATCH` is the exception: relevance has no reverse, so the flag is
 /// ignored. The frontend disables the toggle for that sort anyway.
+/// How long to wait after a 429 when the server sends no `Retry-After`.
+///
+/// AniList usually does send the header; this is only the fallback so the
+/// retry is not immediate.
+const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
+
+/// The longest a 429 retry will sleep, whatever the server asks for.
+///
+/// `Retry-After` is a hint from the server; without a cap a large or bogus
+/// value would hang the request (and the UI waiting on it) for minutes.
+const MAX_RETRY_AFTER_SECS: u64 = 30;
+
+/// The `Retry-After` delay in seconds, when the header is present and parses.
+///
+/// Only the delta-seconds form is honoured. AniList sends that form; the
+/// HTTP-date form is legal but pointless to support here, and a wrong parse
+/// would be worse than falling back to the default.
+fn retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|text| text.trim().parse::<u64>().ok())
+}
+
+/// Turn a decoded GraphQL envelope into either data or a provider error.
+///
+/// GraphQL reports query problems with a 200 and an `errors` array, so this
+/// check cannot live in the status path. Extracted so the retry loop's body
+/// stays readable.
+fn finish<T: for<'de> Deserialize<'de>>(envelope: Envelope<T>) -> Result<T, ProviderError> {
+    if let Some(errors) = envelope.errors {
+        if !errors.is_empty() {
+            let joined = errors
+                .into_iter()
+                .map(|e| e.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(ProviderError::Remote(joined));
+        }
+    }
+
+    envelope
+        .data
+        .ok_or_else(|| ProviderError::Remote("response contained no data".into()))
+}
+
 /// The AniList filter clause for a curated shelf.
 ///
 /// Each shelf is the same Page query with a different filter, so only this
@@ -4131,11 +4195,62 @@ mod tests {
 
     #[tokio::test]
     async fn http_error_status_becomes_status_error() {
-        let response = serde_json::json!({ "message": "too many requests" });
-        let (_server, provider) = provider_with(response, 429).await;
+        // A plain 5xx is reported as-is. 429 is special-cased (it retries), so
+        // this uses 500 to exercise the ordinary status path.
+        let response = serde_json::json!({ "message": "server error" });
+        let (_server, provider) = provider_with(response, 500).await;
 
         match provider.trending(1).await.unwrap_err() {
-            ProviderError::Status { status, .. } => assert_eq!(status, 429),
+            ProviderError::Status { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    /// A 429 with a `Retry-After` is retried once; if the retry succeeds the
+    /// caller never sees the rate limit.
+    #[tokio::test]
+    async fn a_429_is_retried_once_then_succeeds() {
+        let server = MockServer::start().await;
+        // First response: 429 with `Retry-After: 0`, so the test does not wait.
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("Retry-After", "0"),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        // Second response: the real payload.
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page_response(vec![media_json()])))
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        let anime = provider.trending(1).await.expect("retry should succeed");
+        assert_eq!(anime.len(), 1);
+    }
+
+    /// Two 429s in a row are reported, not retried forever, and the message
+    /// carries the retry delay.
+    #[tokio::test]
+    async fn a_persistent_429_is_reported() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .respond_with(
+                ResponseTemplate::new(429).insert_header("Retry-After", "0"),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = AniListProvider::with_endpoint(server.uri());
+        match provider.trending(1).await.unwrap_err() {
+            ProviderError::Status { status, body } => {
+                assert_eq!(status, 429);
+                assert!(body.contains("rate limited"), "message names the limit");
+            }
             other => panic!("expected Status, got {other:?}"),
         }
     }
