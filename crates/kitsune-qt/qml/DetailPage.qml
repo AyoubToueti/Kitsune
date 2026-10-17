@@ -22,6 +22,9 @@ Item {
     // Emitted when an episode is chosen: pushes the watch page with the
     // numbers it needs to search a release and match a torrent file.
     signal openWatch(int animeId, int malId, int episodeNumber, int absoluteEpisode)
+    // Season packs are a work-level search, so they get their own entry rather
+    // than being buried behind a specific episode.
+    signal openPacks(int animeId, int malId)
     // Emitted when a genre chip is clicked: opens the filter page for it.
     signal openGenre(string genre)
     // Emitted by the Recommendations "View more": opens the full, paged
@@ -129,8 +132,6 @@ Item {
             }
         }
         function onAnimeFailed(message) {
-            // The hero is empty, so the detail skeleton stands in; raise the
-            // retry overlay so the reader can retry without leaving the page.
             RetryState.reportFailure(message)
         }
         function onEpisodesReady(json) {
@@ -247,7 +248,6 @@ Item {
         }
     }
 
-    // Re-run the single-title lookup. Called by the retry overlay.
     function reload() {
         if (animeId > 0 && backend) {
             page.anime = null
@@ -264,14 +264,11 @@ Item {
         onTriggered: page.statusBusy = false
     }
 
-    // Loading placeholder: shown until the single-title lookup returns, since
-    // every region below is drawn from `page.anime`.
     DetailSkeleton {
         anchors.fill: parent
         visible: page.anime === null
     }
 
-    // Whole-page scroll
     Flickable {
         id: scroller
         anchors.fill: parent
@@ -552,6 +549,45 @@ Item {
                             font.pixelSize: 18
                             font.bold: true
                         }
+
+                        // Season packs button placed directly next to "Episodes" title
+                        Rectangle {
+                            visible: page.anime !== null && page.anime.episodeCount !== 0
+                            implicitWidth: packsRow.implicitWidth + 24
+                            height: 28
+                            radius: 14
+                            color: packsMouse.containsMouse ? Theme.surfaceHover : "transparent"
+                            border.width: 1
+                            border.color: packsMouse.containsMouse ? Theme.accent : Theme.borderSubtle
+
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            Row {
+                                id: packsRow
+                                anchors.centerIn: parent
+                                spacing: 6
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Season packs"
+                                    color: packsMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
+
+                            MouseArea {
+                                id: packsMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    const mal = page.anime && page.anime.idMal ? page.anime.idMal : 0
+                                    page.openPacks(page.animeId, mal)
+                                }
+                            }
+                        }
+
                         Text {
                             visible: page.anime
                                 && page.anime.episodeCount != null
@@ -684,7 +720,6 @@ Item {
                                         }
                                     }
 
-                                    // Gradient vignette for text readability
                                     Rectangle {
                                         anchors.left: parent.left
                                         anchors.right: parent.right
@@ -696,14 +731,12 @@ Item {
                                         }
                                     }
 
-                                    // Watched State Dark Wash
                                     Rectangle {
                                         anchors.fill: parent
                                         visible: watched
                                         color: "#40000000"
                                     }
 
-                                    // Watched State Top-Right Eye-Off Circular Pill
                                     Rectangle {
                                         visible: watched
                                         anchors.right: parent.right
@@ -724,7 +757,6 @@ Item {
                                         }
                                     }
 
-                                    // "LAST WATCHED" Badge on Current Episode
                                     Rectangle {
                                         visible: current
                                         anchors.right: parent.right
@@ -745,7 +777,6 @@ Item {
                                         }
                                     }
 
-                                    // EP Badge, Top-Left
                                     Rectangle {
                                         anchors.left: parent.left
                                         anchors.top: parent.top
@@ -765,7 +796,6 @@ Item {
                                         }
                                     }
 
-                                    // FILLER Flag, Top-Right (Shifted if Current/Watched)
                                     Rectangle {
                                         visible: modelData.filler === true
                                         anchors.left: epBadgeText.parent.right
@@ -787,7 +817,6 @@ Item {
                                         }
                                     }
 
-                                    // Hover Play Overlay Icon
                                     Rectangle {
                                         anchors.centerIn: parent
                                         width: 36
@@ -810,7 +839,6 @@ Item {
                                         }
                                     }
 
-                                    // Caption
                                     Text {
                                         anchors.left: parent.left
                                         anchors.right: parent.right
@@ -1092,7 +1120,6 @@ Item {
         }
     }
 
-    // Add-to-list popup menu
     Popup {
         id: statusPopup
         parent: statusButtonMouse

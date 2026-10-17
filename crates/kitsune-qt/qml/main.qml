@@ -370,14 +370,10 @@ Window {
         onOpenGenre: (genre) => root.openFilter(
             { "backend": root.backend, "initialGenre": genre },
             (page) => page.applyGenre(genre))
+        // A Continue Watching resume: play the remembered release for this
+        // work rather than searching again.
         onOpenWatch: (animeId, episodeNumber) => {
-            watchModal.animeId = animeId
-            watchModal.malId = 0
-            watchModal.episodeNumber = episodeNumber
-            watchModal.absoluteEpisode = episodeNumber
-            watchModal.titles = []
-            watchModal.resumeLast = true
-            watchModal.open()
+            watchModal.openFor(animeId, 0, episodeNumber, episodeNumber, "episodes", true)
         }
     }
 
@@ -393,13 +389,7 @@ Window {
         currentDetailId: root.currentDetailId
         onOpenRequested: (animeId, episode) => {
             root.openDetail(animeId)
-            watchModal.animeId = animeId
-            watchModal.malId = 0
-            watchModal.episodeNumber = episode
-            watchModal.absoluteEpisode = episode
-            watchModal.titles = []
-            watchModal.resumeLast = true
-            watchModal.open()
+            watchModal.openFor(animeId, 0, episode, episode, "episodes", true)
         }
     }
 
@@ -426,13 +416,16 @@ Window {
         DetailPage {
             onBack: root.goBack()
             onOpenAnime: (id) => root.openDetail(id)
+            // An episode click always searches afresh: `openFor` clears the
+            // previous list and, critically, leaves `resumeLast` false so this
+            // cannot replay the last release from another work.
             onOpenWatch: (animeId, malId, episodeNumber, absoluteEpisode) => {
-                watchModal.animeId = animeId
-                watchModal.malId = malId
-                watchModal.episodeNumber = episodeNumber
-                watchModal.absoluteEpisode = absoluteEpisode
-                watchModal.titles = []
-                watchModal.open()
+                watchModal.openFor(animeId, malId, episodeNumber, absoluteEpisode,
+                    "episodes", false)
+            }
+            // Season packs are a work-level search, so no episode travels.
+            onOpenPacks: (animeId, malId) => {
+                watchModal.openFor(animeId, malId, 0, 0, "packs", false)
             }
             onOpenGenre: (genre) => root.openFilter(
                 { "backend": root.backend, "initialGenre": genre },
@@ -523,10 +516,10 @@ Window {
         } else if (initialSettings) {
             settingsPopup.open()
         } else if (initialEpisodeAnime > 0) {
-            watchModal.animeId = initialEpisodeAnime
-            watchModal.episodeNumber = initialEpisodeNumber
-            watchModal.absoluteEpisode = initialEpisodeNumber
-            watchModal.open()
+            // Dev aid only, but still goes through `openFor` so it cannot
+            // inherit state from a previous open.
+            watchModal.openFor(initialEpisodeAnime, 0, initialEpisodeNumber,
+                initialEpisodeNumber, "episodes", false)
         } else if (initialWatchUrl.length > 0) {
             root.navigate(watchComponent, { "streamUrl": initialWatchUrl })
         }

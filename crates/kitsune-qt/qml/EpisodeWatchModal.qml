@@ -378,6 +378,11 @@ Popup {
     }
 
     property int loadedAnimeId: 0
+    // The episode the release list currently belongs to. Tracked beside the
+    // anime id because a different episode of the SAME work is a different
+    // search: without it, Ep1 -> Ep2 skipped the fetch entirely and the old
+    // list stayed on screen.
+    property int loadedEpisode: 0
     property var shortcutMap: ({})
     property var appSettings: ({})
 
@@ -416,6 +421,52 @@ Popup {
         }
     }
 
+    // Open the modal for a specific search, clearing everything the PREVIOUS
+    // open left behind.
+    //
+    // Every caller goes through here rather than setting the fields by hand.
+    // The hand-rolled version left `resumeLast` sticky (so a detail-page open
+    // could replay the last release from a different work) and kept the old
+    // release list when only the episode changed.
+    //
+    // `mode` is "episodes" or "packs"; `resumeLast` asks the backend for the
+    // remembered release of this work instead of searching.
+    function openFor(anime, mal, episode, absolute, mode, resumeLast) {
+        // Per-open search state.
+        modal.loadedAnimeId = 0
+        modal.loadedEpisode = 0
+        modal.titles = []
+        modal.releases = []
+        modal.badges = ({})
+        modal.error = ""
+        modal.searching = false
+        modal.probing = false
+        modal.releaseTitle = ""
+        modal.releaseMagnet = ""
+        modal.releaseQuery = ""
+        modal.resolutionFilter = []
+        modal.releaseSortKey = "match"
+        modal.releaseSortDesc = true
+        modal.stage = "releases"
+
+        // Resume state, so a previous "continue" cannot leak into this open.
+        modal.resumeLast = resumeLast === true
+        modal.resumeFileIdx = -1
+        modal.resumeHandled = false
+        modal.resumePromptOpen = false
+        modal.resumeSeekTarget = -1
+        modal.pendingResume = null
+
+        // Identity.
+        modal.animeId = anime
+        modal.malId = mal
+        modal.episodeNumber = episode
+        modal.absoluteEpisode = absolute
+        modal.releaseMode = mode
+
+        modal.open()
+    }
+
     onOpened: {
         if (!backend || animeId <= 0) return
         backend.getSettings()
@@ -426,8 +477,12 @@ Popup {
             modal.backend.getLastRelease(animeId)
             return
         }
-        if (loadedAnimeId !== animeId) {
+        // Guard on BOTH ids: a different episode of the same work needs its own
+        // search. `openFor` clears these, so this is a safety net for any
+        // future path that forgets to.
+        if (loadedAnimeId !== animeId || loadedEpisode !== episodeNumber) {
             loadedAnimeId = animeId
+            loadedEpisode = episodeNumber
             titles = []
             releases = []
             badges = ({})
@@ -815,6 +870,11 @@ Popup {
                 modal.play(modal.resumeFileIdx)
                 return
             }
+            // A pack has no episode to match on, and `pickFile(..., 0, ...)`
+            // falls through to the first video file -- which would silently
+            // play episode 1 of a batch. Leave the reader on the file list to
+            // choose.
+            if (modal.releaseMode === "packs") return
             const picked = modal.backend.pickFile(
                 JSON.stringify(modal.files), modal.episodeNumber, modal.offset())
             if (picked >= 0) modal.play(picked)
@@ -971,7 +1031,11 @@ Popup {
                         spacing: 2
 
                         Text {
-                            text: "EPISODE " + modal.episodeNumber
+                            // A pack search has no episode, so naming one
+                            // would read as "EPISODE 0".
+                            text: modal.releaseMode === "packs"
+                                ? "SEASON PACKS"
+                                : ("EPISODE " + modal.episodeNumber)
                             color: Theme.accent
                             font.pixelSize: 11
                             font.bold: true
@@ -979,7 +1043,11 @@ Popup {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: modal.releaseTitle !== "" ? modal.releaseTitle : ("Episode " + modal.episodeNumber)
+                            text: modal.releaseTitle !== ""
+                                ? modal.releaseTitle
+                                : (modal.releaseMode === "packs"
+                                    ? "Season packs"
+                                    : ("Episode " + modal.episodeNumber))
                             color: Theme.ink
                             font.pixelSize: 18
                             font.bold: true
@@ -1074,7 +1142,13 @@ Popup {
                                         }
                                         MouseArea {
                                             anchors.fill: parent
-                                            cursorShape: Qt.PointingHandCursor
+                                            // An episode search needs an episode; a
+                                            // packs-only open has none, so the
+                                            // Episodes tab stays inert.
+                                            enabled: !(modelData.value === "episodes"
+                                                && modal.episodeNumber <= 0)
+                                            cursorShape: enabled
+                                                ? Qt.PointingHandCursor : Qt.ArrowCursor
                                             onClicked: {
                                                 if (modal.releaseMode === modelData.value) return
                                                 modal.releaseMode = modelData.value
