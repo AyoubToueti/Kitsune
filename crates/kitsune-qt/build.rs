@@ -51,7 +51,8 @@ fn main() {
             // refuses to import them.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true))
             .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true))
-            .qml_file(QmlFile::from("qml/RetryState.qml").singleton(true)),
+            .qml_file(QmlFile::from("qml/RetryState.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/SpeedTestStore.qml").singleton(true)),
     )
     .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])
     // The brand mark, embedded so the UI can use it without shipping a loose

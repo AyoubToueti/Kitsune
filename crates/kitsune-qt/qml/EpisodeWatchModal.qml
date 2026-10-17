@@ -26,12 +26,13 @@ Popup {
     property string releaseQuery: ""
     property var resolutionFilter: []
     property var badges: ({})
+
     property bool probing: false
 
     property string releaseTitle: ""
     property string releaseMagnet: ""
 
-    // --- resume -----------------------------------------------------------
+    // --- Resume -----------------------------------------------------------
     readonly property string resumeBehavior: modal.appSettings.resumeBehavior || "ask"
     property var pendingResume: null
     property bool resumePromptOpen: false
@@ -156,7 +157,6 @@ Popup {
     x: modal.fullscreen ? 0 : Math.round((parent.width - width) / 2)
     y: modal.fullscreen ? 0 : Math.round((parent.height - height) / 2)
     
-    // Decreased width (72% of parent, max 980px) to match 16:9 video proportion
     width: modal.fullscreen 
         ? parent.width 
         : (parent ? Math.max(800, Math.min(Math.round(parent.width * 0.72), 980)) : 860)
@@ -575,12 +575,13 @@ Popup {
 
     function visibleReleases() {
         const needle = modal.releaseQuery.trim().toLowerCase()
-        return modal.releases.filter(function (r) {
+        const filtered = modal.releases.filter(function (r) {
             if (needle !== "" && r.title.toLowerCase().indexOf(needle) < 0) return false
             if (modal.resolutionFilter.length > 0
                 && modal.resolutionFilter.indexOf(r.resolution) < 0) return false
             return true
         })
+        return filtered
     }
 
     function toggleResolution(r) {
@@ -619,13 +620,6 @@ Popup {
         backend.getStreamUrl(torrentId, idx)
     }
 
-    // Pause / resume the TORRENT only.
-    //
-    // Deliberately does NOT touch the player. Pausing the download and pausing
-    // playback are independent: a reader may pause the torrent to save
-    // bandwidth while continuing to watch what is already buffered, or pause
-    // the video while the torrent keeps seeding. Coupling them meant this
-    // button silently froze the picture too.
     function togglePause() {
         if (torrentId < 0) return
         if (paused) { backend.resumeTorrent(torrentId); paused = false }
@@ -883,7 +877,7 @@ Popup {
             anchors.fill: parent
             spacing: 0
 
-            // --- Window Header (Hidden in Fullscreen) -------------------
+            // --- Window Header -----------------------------------
             Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: modal.fullscreen ? 0 : 84
@@ -1132,6 +1126,13 @@ Popup {
                             height: 52
                             interactive: true
 
+                            // Card-level click trigger placed FIRST so child MouseAreas take precedence
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: modal.pickRelease(modelData)
+                            }
+
                             RowLayout {
                                 anchors.fill: parent
                                 anchors.leftMargin: 12
@@ -1193,6 +1194,7 @@ Popup {
                                     color: copyMouse.containsMouse ? Theme.glassFillHover : "transparent"
                                     border.width: 1
                                     border.color: Theme.glassBorder
+                                    z: 5
                                     Text {
                                         anchors.centerIn: parent
                                         text: "\u29C9"
@@ -1214,6 +1216,7 @@ Popup {
                                     color: saveMouse.containsMouse ? Theme.glassFillHover : "transparent"
                                     border.width: 1
                                     border.color: Theme.glassBorder
+                                    z: 5
                                     Text {
                                         anchors.centerIn: parent
                                         text: "\u2913"
@@ -1229,12 +1232,6 @@ Popup {
                                     }
                                 }
                             }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: modal.pickRelease(modelData)
-                            }
                         }
                     }
                 }
@@ -1247,7 +1244,6 @@ Popup {
                     visible: modal.stage === "files" || modal.stage === "play"
                     spacing: 12
 
-                    // Responsive Viewport Container (Claims all available height)
                     Item {
                         id: playerViewport
                         Layout.fillWidth: true
@@ -1255,7 +1251,6 @@ Popup {
                         visible: modal.stage === "play"
                         clip: true
 
-                        // 1. BASE LAYER: Video Renderer
                         Loader {
                             id: playerLoader
                             anchors.fill: parent
@@ -1278,7 +1273,6 @@ Popup {
                             }
                         }
 
-                        // 2. OVERLAY LAYER: Top Floating HUD (Fullscreen Only)
                         GlassPanel {
                             id: topBar
                             anchors.top: parent.top
@@ -1312,7 +1306,6 @@ Popup {
                             }
                         }
 
-                        // 3. OVERLAY LAYER: Bottom Floating OSD Controls Bar
                         PlayerControls {
                             id: bottomControls
                             anchors.bottom: parent.bottom
@@ -1341,7 +1334,6 @@ Popup {
                             onOpenInfo: modal.infoOpen = !modal.infoOpen
                         }
 
-                        // Video details overlay
                         GlassPanel {
                             id: infoCard
                             visible: modal.infoOpen
@@ -1421,7 +1413,6 @@ Popup {
                             }
                         }
 
-                        // Resume prompt
                         GlassPanel {
                             id: resumePrompt
                             visible: modal.resumePromptOpen && modal.pendingResume !== null
@@ -1503,7 +1494,6 @@ Popup {
                             }
                         }
 
-                        // Skip intro/ED badge
                         GlassPanel {
                             id: skipOverlay
                             anchors.bottom: parent.bottom
@@ -1564,7 +1554,6 @@ Popup {
                             }
                         }
 
-                        // OSD Toast
                         Rectangle {
                             id: osdToast
                             anchors.centerIn: parent
@@ -1633,7 +1622,6 @@ Popup {
                             }
                         }
 
-                        // Buffering toast
                         GlassPanel {
                             anchors.centerIn: parent
                             z: 15
@@ -1670,7 +1658,6 @@ Popup {
                         }
                     }
 
-                    // --- Download & Peer Stats Panel (Windowed Mode Only) ---
                     GlassPanel {
                         Layout.fillWidth: true
                         visible: !modal.fullscreen
@@ -1823,7 +1810,6 @@ Popup {
                         }
                     }
 
-                    // Compact File List During Playback
                     ListView {
                         Layout.fillWidth: true
                         Layout.fillHeight: modal.stage !== "play"
@@ -1842,6 +1828,12 @@ Popup {
                             width: ListView.view.width
                             height: 44
                             interactive: true
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: modal.play(modelData.idx)
+                            }
 
                             RowLayout {
                                 anchors.fill: parent
@@ -1886,18 +1878,12 @@ Popup {
                                     }
                                 }
                             }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: modal.play(modelData.idx)
-                            }
                         }
                     }
                 }
             }
 
-            // --- Window Footer (Hidden in Fullscreen) -------------------
+            // --- Window Footer -----------------------------------
             Item {
                 Layout.fillWidth: true
                 Layout.preferredHeight: modal.fullscreen ? 0 : 48
@@ -1924,6 +1910,53 @@ Popup {
                         font.pixelSize: 11
                     }
 
+                    Rectangle {
+                        Layout.alignment: Qt.AlignVCenter
+                        implicitWidth: speedFooterRow.implicitWidth + 20
+                        height: 26
+                        radius: 13
+                        color: speedFooterMouse.containsMouse
+                            ? Theme.glassFillHover : Theme.glassFillSubtle
+                        border.width: 1
+                        border.color: SpeedTestStore.running
+                            ? Theme.accent : Theme.glassBorder
+
+                        Row {
+                            id: speedFooterRow
+                            anchors.centerIn: parent
+                            spacing: 6
+
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: {
+                                    if (SpeedTestStore.running) {
+                                        const pct = SpeedTestStore.progress
+                                            ? SpeedTestStore.progress.percent : 0
+                                        return "Testing\u2026 " + pct + "%"
+                                    }
+                                    if (SpeedTestStore.result !== null) {
+                                        return "down " + SpeedTestStore.downloadText()
+                                            + " \u00b7 " + SpeedTestStore.latencyText()
+                                    }
+                                    return "Test speed"
+                                }
+                                color: SpeedTestStore.result !== null
+                                    ? Theme.accent : Theme.inkMuted
+                                font.pixelSize: 11
+                            }
+                        }
+
+                        MouseArea {
+                            id: speedFooterMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: !SpeedTestStore.running
+                            cursorShape: SpeedTestStore.running
+                                ? Qt.ArrowCursor : Qt.PointingHandCursor
+                            onClicked: SpeedTestStore.run()
+                        }
+                    }
+
                     Item { Layout.fillWidth: true }
 
                     Text {
@@ -1942,7 +1975,6 @@ Popup {
             }
         }
 
-        // Overlay Dismiss Backdrop
         MouseArea {
             anchors.fill: parent
             visible: modal.settingsOpen && modal.stage === "play"
@@ -1950,7 +1982,6 @@ Popup {
             onClicked: modal.settingsOpen = false
         }
 
-        // Overlay Settings Card
         PlayerSettings {
             id: settingsCard
             player: playerLoader.item

@@ -506,6 +506,10 @@ Window {
     Component.onCompleted: {
         ListStatusStore.setBackend(root.backend)
 
+        // The speed test is app-wide: the Settings card and the watch modal
+        // share one measurement rather than each running its own.
+        SpeedTestStore.setBackend(root.backend)
+
         if (initialOpenId > 0) {
             root.navigate(detailComponent, { "animeId": initialOpenId, "backend": root.backend })
         } else if (initialBrowse) {

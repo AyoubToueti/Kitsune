@@ -177,6 +177,55 @@ pub fn build_client() -> Result<Client> {
         .context("failed to build the speed-test HTTP client")
 }
 
+/// A ready-to-use speed tester: a pooled client plus a "one at a time" guard.
+///
+/// Owns everything a frontend needs, so a caller never has to name `reqwest`
+/// itself. Concurrent runs are refused rather than allowed to split the
+/// bandwidth and under-report both.
+pub struct SpeedTester {
+    client: Client,
+    running: std::sync::atomic::AtomicBool,
+}
+
+impl SpeedTester {
+    /// Build a tester. Fails only if the HTTP client cannot be built.
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            client: build_client()?,
+            running: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Run one measurement against the real Cloudflare endpoint.
+    ///
+    /// The guard is released on every path (success, failure, or panic), so a
+    /// bad run never wedges the next one.
+    pub async fn run(
+        &self,
+        emit: impl Fn(SpeedTestProgress),
+    ) -> Result<SpeedTestResult> {
+        use std::sync::atomic::Ordering;
+
+        if self
+            .running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            anyhow::bail!("a speed test is already running");
+        }
+        // Release the claim however this future ends, including on cancel.
+        struct Release<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Release<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _release = Release(&self.running);
+
+        run_measurement(&self.client, DOWN_URL, &SpeedTestConfig::default(), emit).await
+    }
+}
+
 /// Run the whole measurement, emitting progress as it goes.
 ///
 /// `down_url` is a parameter rather than a constant so a test can point it at a

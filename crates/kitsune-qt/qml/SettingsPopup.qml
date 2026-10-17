@@ -25,7 +25,7 @@ Popup {
     modal: true
     focus: true
     padding: 0
-    closePolicy: Popup.CloseOnEscape
+    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     // Fetch fresh on every open, so a change made elsewhere is not clobbered.
     onOpened: {
@@ -33,6 +33,11 @@ Popup {
             backend.getSettings()
             backend.authStatus()
         }
+    }
+
+    // Auto-save whenever the popup is dismissed (Done button, Escape, or clicking outside).
+    onClosed: {
+        popup.save()
     }
 
     Connections {
@@ -107,12 +112,10 @@ Popup {
         if (event.modifiers & Qt.MetaModifier) mods += "Meta+"
 
         const text = event.text
-        // A letter/digit with no Ctrl/Alt/Meta is just its upper-case text.
         if (text && text.length > 0 && text.charCodeAt(0) >= 32
                 && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
             return mods + text.toUpperCase()
         }
-        // Symbol keys (Left, Space, F1, ...) by name.
         const key = event.key
         const named = {
             32: "Space", 16777234: "Left", 16777236: "Right",
@@ -191,30 +194,31 @@ Popup {
                 font.bold: true
             }
 
-            // Close X.
             Rectangle {
                 anchors.right: parent.right
-                anchors.rightMargin: 16
+                anchors.rightMargin: 20
                 anchors.verticalCenter: parent.verticalCenter
-                width: 34
-                height: 34
-                radius: 9
+                width: 32
+                height: 32
+                radius: 8
                 color: closeMouse.containsMouse ? Theme.surfaceHover : "transparent"
                 border.width: 1
                 border.color: Theme.borderSubtle
 
-                Text {
+                PlayerIcon {
                     anchors.centerIn: parent
-                    text: "✕"
-                    color: Theme.inkMuted
-                    font.pixelSize: 14
+                    kind: "close"
+                    color: closeMouse.containsMouse ? Theme.ink : Theme.inkMuted
+                    width: 12
+                    height: 12
                 }
+
                 MouseArea {
                     id: closeMouse
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: { popup.save(); popup.close() }
+                    onClicked: popup.close()
                 }
             }
         }
@@ -224,7 +228,7 @@ Popup {
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: width
-            contentHeight: bodyColumn.implicitHeight + 8
+            contentHeight: bodyColumn.implicitHeight + 16
             clip: true
             boundsBehavior: Flickable.StopAtBounds
 
@@ -372,6 +376,7 @@ Popup {
                         }
                     }
                 }
+
                 // ===== Player shortcuts =================================
                 Rectangle {
                     Layout.fillWidth: true
@@ -418,9 +423,6 @@ Popup {
                                     font.pixelSize: 12
                                 }
 
-                                // A capture field: focus it and the next key
-                                // pressed becomes the binding. Reads as the
-                                // current sequence when not capturing.
                                 TextField {
                                     id: scField
                                     Layout.preferredWidth: 120
@@ -440,7 +442,6 @@ Popup {
                                     }
 
                                     Keys.onPressed: (event) => {
-                                        // Esc clears the override (back to default).
                                         if (event.key === Qt.Key_Escape) {
                                             const next = Object.assign({}, popup.shortcuts)
                                             delete next[modelData.key]
@@ -449,7 +450,6 @@ Popup {
                                             event.accepted = true
                                             return
                                         }
-                                        // Ignore bare modifiers; wait for a real key.
                                         if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control
                                                 || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta) {
                                             event.accepted = true
@@ -470,7 +470,6 @@ Popup {
                     }
                 }
 
-                // ===== 
                 // ===== Appearance =======================================
                 Rectangle {
                     Layout.fillWidth: true
@@ -537,6 +536,7 @@ Popup {
                         }
                     }
                 }
+
                 // ===== Resume ==========================================
                 Rectangle {
                     Layout.fillWidth: true
@@ -650,7 +650,6 @@ Popup {
                     }
                 }
 
-                // ===== 
                 // ===== Playback & downloads =============================
                 Rectangle {
                     Layout.fillWidth: true
@@ -774,12 +773,177 @@ Popup {
                         }
                     }
                 }
+
+                // --- Internet speed test ---------------------------------
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 24
+                    Layout.rightMargin: 24
+                    implicitHeight: speedCol.implicitHeight + 28
+                    radius: 10
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
+
+                    ColumnLayout {
+                        id: speedCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 10
+
+                        Text {
+                            text: "DIAGNOSTICS"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Measure your connection against Cloudflare. Download speed and latency are what streaming depends on."
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+
+                            Rectangle {
+                                width: 150
+                                height: 34
+                                radius: 8
+                                color: SpeedTestStore.running
+                                    ? Theme.surfaceHover
+                                    : (speedMouse.containsMouse ? Theme.accentHover : Theme.accent)
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: SpeedTestStore.running ? "Testing\u2026" : "Run speed test"
+                                    color: SpeedTestStore.running ? Theme.inkFaint : "white"
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+
+                                MouseArea {
+                                    id: speedMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    enabled: !SpeedTestStore.running
+                                    cursorShape: SpeedTestStore.running
+                                        ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                    onClicked: SpeedTestStore.run()
+                                }
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 8
+                                visible: SpeedTestStore.running
+
+                                readonly property real fraction: SpeedTestStore.progress
+                                    ? Math.max(0, Math.min(1, SpeedTestStore.progress.percent / 100))
+                                    : 0
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    radius: 4
+                                    color: Theme.surface
+                                    border.width: 1
+                                    border.color: Theme.borderSubtle
+                                }
+
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: Math.max(parent.height, parent.width * parent.fraction)
+                                    radius: 4
+                                    color: Theme.accent
+
+                                    Behavior on width { NumberAnimation { duration: 180 } }
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: SpeedTestStore.error.length > 0
+                            text: SpeedTestStore.error
+                            color: Theme.danger
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
+                            visible: SpeedTestStore.result !== null
+
+                            Repeater {
+                                model: [
+                                    { "label": "Latency", "value": SpeedTestStore.latencyText() },
+                                    {
+                                        "label": "Jitter",
+                                        "value": (SpeedTestStore.result
+                                            && SpeedTestStore.result.jitterMs !== undefined)
+                                            ? Math.round(SpeedTestStore.result.jitterMs) + " ms"
+                                            : ""
+                                    },
+                                    { "label": "Download", "value": SpeedTestStore.downloadText() }
+                                ]
+
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    implicitHeight: tileCol.implicitHeight + 20
+                                    radius: 8
+                                    color: Theme.surface
+                                    border.width: 1
+                                    border.color: Theme.borderSubtle
+
+                                    ColumnLayout {
+                                        id: tileCol
+                                        anchors.centerIn: parent
+                                        spacing: 2
+
+                                        Text {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            text: modelData.label
+                                            color: Theme.inkFaint
+                                            font.pixelSize: 10
+                                            font.bold: true
+                                        }
+                                        Text {
+                                            Layout.alignment: Qt.AlignHCenter
+                                            text: modelData.value
+                                            color: Theme.accent
+                                            font.pixelSize: 15
+                                            font.bold: true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            visible: SpeedTestStore.result !== null
+                            text: SpeedTestStore.verdictText()
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
             }
         }
 
         // --- Footer -----------------------------------------------------
-        // A solid background so body content scrolling under it does not show
-        // through behind the Done button.
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: 60
@@ -823,7 +987,7 @@ Popup {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: { popup.save(); popup.close() }
+                    onClicked: popup.close()
                 }
             }
         }

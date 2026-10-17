@@ -180,6 +180,14 @@ pub mod qobject {
             offset: i32,
         ) -> i32;
 
+        /// Measure latency and download throughput against Cloudflare. Runs
+        /// asynchronously; progress arrives on `speedTestProgress`, the final
+        /// numbers on `speedTestReady`. A second call while one is running is
+        /// rejected on `speedTestFailed`.
+        #[qinvokable]
+        #[cxx_name = "runSpeedTest"]
+        fn run_speed_test(self: Pin<&mut Self>);
+
         /// Search the indexers for a work's releases. `titles` is a JSON array
         /// of title forms; `mode` is the search-mode wire string.
         #[qinvokable]
@@ -538,6 +546,21 @@ pub mod qobject {
         #[cxx_name = "episodesFailed"]
         fn episodes_failed(self: Pin<&mut Self>, message: QString);
 
+        // --- Speed test ------------------------------------------------------
+
+        /// One progress update while a speed test runs, as a JSON
+        /// `SpeedTestProgress` (`{phase, percent, latencyMs, downloadMbps}`).
+        #[qsignal]
+        #[cxx_name = "speedTestProgress"]
+        fn speed_test_progress(self: Pin<&mut Self>, json: QString);
+        /// The finished measurement, as a JSON `SpeedTestResult`.
+        #[qsignal]
+        #[cxx_name = "speedTestReady"]
+        fn speed_test_ready(self: Pin<&mut Self>, json: QString);
+        #[qsignal]
+        #[cxx_name = "speedTestFailed"]
+        fn speed_test_failed(self: Pin<&mut Self>, message: QString);
+
         // --- Release / torrent results ---------------------------------------
 
         #[qsignal]
@@ -599,6 +622,7 @@ use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
 use kitsune_core::auth::{TokenStore, flow};
+use kitsune_core::diagnostics::speedtest::{SpeedTestProgress, SpeedTester};
 use kitsune_core::indexer::{
     combined_score, download_to, health_badge, probe_releases_standalone, rank, search_all,
     HealthBadge, IndexerRegistry, ReleaseRequest, SearchMode,
@@ -654,6 +678,15 @@ pub struct BackendRust {
     watch_positions: Arc<WatchPositionStore>,
     /// The release last played per work, so a resume can reselect it.
     last_releases: Arc<LastReleaseStore>,
+    /// The internet speed tester. Owns its pooled client and a "one run at a
+    /// time" guard, so a second click cannot split the bandwidth and
+    /// under-report both runs.
+    ///
+    /// `None` when the HTTP client could not be built (a broken TLS setup).
+    /// The command then reports that instead of crashing at startup, and every
+    /// other feature keeps working -- the speed test is a diagnostic, not a
+    /// prerequisite.
+    speed_tester: Option<Arc<SpeedTester>>,
 }
 
 impl Default for BackendRust {
@@ -701,6 +734,17 @@ impl Default for BackendRust {
             player: Arc::new(PlayerState::with_settings(settings.clone())),
             settings,
             indexers: Arc::new(IndexerRegistry::new()),
+            // A bad client build is not worth failing startup over: it needs
+            // a TLS backend, which is present in every shipped build, so a
+            // failure here means the environment is broken. `None` lets the
+            // command report that instead of panicking at startup.
+            speed_tester: match SpeedTester::new() {
+                Ok(tester) => Some(Arc::new(tester)),
+                Err(err) => {
+                    tracing::warn!("speed test unavailable: {err:#}");
+                    None
+                }
+            },
         }
     }
 }
@@ -1156,6 +1200,49 @@ impl qobject::Backend {
             Some(file) => file.idx as i32,
             None => -1,
         }
+    }
+
+    // --- Speed test -------------------------------------------------------
+
+    fn run_speed_test(self: Pin<&mut Self>) {
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+
+        // Missing means the HTTP client could not be built; say so rather than
+        // silently doing nothing.
+        let Some(tester) = self.rust().speed_tester.clone() else {
+            self.speed_test_failed(QString::from(
+                "speed test unavailable: could not build the HTTP client",
+            ));
+            return;
+        };
+
+        runtime.spawn(async move {
+            // Progress is emitted from inside the measurement, on this same
+            // runtime, so each update is queued straight onto the Qt thread.
+            // The tester refuses a concurrent run itself.
+            let progress_thread = qt_thread.clone();
+            let result = tester
+                .run(move |progress: SpeedTestProgress| {
+                    let json = serde_json::to_string(&progress).unwrap_or_default();
+                    let _ = progress_thread
+                        .queue(move |qobject| qobject.speed_test_progress(QString::from(&json)));
+                })
+                .await;
+
+            match result {
+                Ok(result) => {
+                    let json = serde_json::to_string(&result).unwrap_or_else(|_| "null".into());
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.speed_test_ready(QString::from(&json)));
+                }
+                Err(err) => {
+                    let message = format!("speed test failed: {err:#}");
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.speed_test_failed(QString::from(&message)));
+                }
+            }
+        });
     }
 
     // --- Releases & torrents ----------------------------------------------
