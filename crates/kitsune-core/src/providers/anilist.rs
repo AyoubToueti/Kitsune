@@ -13,12 +13,14 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use super::traits::{AnimeProvider, ProviderError};
+use super::traits::{
+    AnimeProvider, ProviderError, HOME_BLOCK_LIMIT, HOME_TOP_100_LIMIT, HOME_TRENDING_LIMIT,
+};
 use crate::types::{
-    Anime, AnimePage, BrowseQuery, FormatFilter, ListFilter, ListStatus, MediaTag, PageInfo,
-    ProviderId, RecommendationRating, RecommendedAnime, RecommendationsPage, RecommenderUser,
-    RelatedAnime, ScheduledEpisode, SeasonFilter, SortOption, StatusFilter, StreamingEpisode,
-    Title, Trailer,
+    Anime, AnimePage, BrowseQuery, FormatFilter, HomeShelves, ListFilter, ListStatus, MediaTag,
+    PageInfo, ProviderId, RecommendationRating, RecommendedAnime, RecommendationsPage,
+    RecommenderUser, RelatedAnime, ScheduledEpisode, SeasonFilter, SortOption, StatusFilter,
+    StreamingEpisode, Title, Trailer,
 };
 
 /// AniList's public GraphQL endpoint.
@@ -580,6 +582,63 @@ impl AnimeProvider for AniListProvider {
                 last_page: data.page.page_info.last_page,
                 has_next_page: data.page.page_info.has_next_page,
             },
+        })
+    }
+
+    /// Every home shelf in ONE request, via GraphQL aliases.
+    ///
+    /// Each alias is the same `Page` query the individual list methods run, so
+    /// the mapping is identical; the saving is the round trips -- six requests
+    /// collapse to one, and six chances to trip the rate limit become one.
+    async fn home_shelves(&self) -> Result<HomeShelves, ProviderError> {
+        let query = format!(
+            r#"
+            query {{
+              trending: Page(page: 1, perPage: {trending}) {{
+                media({f_trending}) {{ {fields} }}
+              }}
+              topAiring: Page(page: 1, perPage: {block}) {{
+                media({f_airing}) {{ {fields} }}
+              }}
+              mostPopular: Page(page: 1, perPage: {block}) {{
+                media({f_popular}) {{ {fields} }}
+              }}
+              topRated: Page(page: 1, perPage: {block}) {{
+                media({f_rated}) {{ {fields} }}
+              }}
+              latestCompleted: Page(page: 1, perPage: {block}) {{
+                media({f_latest}) {{ {fields} }}
+              }}
+              top100: Page(page: 1, perPage: {top100}) {{
+                media({f_rated}) {{ {fields} }}
+              }}
+            }}
+            "#,
+            trending = HOME_TRENDING_LIMIT,
+            block = HOME_BLOCK_LIMIT,
+            top100 = HOME_TOP_100_LIMIT,
+            f_trending = list_filter_arg(ListFilter::Trending),
+            f_airing = list_filter_arg(ListFilter::TopAiring),
+            f_popular = list_filter_arg(ListFilter::MostPopular),
+            f_rated = list_filter_arg(ListFilter::TopRated),
+            f_latest = list_filter_arg(ListFilter::LatestCompleted),
+            fields = MEDIA_FIELDS,
+        );
+
+        let data: HomeShelvesData = self.query(&query, serde_json::json!({})).await?;
+
+        Ok(HomeShelves {
+            trending: data.trending.media.into_iter().map(map_media).collect(),
+            top_airing: data.top_airing.media.into_iter().map(map_media).collect(),
+            most_popular: data.most_popular.media.into_iter().map(map_media).collect(),
+            top_rated: data.top_rated.media.into_iter().map(map_media).collect(),
+            latest_completed: data
+                .latest_completed
+                .media
+                .into_iter()
+                .map(map_media)
+                .collect(),
+            top_100: data.top_100.media.into_iter().map(map_media).collect(),
         })
     }
 
@@ -1432,6 +1491,36 @@ struct GraphQlError {
 struct PageData {
     #[serde(rename = "Page")]
     page: Page,
+}
+
+/// One aliased shelf: a `Page` node's `media` list, with no paging info.
+///
+/// The combined home query does not paginate, so it does not request
+/// `pageInfo`; only `media` is needed.
+#[derive(Deserialize, Default)]
+struct HomeShelfWire {
+    #[serde(default)]
+    media: Vec<Media>,
+}
+
+/// The envelope around the combined home query.
+///
+/// One field per alias in the document; each is defaulted so a shelf that
+/// returns nothing still decodes rather than failing the whole request.
+#[derive(Deserialize, Default)]
+struct HomeShelvesData {
+    #[serde(default)]
+    trending: HomeShelfWire,
+    #[serde(rename = "topAiring", default)]
+    top_airing: HomeShelfWire,
+    #[serde(rename = "mostPopular", default)]
+    most_popular: HomeShelfWire,
+    #[serde(rename = "topRated", default)]
+    top_rated: HomeShelfWire,
+    #[serde(rename = "latestCompleted", default)]
+    latest_completed: HomeShelfWire,
+    #[serde(rename = "top100", default)]
+    top_100: HomeShelfWire,
 }
 
 #[derive(Deserialize)]
@@ -2680,6 +2769,48 @@ mod tests {
         assert_eq!(first.provider, ProviderId::AniList);
         assert_eq!(first.title.romaji.as_deref(), Some("One Piece"));
         assert_eq!(first.average_score, Some(88));
+    }
+
+    /// The combined home query carries every shelf as an alias, so ONE round
+    /// trip fills the whole home screen. The response keys are the aliases.
+    #[tokio::test]
+    async fn home_shelves_maps_every_alias() {
+        let response = serde_json::json!({
+            "data": {
+                "trending": { "media": [media_json()] },
+                "topAiring": { "media": [media_json()] },
+                "mostPopular": { "media": [] },
+                "topRated": { "media": [media_json()] },
+                "latestCompleted": { "media": [] },
+                "top100": { "media": [media_json(), media_json()] }
+            }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let shelves = provider.home_shelves().await.unwrap();
+
+        assert_eq!(shelves.trending.len(), 1);
+        assert_eq!(shelves.top_airing.len(), 1);
+        assert!(shelves.most_popular.is_empty());
+        assert_eq!(shelves.top_rated.len(), 1);
+        assert!(shelves.latest_completed.is_empty());
+        assert_eq!(shelves.top_100.len(), 2);
+        // The mapped work is the same shape the single-list path produces.
+        assert_eq!(shelves.trending[0].id, 21);
+    }
+
+    /// A missing alias decodes to an empty shelf rather than failing the whole
+    /// request, so one quiet shelf cannot blank the home screen.
+    #[tokio::test]
+    async fn home_shelves_defaults_a_missing_alias() {
+        let response = serde_json::json!({
+            "data": { "trending": { "media": [media_json()] } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let shelves = provider.home_shelves().await.unwrap();
+        assert_eq!(shelves.trending.len(), 1);
+        assert!(shelves.top_100.is_empty());
     }
 
     /// A Page response carrying `pageInfo`, as the paged list query requests.

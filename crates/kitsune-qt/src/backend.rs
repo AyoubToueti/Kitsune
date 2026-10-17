@@ -68,6 +68,13 @@ pub mod qobject {
             per_page: i32,
         );
 
+        /// Every home shelf (trending + the five curated blocks) in ONE
+        /// request. Emits `homeReady(json)` with a `HomeShelves` object, or
+        /// `homeFailed(message)`.
+        #[qinvokable]
+        #[cxx_name = "getHome"]
+        fn get_home(self: Pin<&mut Self>);
+
         /// Browse with filters and paging. `query` is a JSON `BrowseQuery`.
         #[qinvokable]
         #[cxx_name = "getBrowse"]
@@ -449,6 +456,15 @@ pub mod qobject {
         #[cxx_name = "taggedListFailed"]
         fn tagged_list_failed(self: Pin<&mut Self>, tag: QString, message: QString);
 
+        /// The home screen's shelves, as a JSON `HomeShelves`. One signal for
+        /// the whole screen, since it is one request.
+        #[qsignal]
+        #[cxx_name = "homeReady"]
+        fn home_ready(self: Pin<&mut Self>, json: QString);
+        #[qsignal]
+        #[cxx_name = "homeFailed"]
+        fn home_failed(self: Pin<&mut Self>, message: QString);
+
         #[qsignal]
         #[cxx_name = "browseReady"]
         fn browse_ready(self: Pin<&mut Self>, json: QString);
@@ -816,6 +832,22 @@ impl qobject::Backend {
             },
             Self::list_ready,
             Self::list_failed,
+        );
+    }
+
+    /// Every home shelf in one provider call, so the home screen costs a
+    /// single AniList request instead of six.
+    fn get_home(self: Pin<&mut Self>) {
+        self.spawn_metadata(
+            move |provider| async move {
+                provider
+                    .home_shelves()
+                    .await
+                    .map(|shelves| json_or_empty(&shelves))
+                    .map_err(|err| err.to_string())
+            },
+            Self::home_ready,
+            Self::home_failed,
         );
     }
 

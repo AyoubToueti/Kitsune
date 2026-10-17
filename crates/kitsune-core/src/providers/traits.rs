@@ -7,9 +7,16 @@
 use async_trait::async_trait;
 
 use crate::types::{
-    Anime, AnimePage, BrowseQuery, ListFilter, MediaTag, ProviderId, RecommendationsPage,
-    ScheduledEpisode,
+    Anime, AnimePage, BrowseQuery, HomeShelves, ListFilter, MediaTag, ProviderId,
+    RecommendationsPage, ScheduledEpisode,
 };
+
+/// How many trending titles the home page requests (hero + rail).
+pub const HOME_TRENDING_LIMIT: u32 = 20;
+/// How many rows each curated block shows.
+pub const HOME_BLOCK_LIMIT: u32 = 5;
+/// How many rows the Top 100 preview shows.
+pub const HOME_TOP_100_LIMIT: u32 = 10;
 
 /// Why a provider call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +155,35 @@ pub trait AnimeProvider: Send + Sync {
         page: u32,
         per_page: u32,
     ) -> Result<AnimePage, ProviderError>;
+
+    /// Every shelf the home screen shows, in one call.
+    ///
+    /// The default runs one `list()` per shelf, which is correct but chatty.
+    /// A provider whose API accepts several queries in one round trip
+    /// (AniList: GraphQL aliases) overrides this so the whole home screen
+    /// costs ONE request instead of six -- the difference between tripping the
+    /// rate limit on startup and not.
+    async fn home_shelves(&self) -> Result<HomeShelves, ProviderError> {
+        let trending = self.trending(HOME_TRENDING_LIMIT).await?;
+        let top_airing = self.list(ListFilter::TopAiring, HOME_BLOCK_LIMIT).await?;
+        let most_popular = self
+            .list(ListFilter::MostPopular, HOME_BLOCK_LIMIT)
+            .await?;
+        let top_rated = self.list(ListFilter::TopRated, HOME_BLOCK_LIMIT).await?;
+        let latest_completed = self
+            .list(ListFilter::LatestCompleted, HOME_BLOCK_LIMIT)
+            .await?;
+        let top_100 = self.list(ListFilter::TopRated, HOME_TOP_100_LIMIT).await?;
+
+        Ok(HomeShelves {
+            trending,
+            top_airing,
+            most_popular,
+            top_rated,
+            latest_completed,
+            top_100,
+        })
+    }
 }
 
 #[cfg(test)]

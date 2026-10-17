@@ -92,6 +92,28 @@ Item {
             // A failed block stays empty rather than taking the page down.
         }
 
+        // The whole home screen arrives in ONE reply: trending (split between
+        // the hero and the rail) plus the five curated blocks. This is the
+        // path `Component.onCompleted` uses; the per-shelf handlers above are
+        // kept only as a fallback.
+        function onHomeReady(json) {
+            const shelves = JSON.parse(json) || ({})
+            const trending = shelves.trending || []
+            page.heroItems = trending.slice(0, page.heroLimit)
+            page.railItems = trending.slice(page.heroLimit)
+            page.trendingLoading = false
+            page.topAiringItems = shelves.topAiring || []
+            page.mostPopularItems = shelves.mostPopular || []
+            page.topRatedItems = shelves.topRated || []
+            page.latestCompletedItems = shelves.latestCompleted || []
+            page.top100Items = shelves.top100 || []
+        }
+        function onHomeFailed(message) {
+            // Leave every shelf empty and stop the spinner; one failed request
+            // must not wedge the page.
+            page.trendingLoading = false
+        }
+
         function onAuthStatusReady(signedInNow) {
             page.signedIn = signedInNow
             if (signedInNow) page.backend.continueWatching(12)
@@ -160,13 +182,10 @@ Item {
 
     Component.onCompleted: {
         if (!backend) return
-        backend.getTrending(page.trendingLimit)
-        backend.getListTagged("topAiring", "topAiring", page.blockLimit)
-        backend.getListTagged("mostPopular", "mostPopular", page.blockLimit)
-        backend.getListTagged("topRated", "topRated", page.blockLimit)
-        backend.getListTagged("latestCompleted", "latestCompleted", page.blockLimit)
-        // The Top 100 preview: score order, ten rows.
-        backend.getListTagged("top100", "topRated", page.top100Limit)
+        // ONE request fills every shelf: trending + the five curated blocks.
+        // The old path fired six separate AniList queries at once, which is
+        // what tripped the rate limit on startup.
+        backend.getHome()
         backend.authStatus()
         // Resume ordering needs the local last-played record; the positions
         // give the cards their progress readout.

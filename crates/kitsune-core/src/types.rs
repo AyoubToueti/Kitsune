@@ -73,6 +73,31 @@ pub struct AnimePage {
     pub page_info: PageInfo,
 }
 
+/// Every shelf the home screen shows, fetched in one call.
+///
+/// The home page needs six lists (a trending rail plus five curated blocks).
+/// Asking for them one at a time is six requests against a provider that
+/// rate-limits hard, so a provider whose API allows several queries per round
+/// trip fetches them together and returns this. The default implementation
+/// falls back to one `list()` per shelf, so a provider without that ability
+/// still works.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomeShelves {
+    /// Trending, for the hero carousel and the rail beneath it.
+    pub trending: Vec<Anime>,
+    /// Currently airing, most popular first.
+    pub top_airing: Vec<Anime>,
+    /// Most popular of all time.
+    pub most_popular: Vec<Anime>,
+    /// Highest rated.
+    pub top_rated: Vec<Anime>,
+    /// Finished airing, most recently started first.
+    pub latest_completed: Vec<Anime>,
+    /// The top-rated preview list, longer than `top_rated`.
+    pub top_100: Vec<Anime>,
+}
+
 /// How to order results.
 ///
 /// Provider-agnostic, like [`ListFilter`]: a variant names an intent, and each
