@@ -12,11 +12,18 @@ Rectangle {
     // Which segmented pill is active: "list", "filter", or "" for neither.
     property string activeRoute: ""
 
+    // Whether the history chevrons are usable, derived by the window from its
+    // own history stacks.
+    property bool canGoBack: false
+    property bool canGoForward: false
+
     signal search(string term)
     signal openHome()
     signal openMyList()
     signal openFilter()
     signal openSettings()
+    signal goBack()
+    signal goForward()
 
     height: 60
     color: Theme.surfaceRaised
@@ -123,6 +130,68 @@ Rectangle {
                 onClicked: {
                     bar.forceActiveFocus()
                     bar.openHome()
+                }
+            }
+        }
+
+        // History chevrons. Dimmed (and inert) when there is nowhere to go, so
+        // the control reads as unavailable rather than broken. These mirror the
+        // mouse back/forward buttons and the Alt+Left/Right shortcuts.
+        Row {
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 4
+
+            Rectangle {
+                width: 30
+                height: 30
+                radius: 8
+                color: bar.canGoBack
+                    ? (backMouse.containsMouse ? Theme.surfaceHover : "transparent")
+                    : "transparent"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "\u2039"
+                    color: bar.canGoBack ? Theme.ink : Theme.inkFaint
+                    font.pixelSize: 22
+                    font.bold: true
+                    opacity: bar.canGoBack ? 1.0 : 0.35
+                }
+
+                MouseArea {
+                    id: backMouse
+                    anchors.fill: parent
+                    enabled: bar.canGoBack
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: bar.goBack()
+                }
+            }
+
+            Rectangle {
+                width: 30
+                height: 30
+                radius: 8
+                color: bar.canGoForward
+                    ? (fwdMouse.containsMouse ? Theme.surfaceHover : "transparent")
+                    : "transparent"
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "\u203A"
+                    color: bar.canGoForward ? Theme.ink : Theme.inkFaint
+                    font.pixelSize: 22
+                    font.bold: true
+                    opacity: bar.canGoForward ? 1.0 : 0.35
+                }
+
+                MouseArea {
+                    id: fwdMouse
+                    anchors.fill: parent
+                    enabled: bar.canGoForward
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: bar.goForward()
                 }
             }
         }
