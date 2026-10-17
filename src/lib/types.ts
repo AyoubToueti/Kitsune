@@ -559,6 +559,14 @@ export interface Settings {
   askEveryTime: boolean;
   /** `"light"`, `"dark"` or `"system"`. */
   theme: string;
+  /**
+   * Whether the speed test reports download speed in binary units (MiB/s)
+   * instead of decimal megabits (Mbps).
+   *
+   * Both are correct; Mbps is how connections are sold, MiB/s is the unit the
+   * app already uses for torrent sizes. Defaults to `false`.
+   */
+  useBinaryUnits?: boolean;
 }
 
 /**

@@ -26,8 +26,14 @@ Item {
     // The last failure, cleared when a new run starts.
     property string error: ""
 
+    // Whether to show MiB/s instead of Mbps, from the saved settings. Refreshed
+    // when the backend reports settings, so toggling it in Settings updates the
+    // result without a restart.
+    property bool binaryUnits: false
+
     function setBackend(b) {
         backend = b
+        if (b) b.getSettings()
     }
 
     // Start a measurement. Ignores the click while one is already running, so
@@ -59,6 +65,10 @@ Item {
     //   MiB/s  = bits/s / 8 / 2^20 = Mbps * 0.11920928955078125
     function downloadText() {
         if (!result || result.downloadMbps === undefined) return ""
+        if (store.binaryUnits) {
+            const mib = result.downloadMbps * 0.11920928955078125
+            return mib.toFixed(1) + " MiB/s"
+        }
         return result.downloadMbps.toFixed(1) + " Mbps"
     }
 
@@ -83,6 +93,14 @@ Item {
             store.running = false
             store.progress = null
             store.error = message
+        }
+
+        // The unit choice lives in Settings; read it whenever settings arrive,
+        // which covers both startup and a save from the settings popup.
+        function onSettingsReady(json) {
+            const s = JSON.parse(json)
+            if (s === null) return
+            store.binaryUnits = s.useBinaryUnits === true
         }
     }
 }

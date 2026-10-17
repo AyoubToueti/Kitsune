@@ -58,6 +58,7 @@ Popup {
             popup.resumeValue = s.resumeBehavior || "ask"
             popup.rewindValue = (s.resumeRewindSeconds !== undefined && s.resumeRewindSeconds !== null)
                 ? s.resumeRewindSeconds : 20
+            popup.binaryUnitsValue = s.useBinaryUnits === true
         }
         function onSettingsFailed(message) {
             status.text = "Failed: " + message
@@ -77,6 +78,9 @@ Popup {
     property string resumeValue: "ask"
     // Seconds to rewind from the saved position on resume.
     property int rewindValue: 20
+
+    // Whether the speed test reads in MiB/s rather than Mbps.
+    property bool binaryUnitsValue: false
 
     // Player shortcut overrides, action -> key sequence. Edited by the
     // Shortcuts section and written back inside `current`.
@@ -156,6 +160,7 @@ Popup {
         s.resumeRewindSeconds = popup.rewindValue
         s.shortcuts = popup.shortcuts
         s.resumeBehavior = popup.resumeValue
+        s.useBinaryUnits = popup.binaryUnitsValue
         backend.setSettings(JSON.stringify(s))
     }
 
@@ -807,6 +812,31 @@ Popup {
                             color: Theme.inkMuted
                             font.pixelSize: 11
                             wrapMode: Text.WordWrap
+                        }
+
+                        // Unit choice. The result is measured in decimal
+                        // megabits, which is how connections are sold; MiB/s is
+                        // the unit the app already uses for torrent sizes, so a
+                        // reader comparing the two can pick the matching one.
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Show download speed in MiB/s instead of Mbps"
+                                color: Theme.ink
+                                font.pixelSize: 12
+                            }
+
+                            Switch {
+                                id: unitsSwitch
+                                checked: popup.binaryUnitsValue
+                                onToggled: {
+                                    popup.binaryUnitsValue = checked
+                                    popup.save()
+                                }
+                            }
                         }
 
                         RowLayout {

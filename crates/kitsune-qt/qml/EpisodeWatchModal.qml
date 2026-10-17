@@ -27,6 +27,9 @@ Popup {
     property var resolutionFilter: []
     property var badges: ({})
 
+    // --- Release sorting --------------------------------------------------
+    property string releaseSortKey: "match"
+    property bool releaseSortDesc: true
     property bool probing: false
 
     property string releaseTitle: ""
@@ -581,7 +584,64 @@ Popup {
                 && modal.resolutionFilter.indexOf(r.resolution) < 0) return false
             return true
         })
-        return filtered
+        return modal.sortReleases(filtered)
+    }
+
+    function sortReleases(items) {
+        const key = modal.releaseSortKey
+        if (key === "match") return items
+
+        const desc = modal.releaseSortDesc
+        function valueOf(r) {
+            if (key === "date") return r.publishedAt
+            if (key === "name") return (r.title || "").toLowerCase()
+            if (key === "size") return r.sizeBytes
+            if (key === "seeders") return r.seeders
+            if (key === "leechers") return r.leechers
+            return undefined
+        }
+
+        return items.slice().sort(function (a, b) {
+            const va = valueOf(a)
+            const vb = valueOf(b)
+            const aMissing = va === undefined || va === null
+            const bMissing = vb === undefined || vb === null
+            if (aMissing && bMissing) return 0
+            if (aMissing) return 1
+            if (bMissing) return -1
+
+            let cmp
+            if (typeof va === "string" || typeof vb === "string") {
+                cmp = String(va).localeCompare(String(vb))
+            } else {
+                cmp = va - vb
+            }
+            return desc ? -cmp : cmp
+        })
+    }
+
+    readonly property var sortColumns: [
+        { "key": "match", "label": "Match" },
+        { "key": "date", "label": "Date" },
+        { "key": "name", "label": "Name" },
+        { "key": "size", "label": "Size" },
+        { "key": "seeders", "label": "Seeders" },
+        { "key": "leechers", "label": "Leechers" }
+    ]
+
+    function setSort(key) {
+        if (modal.releaseSortKey === key) {
+            modal.releaseSortDesc = !modal.releaseSortDesc
+            return
+        }
+        modal.releaseSortKey = key
+        modal.releaseSortDesc = key !== "name"
+    }
+
+    function sortArrow(key) {
+        if (modal.releaseSortKey !== key) return ""
+        if (key === "match") return ""
+        return modal.releaseSortDesc ? " \u2193" : " \u2191"
     }
 
     function toggleResolution(r) {
@@ -1110,6 +1170,44 @@ Popup {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 2
+                        spacing: 14
+                        visible: !modal.searching && modal.releases.length > 0
+
+                        Text {
+                            text: "SORT"
+                            color: Theme.inkFaint
+                            font.pixelSize: 9
+                            font.bold: true
+                            font.letterSpacing: 1.1
+                        }
+
+                        Repeater {
+                            model: modal.sortColumns
+
+                            delegate: Text {
+                                required property var modelData
+                                readonly property bool active: modal.releaseSortKey === modelData.key
+
+                                text: modelData.label + modal.sortArrow(modelData.key)
+                                color: active ? Theme.accent : Theme.inkMuted
+                                font.pixelSize: 10
+                                font.bold: active
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    anchors.margins: -4
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: modal.setSort(modelData.key)
+                                }
+                            }
+                        }
+
+                        Item { Layout.fillWidth: true }
+                    }
+
                     ListView {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
@@ -1166,6 +1264,11 @@ Popup {
                                                     out.push(modelData.source)
                                                 if (modelData.seeders !== undefined && modelData.seeders !== null)
                                                     out.push(modelData.seeders + " seeders")
+                                                // Leechers sit beside seeders so the
+                                                // row shows both numbers the SORT
+                                                // row can order by.
+                                                if (modelData.leechers !== undefined && modelData.leechers !== null)
+                                                    out.push(modelData.leechers + " leechers")
                                                 if (modelData.sizeBytes)
                                                     out.push(modal.formatSize(modelData.sizeBytes))
                                                 return out

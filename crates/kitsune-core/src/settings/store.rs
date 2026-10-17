@@ -65,6 +65,15 @@ pub struct Settings {
     /// the reader gets a run-up into the scene instead of landing mid-line.
     /// A whole number; the UI accepts 0 and large values (e.g. 75).
     pub resume_rewind_seconds: u32,
+    /// Whether the speed test reports download speed in binary units
+    /// (MiB/s) rather than decimal megabits (Mbps).
+    ///
+    /// Both are correct; they answer different questions. Mbps is how
+    /// connections are sold, MiB/s is the unit the app already uses for
+    /// torrent sizes and download rates, so a reader comparing a speed result
+    /// against a file size can pick the matching one. Defaults to `false`,
+    /// which keeps the familiar "42 Mbps" reading.
+    pub use_binary_units: bool,
 }
 
 impl Default for Settings {
@@ -89,6 +98,9 @@ impl Default for Settings {
             resume_behavior: "ask".to_string(),
             // 20s back by default: enough context without losing much.
             resume_rewind_seconds: 20,
+            // Mbps by default: it is how connections are sold, and what the
+            // result has always read as. MiB/s is opt-in.
+            use_binary_units: false,
         }
     }
 }
@@ -229,6 +241,7 @@ mod tests {
                 .collect(),
             resume_behavior: "seek".to_string(),
             resume_rewind_seconds: 35,
+            use_binary_units: true,
         };
 
         store.write(&settings).expect("write");
