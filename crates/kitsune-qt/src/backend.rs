@@ -606,7 +606,9 @@ use kitsune_core::indexer::{
 use kitsune_core::auth::LastPlayedStore;
 use kitsune_core::player::state::PlayerState;
 use kitsune_core::player::{LastReleaseStore, WatchPositionStore};
-use kitsune_core::providers::{AniListProvider, AnimeProvider, JikanProvider};
+use kitsune_core::providers::{
+    AniListProvider, AnimeProvider, CachedAccount, CachedProvider, JikanProvider,
+};
 use kitsune_core::settings::{Settings, SettingsStore};
 use kitsune_core::types::{
     BrowseQuery, EpisodeInfo, ListFilter, ListStatus, RecommendationRating, Release,
@@ -628,6 +630,11 @@ pub struct BackendRust {
     /// `AnimeProvider` trait (token, list writes). Points at the SAME instance
     /// as `provider`, so a token set here is used by every metadata call.
     anilist: Arc<AniListProvider>,
+    /// A cache in front of `user_list`, the reader's own list. Held apart from
+    /// `provider` because `user_list` is AniList-only; the list is dropped from
+    /// the cache whenever the reader writes to it, so a change shows at once
+    /// while repeat reads stay free.
+    account: Arc<CachedAccount>,
     episodes: Arc<JikanProvider>,
     /// The AniList token, read from disk at startup so a signed-in reader
     /// stays signed in across restarts.
@@ -668,12 +675,24 @@ impl Default for BackendRust {
             anilist.set_token(Some(token));
         }
 
+        // The metadata path goes through the cache, so repeated reads (back to
+        // a title already opened, the home rail re-rendering) do not hit
+        // AniList again. The concrete `anilist` handle stays UNWRAPPED for
+        // account writes -- a saved list entry or vote must never be served
+        // from cache.
+        let provider: Arc<dyn AnimeProvider> = Arc::new(CachedProvider::new(anilist.clone()));
+
+        // The reader's list is cached separately (it is AniList-only), and the
+        // cache drops it the moment a write bumps the provider's revision.
+        let account = Arc::new(CachedAccount::new(anilist.clone()));
+
         let settings = Arc::new(SettingsStore::new());
 
         Self {
             runtime: Arc::new(runtime),
-            provider: anilist.clone(),
+            provider,
             anilist,
+            account,
             last_played: Arc::new(LastPlayedStore::new()),
             watch_positions: Arc::new(WatchPositionStore::new()),
             last_releases: Arc::new(LastReleaseStore::new()),
@@ -1486,17 +1505,25 @@ impl qobject::Backend {
     }
 
     fn user_list(self: Pin<&mut Self>) {
-        self.spawn_anilist(
-            move |anilist| async move {
-                anilist
-                    .user_list()
-                    .await
-                    .map(|entries| json_or_empty(&entries))
-                    .map_err(|err| err.to_string())
-            },
-            Self::user_list_ready,
-            Self::user_list_failed,
-        );
+        // Goes through the account cache, not the concrete provider: repeat
+        // reads (the page re-opening, the status store refreshing) are served
+        // from memory until a write bumps the revision or the TTL lapses.
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let account = Arc::clone(&self.rust().account);
+
+        runtime.spawn(async move {
+            let result = account
+                .user_list()
+                .await
+                .map(|entries| json_or_empty(&entries))
+                .map_err(|err| err.to_string());
+
+            let _ = qt_thread.queue(move |qobject| match result {
+                Ok(json) => qobject.user_list_ready(QString::from(&json)),
+                Err(message) => qobject.user_list_failed(QString::from(&message)),
+            });
+        });
     }
 
     fn set_list_entry(self: Pin<&mut Self>, media_id: i64, status: QString, progress: i32) {

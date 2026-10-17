@@ -132,6 +132,20 @@ pub struct AniListProvider {
     /// value is a `String`; the guard is only ever held long enough to clone
     /// the token, never across an await.
     token: Mutex<Option<String>>,
+    /// Bumped on every list write (save or delete), so a cache in front of
+    /// this provider can tell that its copy of the reader's list is stale.
+    ///
+    /// The reader's list is the one thing that changes by the reader's OWN
+    /// action rather than by time, so a plain TTL would keep serving the
+    /// pre-write list until it expired. A cache keys its `user_list` entry on
+    /// this counter and drops that entry whenever the number moves -- which
+    /// makes a write visible on the next read without throwing away the whole
+    /// cache, and without the cache needing to know which work changed.
+    ///
+    /// An `AtomicU64` because it is only ever read or incremented, never held
+    /// as a value across an await, so the plain `Mutex` above would be
+    /// needless weight.
+    list_revision: std::sync::atomic::AtomicU64,
 }
 
 impl AniListProvider {
@@ -149,7 +163,25 @@ impl AniListProvider {
             http: reqwest::Client::new(),
             endpoint: endpoint.into(),
             token: Mutex::new(None),
+            list_revision: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// A counter that moves on every list write.
+    ///
+    /// A cache in front of this provider reads it to decide whether its copy
+    /// of the reader's list is still valid: the number is part of that cache
+    /// key, so a write invalidates the entry by construction rather than by
+    /// the cache having to be told which work changed.
+    pub fn list_revision(&self) -> u64 {
+        self.list_revision
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Note that the reader's list changed. Called after a successful write.
+    fn bump_list_revision(&self) {
+        self.list_revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Start sending `token` as a bearer credential.
@@ -162,7 +194,20 @@ impl AniListProvider {
             .map(|t| t.trim().to_string())
             .filter(|t| !t.is_empty());
 
-        *self.token.lock().expect("token mutex poisoned") = cleaned;
+        let changed = {
+            let mut guard = self.token.lock().expect("token mutex poisoned");
+            let changed = *guard != cleaned;
+            *guard = cleaned;
+            changed
+        };
+
+        // A different (or absent) token means a different list -- signing out
+        // must not leave the previous account's list cached, and signing in
+        // must not serve what was cached while anonymous. Bumping here folds
+        // that into the same invalidation a write uses.
+        if changed {
+            self.bump_list_revision();
+        }
     }
 
     /// Stop sending a token. Every later request is anonymous.
@@ -794,6 +839,9 @@ impl AniListProvider {
             return Err(ProviderError::Remote("the list entry was not saved".into()));
         }
 
+        // The reader's list just changed, so any cached copy is stale. Bumping
+        // here (not before the call) means a refused write does not invalidate.
+        self.bump_list_revision();
         Ok(())
     }
 
@@ -1024,7 +1072,12 @@ impl AniListProvider {
         // A refused delete answers with a present object whose `deleted` is
         // false, so the outer Option alone is not enough -- the bool is checked.
         match data.deleted {
-            Some(wire) if wire.deleted => Ok(()),
+            Some(wire) if wire.deleted => {
+                // A delete changes the reader's list too, so the cached copy
+                // must be discarded just as a save does.
+                self.bump_list_revision();
+                Ok(())
+            }
             _ => Err(ProviderError::Remote(
                 "the list entry was not deleted".into(),
             )),
