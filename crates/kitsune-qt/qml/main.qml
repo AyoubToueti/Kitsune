@@ -69,6 +69,10 @@ Window {
         const item = stack.currentItem
         root.navRoute = (item && item.pageRoute !== undefined) ? item.pageRoute : ""
         root.currentDetailId = (item && item.animeId !== undefined) ? item.animeId : 0
+        // A navigation leaves the failed page behind, so any retry overlay it
+        // raised must go with it -- otherwise the reader would see the previous
+        // page's error over the new page.
+        RetryState.reset()
     }
 
     // Push a page, unless that route is already the one showing.
@@ -204,6 +208,30 @@ Window {
             watchModal.resumeLast = true
             watchModal.open()
         }
+    }
+
+    // The retry overlay, over every page. Shown when a page reports a load
+    // failure; its Retry button re-runs the current page via `performRetry`.
+    RetryOverlay {
+        id: retryOverlay
+        anchors.fill: parent
+        visible: RetryState.active
+        z: 100
+    }
+
+    // Re-run whatever page is on screen. Each page that loads data exposes a
+    // `reload()`; the overlay is only ever raised by such a page, so in
+    // practice `currentItem` has one. Guarded anyway, and the overlay is
+    // dismissed up front so a page that does not reload does not strand it.
+    function performRetry() {
+        const item = stack.currentItem
+        RetryState.active = false
+        if (item && typeof item.reload === "function") item.reload()
+    }
+
+    Connections {
+        target: RetryState
+        function onRetryRequested() { root.performRetry() }
     }
 
     Component {

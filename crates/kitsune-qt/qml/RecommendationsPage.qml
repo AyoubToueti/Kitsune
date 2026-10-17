@@ -59,12 +59,14 @@ Item {
             }
             const info = pageObj ? pageObj.pageInfo : null
             page.hasMore = info ? info.hasNextPage !== false : false
+            RetryState.reset()
         }
         function onRecommendationsFailed(id, message) {
             if (id !== page.animeId) return
             page.loading = false
             page.error = message
             // Raise the retry overlay; the first-load skeleton stays up.
+            RetryState.reportFailure(message)
         }
     }
 
@@ -84,6 +86,16 @@ Item {
             pageNumber = 1
             loadPage(1)
         }
+    }
+
+    // Re-run the first page. Called by the retry overlay.
+    function reload() {
+        recModel.clear()
+        hasMore = true
+        pageNumber = 1
+        loading = false
+        error = ""
+        loadPage(1)
     }
     onAnimeIdChanged: maybeLoad()
     onBackendChanged: maybeLoad()

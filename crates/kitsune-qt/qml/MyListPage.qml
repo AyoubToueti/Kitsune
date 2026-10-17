@@ -114,12 +114,14 @@ Item {
             page.entries = JSON.parse(json) || []
             page.loading = false
             page.errorText = ""
+            RetryState.reset()
         }
 
         function onUserListFailed(message) {
             page.loading = false
             page.errorText = message
             // Raise the retry overlay; the loading skeleton stays up.
+            RetryState.reportFailure(message)
         }
 
         function onListChanged() {
@@ -131,6 +133,16 @@ Item {
             page.errorText = message
         }
     }
+
+    // Re-read the reader's list. Called by the retry overlay; only meaningful
+    // when signed in, which is the only state that fetches it.
+    function reload() {
+        if (!backend || !page.signedIn) return
+        page.loading = true
+        page.errorText = ""
+        backend.userList()
+    }
+
     Component.onCompleted: {
         if (backend) backend.authStatus()
     }

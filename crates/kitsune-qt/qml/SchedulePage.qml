@@ -42,11 +42,13 @@ Item {
             }
             page.loading = false
             status.text = items.length + " airing"
+            RetryState.reset()
         }
         function onScheduleFailed(message) {
             page.loading = false
             status.text = "Failed: " + message
             // Raise the retry overlay; the first-load skeleton stays up.
+            RetryState.reportFailure(message)
         }
     }
 
@@ -76,6 +78,12 @@ Item {
         const to = from + 24 * 3600
         backend.getSchedule(from, to, 50)
     }
+
+    // Re-run the selected day. Called by the retry overlay.
+    function reload() {
+        loadDay(page.selectedOffset)
+    }
+
     // Build the strip once. Every day gets a tab before any request.
     Component.onCompleted: {
         for (let i = -pastDays; i <= futureDays; i++) {

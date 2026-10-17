@@ -125,11 +125,13 @@ Item {
                 page.anime = parsed
                 page.loadEpisodes()
                 page.loadListEntry()
+                RetryState.reset()
             }
         }
         function onAnimeFailed(message) {
             // The hero is empty, so the detail skeleton stands in; raise the
             // retry overlay so the reader can retry without leaving the page.
+            RetryState.reportFailure(message)
         }
         function onEpisodesReady(json) {
             page.episodeInfo = JSON.parse(json) || []
@@ -244,6 +246,15 @@ Item {
             backend.getAnime(animeId)
         }
     }
+
+    // Re-run the single-title lookup. Called by the retry overlay.
+    function reload() {
+        if (animeId > 0 && backend) {
+            page.anime = null
+            backend.getAnime(animeId)
+        }
+    }
+
     onAnimeIdChanged: maybeLoad()
     onBackendChanged: maybeLoad()
 

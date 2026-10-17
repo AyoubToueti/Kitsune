@@ -138,6 +138,15 @@ Item {
         loading = true
         backend.getBrowse(JSON.stringify(buildQuery()), pageNumber, 40)
     }
+
+    // Re-run the current query from the first page. Called by the retry overlay.
+    function reload() {
+        results.clear()
+        pageNumber = 1
+        loading = false
+        runSearch(true)
+    }
+
     function applyFilters() {
         runSearch(true)
     }
@@ -292,11 +301,13 @@ Item {
                 })
             }
             page.resultStatus = results.count + " results"
+            RetryState.reset()
         }
         function onBrowseFailed(message) {
             page.loading = false
             page.resultStatus = "Failed: " + message
             // Raise the retry overlay; the first-load skeleton stays up.
+            RetryState.reportFailure(message)
         }
     }
 

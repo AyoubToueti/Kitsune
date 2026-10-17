@@ -108,12 +108,14 @@ Item {
             page.latestCompletedItems = shelves.latestCompleted || []
             page.top100Items = shelves.top100 || []
             // A clean load clears any retry overlay and resets its backoff.
+            RetryState.reset()
         }
         function onHomeFailed(message) {
             // Leave the skeleton up (data never arrived) and raise the retry
             // overlay, so the reader can retry in place instead of restarting.
             // `trendingLoading` stays true, which keeps every placeholder
             // visible behind the overlay.
+            RetryState.reportFailure(message)
         }
 
         function onAuthStatusReady(signedInNow) {
@@ -181,6 +183,23 @@ Item {
     function positionFor(animeId) {
         return page.watchPositions[String(animeId)] || null
     }
+
+    // Re-run the home load. Called by the window's retry overlay; the skeleton
+    // is put back first so the reader sees the page reloading rather than the
+    // previous (empty) state.
+    function reload() {
+        if (!backend) return
+        page.trendingLoading = true
+        page.heroItems = []
+        page.railItems = []
+        page.topAiringItems = []
+        page.mostPopularItems = []
+        page.topRatedItems = []
+        page.latestCompletedItems = []
+        page.top100Items = []
+        backend.getHome()
+    }
+
     Component.onCompleted: {
         if (!backend) return
         // ONE request fills every shelf: trending + the five curated blocks.

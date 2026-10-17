@@ -49,12 +49,14 @@ Item {
             page.hasMore = (info ? info.hasNextPage !== false : true)
                 && rows.count < page.maxItems
             status.text = rows.count + " titles"
+            RetryState.reset()
         }
         function onListFailed(message) {
             page.loading = false
             status.text = "Failed: " + message
             // Raise the retry overlay (locked behind a countdown on a 429).
             // The first-load skeleton stays up, since no rows arrived.
+            RetryState.reportFailure(message)
         }
     }
 
@@ -72,6 +74,16 @@ Item {
         pageNumber = number
         backend.getListPaged("topRated", number, perPage)
     }
+
+    // Re-run the first page. Called by the retry overlay.
+    function reload() {
+        rows.clear()
+        hasMore = true
+        pageNumber = 1
+        loading = false
+        loadPage(1)
+    }
+
     Component.onCompleted: loadPage(1)
 
     ColumnLayout {

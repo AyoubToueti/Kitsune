@@ -46,10 +46,12 @@ fn main() {
             .qml_file("qml/RankedListSkeleton.qml")
             .qml_file("qml/DetailSkeleton.qml")
             .qml_file("qml/PosterGridSkeleton.qml")
+            .qml_file("qml/RetryOverlay.qml")
             // These are `pragma Singleton`; the qmldir must mark them or QML
             // refuses to import them.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true))
-            .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true)),
+            .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/RetryState.qml").singleton(true)),
     )
     .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])
     // The brand mark, embedded so the UI can use it without shipping a loose
