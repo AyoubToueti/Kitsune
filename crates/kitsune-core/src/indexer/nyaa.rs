@@ -54,6 +54,12 @@ pub struct NyaaItem {
     pub size: String,
     pub seeders: Option<u32>,
     pub leechers: Option<u32>,
+    /// When the torrent was posted, as unix seconds.
+    ///
+    /// Parsed from the feed's `<pubDate>` (RFC 2822). `None` when the element
+    /// is missing or unparseable, so a bad date never discards the release --
+    /// the list can still sort on every other field.
+    pub published_at: Option<i64>,
     /// Nyaa's "trusted uploader" flag.
     pub trusted: bool,
 }
@@ -190,6 +196,7 @@ pub fn item_to_release(item: &NyaaItem) -> Option<Release> {
         size_bytes: magnet.size_bytes,
         seeders: magnet.seeders,
         leechers: magnet.leechers,
+        published_at: item.published_at,
         resolution: quality.resolution,
         source: quality.source,
         remux: quality.remux,
@@ -237,8 +244,8 @@ pub fn parse_rss(xml: &str) -> Result<Vec<NyaaItem>, IndexerError> {
                 let name = local_name(element.name().as_ref());
                 match name.as_str() {
                     "item" => current = Some(NyaaItem::default()),
-                    "title" | "link" | "nyaa:infoHash" | "nyaa:size" | "nyaa:seeders"
-                    | "nyaa:leechers" | "nyaa:trusted" => {
+                    "title" | "link" | "pubDate" | "nyaa:infoHash" | "nyaa:size"
+                    | "nyaa:seeders" | "nyaa:leechers" | "nyaa:trusted" => {
                         field = Some(name);
                     }
                     _ => {}
@@ -263,6 +270,7 @@ pub fn parse_rss(xml: &str) -> Result<Vec<NyaaItem>, IndexerError> {
                     // only set inside an `<item>`, so a channel-level link is
                     // ignored rather than mistaken for a torrent URL.
                     "link" => item.torrent_url = value.trim().to_string(),
+                    "pubDate" => item.published_at = parse_rfc2822_utc(value.trim()),
                     "nyaa:infoHash" => item.info_hash = value.trim().to_ascii_lowercase(),
                     "nyaa:size" => item.size = value,
                     "nyaa:seeders" => item.seeders = value.trim().parse().ok(),
@@ -279,8 +287,8 @@ pub fn parse_rss(xml: &str) -> Result<Vec<NyaaItem>, IndexerError> {
                             items.push(item);
                         }
                     }
-                    "title" | "link" | "nyaa:infoHash" | "nyaa:size" | "nyaa:seeders"
-                    | "nyaa:leechers" | "nyaa:trusted" => field = None,
+                    "title" | "link" | "pubDate" | "nyaa:infoHash" | "nyaa:size"
+                    | "nyaa:seeders" | "nyaa:leechers" | "nyaa:trusted" => field = None,
                     _ => {}
                 }
             }
@@ -305,6 +313,104 @@ pub fn parse_rss(xml: &str) -> Result<Vec<NyaaItem>, IndexerError> {
 /// The element name as a `String`, matching the feed's prefixed spelling.
 fn local_name(raw: &[u8]) -> String {
     String::from_utf8_lossy(raw).into_owned()
+}
+
+/// Parse an RFC 2822 timestamp into unix seconds.
+///
+/// The feed spells dates like `Tue, 13 Oct 2026 20:13:27 -0000`. Hand-rolled
+/// rather than pulling in a date crate: the grammar here is fixed and narrow,
+/// and the rest of this module already parses by hand (`parse_size`,
+/// `encode_component`).
+///
+/// Returns `None` for anything unexpected, so a malformed date degrades to "no
+/// date" instead of discarding the release.
+pub fn parse_rfc2822_utc(input: &str) -> Option<i64> {
+    // Drop the optional weekday prefix ("Tue, "). Splitting on the comma and
+    // taking the tail keeps this independent of which weekday name is used.
+    let rest = match input.split_once(',') {
+        Some((_, tail)) => tail.trim(),
+        None => input.trim(),
+    };
+
+    let mut parts = rest.split_whitespace();
+    let day: i64 = parts.next()?.parse().ok()?;
+    let month = month_number(parts.next()?)?;
+    let year: i64 = parts.next()?.parse().ok()?;
+    let clock = parts.next()?;
+    // Some feeds omit the zone; treat that as UTC rather than failing.
+    let zone = parts.next().unwrap_or("+0000");
+
+    let mut hms = clock.split(':');
+    let hour: i64 = hms.next()?.parse().ok()?;
+    let minute: i64 = hms.next()?.parse().ok()?;
+    // Seconds are optional in RFC 2822; a missing one means :00.
+    let second: i64 = match hms.next() {
+        Some(s) => s.parse().ok()?,
+        None => 0,
+    };
+
+    if !(1..=31).contains(&day) || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute) || !(0..=60).contains(&second)
+    {
+        return None;
+    }
+
+    let offset_secs = parse_zone_offset(zone)?;
+
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second - offset_secs)
+}
+
+/// The month number for a three-letter English month name.
+fn month_number(name: &str) -> Option<i64> {
+    let lower = name.to_ascii_lowercase();
+    let index = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ]
+    .iter()
+    .position(|month| *month == lower)?;
+    Some(index as i64 + 1)
+}
+
+/// The zone offset in seconds east of UTC, from `+HHMM`, `-HHMM` or `+HH:MM`.
+///
+/// The named zones RFC 2822 also allows ("GMT", "UT") are treated as UTC;
+/// anything else is rejected rather than silently mis-dated.
+fn parse_zone_offset(zone: &str) -> Option<i64> {
+    if zone.eq_ignore_ascii_case("gmt") || zone.eq_ignore_ascii_case("ut") {
+        return Some(0);
+    }
+
+    let sign = match zone.as_bytes().first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digits: String = zone[1..].chars().filter(|c| *c != ':').collect();
+    if digits.len() != 4 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let hours: i64 = digits[..2].parse().ok()?;
+    let minutes: i64 = digits[2..].parse().ok()?;
+    if hours > 23 || minutes > 59 {
+        return None;
+    }
+    Some(sign * (hours * 3600 + minutes * 60))
+}
+
+/// Days since the Unix epoch for a civil date (Howard Hinnant's algorithm).
+///
+/// Avoids a leap-year table by shifting the year to start in March, which puts
+/// the leap day at the END of the shifted year and makes the month arithmetic
+/// uniform.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let year_of_era = y - era * 400;
+    let shifted_month = (month + 9) % 12;
+    let day_of_year = (153 * shifted_month + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 /// Parse a human size such as `1.4 GiB` or `750 MiB` into bytes.
@@ -338,6 +444,7 @@ mod tests {
     <item>
       <title>[SubsPlease] Show - 05 (1080p) [ABCD1234].mkv</title>
       <link>https://nyaa.si/download/123.torrent</link>
+      <pubDate>Tue, 13 Oct 2026 20:13:27 -0000</pubDate>
       <nyaa:seeders>42</nyaa:seeders>
       <nyaa:leechers>3</nyaa:leechers>
       <nyaa:size>1.4 GiB</nyaa:size>
@@ -408,6 +515,79 @@ mod tests {
     fn trusted_no_is_false() {
         let items = parse_rss(SAMPLE).expect("should parse");
         assert!(!items[1].trusted);
+    }
+
+    /// 2026-10-13T20:13:27Z, as the feed spells it.
+    ///
+    /// Cross-checked against the civil-date arithmetic: 2026-01-01 is
+    /// 1767225600, plus 285 days to 2026-10-13, plus 20:13:27.
+    const EXPECTED_PUBLISHED_AT: i64 = 1_791_922_407;
+
+    #[test]
+    fn reads_the_publish_date() {
+        let items = parse_rss(SAMPLE).expect("should parse");
+        assert_eq!(items[0].published_at, Some(EXPECTED_PUBLISHED_AT));
+        // The second item carries no `<pubDate>`.
+        assert_eq!(items[1].published_at, None);
+    }
+
+    #[test]
+    fn the_publish_date_reaches_the_release() {
+        let items = parse_rss(SAMPLE).expect("should parse");
+        let release = item_to_release(&items[0]).expect("should build");
+        assert_eq!(release.published_at, Some(EXPECTED_PUBLISHED_AT));
+    }
+
+    #[test]
+    fn parses_rfc2822_without_a_weekday() {
+        // The weekday prefix is optional, and seconds may be absent.
+        assert_eq!(
+            parse_rfc2822_utc("13 Oct 2026 20:13 -0000"),
+            Some(EXPECTED_PUBLISHED_AT - 27),
+        );
+    }
+
+    #[test]
+    fn parses_a_non_utc_offset() {
+        // +0200 is two hours ahead of UTC, so the same wall clock is 7200 s
+        // EARLIER in unix time.
+        assert_eq!(
+            parse_rfc2822_utc("Tue, 13 Oct 2026 22:13:27 +0200"),
+            Some(EXPECTED_PUBLISHED_AT),
+        );
+    }
+
+    #[test]
+    fn parses_gmt_as_utc() {
+        assert_eq!(
+            parse_rfc2822_utc("Tue, 13 Oct 2026 20:13:27 GMT"),
+            Some(EXPECTED_PUBLISHED_AT),
+        );
+    }
+
+    #[test]
+    fn a_malformed_date_is_none() {
+        for bad in [
+            "",
+            "not a date",
+            "Tue, 13 Foo 2026 20:13:27 -0000",
+            "Tue, 13 Oct 2026 99:13:27 -0000",
+            "Tue, 13 Oct 2026 20:13:27 +9999",
+            "Tue, 13 Oct 2026 20:13:27 XYZ",
+        ] {
+            assert_eq!(parse_rfc2822_utc(bad), None, "should reject: {bad}");
+        }
+    }
+
+    #[test]
+    fn a_bad_publish_date_does_not_discard_the_item() {
+        let xml = SAMPLE.replace(
+            "Tue, 13 Oct 2026 20:13:27 -0000",
+            "sometime last tuesday",
+        );
+        let items = parse_rss(&xml).expect("should still parse");
+        assert_eq!(items[0].published_at, None);
+        assert_eq!(items[0].seeders, Some(42));
     }
 
     #[test]

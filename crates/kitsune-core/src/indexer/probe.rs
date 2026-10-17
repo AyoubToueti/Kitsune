@@ -2032,6 +2032,7 @@ mod tests {
             size_bytes: None,
             seeders: Some(10),
             leechers: None,
+            published_at: None,
             resolution: crate::types::Resolution::R1080p,
             source: crate::types::ReleaseSource::WebDl,
             remux: false,

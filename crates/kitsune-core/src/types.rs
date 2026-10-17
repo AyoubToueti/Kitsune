@@ -832,6 +832,12 @@ pub struct Release {
     pub seeders: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leechers: Option<u32>,
+    /// When the release was posted, as unix seconds, when the indexer said.
+    ///
+    /// Absent for indexers whose feed carries no date, so the UI must treat it
+    /// as optional; sorting puts undated releases last either way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<i64>,
     pub resolution: Resolution,
     pub source: ReleaseSource,
     /// True when the release is a remux of another, which is a better copy.

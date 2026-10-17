@@ -301,6 +301,7 @@ mod tests {
             size_bytes: None,
             seeders: Some(seeders),
             leechers: None,
+            published_at: None,
             resolution,
             source,
             remux: false,

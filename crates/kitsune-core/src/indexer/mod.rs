@@ -271,6 +271,7 @@ mod tests {
             size_bytes: None,
             seeders: Some(10),
             leechers: None,
+            published_at: None,
             resolution: Resolution::R1080p,
             source: ReleaseSource::WebDl,
             remux: false,

@@ -169,6 +169,7 @@ mod tests {
             size_bytes: None,
             seeders: None,
             leechers: None,
+            published_at: None,
             resolution: Resolution::Unknown,
             source: ReleaseSource::Unknown,
             remux: false,

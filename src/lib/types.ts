@@ -502,6 +502,8 @@ export interface Release {
   sizeBytes?: number;
   seeders?: number;
   leechers?: number;
+  /** When the release was posted, as unix seconds, when the indexer said. */
+  publishedAt?: number;
   resolution: Resolution;
   source: ReleaseSource;
   /** True when the release is a remux of another, which is a better copy. */
