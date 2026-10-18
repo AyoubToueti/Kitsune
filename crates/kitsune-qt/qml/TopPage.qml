@@ -52,10 +52,11 @@ Item {
             RetryState.reset()
         }
         function onListFailed(message) {
-            page.loading = false
-            status.text = "Failed: " + message
-            // Raise the retry overlay (locked behind a countdown on a 429).
-            // The first-load skeleton stays up, since no rows arrived.
+            // Transient failures keep the skeleton pulsing behind the overlay;
+            // a content failure drops it rather than pulsing forever.
+            page.loading = RetryState.isTransient(message) && rows.count === 0
+            // The overlay owns the wording -- no raw backend string here.
+            status.text = ""
             RetryState.reportFailure(message)
         }
     }

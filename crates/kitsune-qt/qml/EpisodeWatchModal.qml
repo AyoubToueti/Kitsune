@@ -32,6 +32,13 @@ Popup {
     property bool releaseSortDesc: true
     property bool probing: false
 
+    // Which open (and which search within that open) a reply belongs to.
+    // Bumped in `openFor` and at the top of `search`; the backend echoes it on
+    // every release/probe signal, and a mismatch means the answer is stale --
+    // the previous episode's list must never paint into this open.
+    property int searchGeneration: 0
+    readonly property string searchTag: String(searchGeneration)
+
     property string releaseTitle: ""
     property string releaseMagnet: ""
 
@@ -432,7 +439,9 @@ Popup {
     // `mode` is "episodes" or "packs"; `resumeLast` asks the backend for the
     // remembered release of this work instead of searching.
     function openFor(anime, mal, episode, absolute, mode, resumeLast) {
-        // Per-open search state.
+        // Per-open search state. The generation bump orphans any reply still
+        // in flight from the previous open.
+        modal.searchGeneration += 1
         modal.loadedAnimeId = 0
         modal.loadedEpisode = 0
         modal.titles = []
@@ -707,17 +716,23 @@ Popup {
         modal.resolutionFilter = next
     }
 
-    function search() {
-        if (!backend || titles.length === 0) return
+    // `force` skips the backend's cache; the Retry button passes it.
+    function search(force) {
+        if (!modal.backend || titles.length === 0) return
+        // A new search orphans the previous one within this open (the Packs
+        // toggle, or Retry).
+        modal.searchGeneration += 1
         searching = true
         error = ""
         releases = []
         badges = ({})
-        backend.searchReleases(
+        modal.backend.searchReleases(
+            modal.searchTag,
             JSON.stringify(titles),
             episodeNumber,
             absoluteEpisode,
-            releaseMode)
+            releaseMode,
+            force === true)
     }
 
     function pickRelease(release) {
@@ -817,7 +832,10 @@ Popup {
             if (!modal.resumeLast) modal.search()
         }
 
-        function onReleasesReady(json) {
+        function onReleasesReady(tag, json) {
+            // A reply for a previous open (or an abandoned search) must be
+            // dropped, not painted: it would show the wrong episode's list.
+            if (tag !== modal.searchTag) return
             modal.searching = false
             modal.releases = JSON.parse(json) || []
             if (modal.releases.length === 0) {
@@ -827,23 +845,29 @@ Popup {
                 return
             }
             modal.probing = true
-            modal.backend.probeReleases(JSON.stringify(modal.releases))
+            modal.backend.probeReleases(
+                modal.searchTag, JSON.stringify(modal.releases))
             if (modal.autoPlay && modal.releases.length > 0) {
                 modal.pickRelease(modal.releases[0])
             }
         }
 
-        function onReleasesFailed(message) {
+        function onReleasesFailed(tag, message) {
+            if (tag !== modal.searchTag) return
             modal.searching = false
             modal.error = message
         }
 
-        function onProbeResult(index, badge, combinedScore) {
+        function onProbeResult(tag, index, badge, combinedScore) {
+            if (tag !== modal.searchTag) return
             const next = Object.assign({}, modal.badges)
             next[index] = badge
             modal.badges = next
         }
-        function onProbeDone() { modal.probing = false }
+        function onProbeDone(tag) {
+            if (tag !== modal.searchTag) return
+            modal.probing = false
+        }
 
         function onTorrentAdded(json) {
             modal.searching = false
@@ -1181,13 +1205,55 @@ Popup {
                         }
                     }
 
-                    Text {
+                    Column {
                         Layout.fillWidth: true
-                        visible: !modal.searching && modal.error !== ""
-                        text: modal.error
-                        color: Theme.danger
-                        font.pixelSize: 12
-                        wrapMode: Text.WordWrap
+                        // Only in the releases stage: `error` is shared with
+                        // file/stream failures, and Retry means nothing there.
+                        visible: modal.stage === "releases" && !modal.searching
+                            && (modal.error !== "" || modal.releases.length === 0)
+                        spacing: 10
+                        topPadding: modal.error !== "" ? 0 : 30
+
+                        Text {
+                            width: parent.width
+                            visible: modal.error !== ""
+                            text: modal.error
+                            color: Theme.danger
+                            font.pixelSize: 12
+                            wrapMode: Text.WordWrap
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+
+                        // A failed or empty search is the reader's cue to try
+                        // again; either way the button forces a real search.
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            visible: !modal.probing
+                            implicitWidth: retryLabel.implicitWidth + 28
+                            implicitHeight: 30
+                            radius: 15
+                            color: retryArea.containsMouse ? Theme.accent : Theme.glassFillSubtle
+                            border.width: 1
+                            border.color: retryArea.containsMouse
+                                ? Theme.accent : Theme.glassBorder
+
+                            Text {
+                                id: retryLabel
+                                anchors.centerIn: parent
+                                text: "Retry"
+                                color: retryArea.containsMouse ? "white" : Theme.ink
+                                font.pixelSize: 11
+                                font.bold: true
+                            }
+
+                            MouseArea {
+                                id: retryArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: modal.search(true)
+                            }
+                        }
                     }
 
                     ColumnLayout {

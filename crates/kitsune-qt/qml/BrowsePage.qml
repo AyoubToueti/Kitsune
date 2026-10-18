@@ -304,9 +304,14 @@ Item {
             RetryState.reset()
         }
         function onBrowseFailed(message) {
-            page.loading = false
-            page.resultStatus = "Failed: " + message
-            // Raise the retry overlay; the first-load skeleton stays up.
+            // A transient failure keeps the skeleton pulsing behind the
+            // overlay, so the page reads as still trying. A real content
+            // failure would pulse forever, so only that case drops it.
+            page.loading = RetryState.isTransient(message)
+            // No "Failed: <backend string>" here: the overlay owns the
+            // wording, and duplicating the raw 429 text behind it was the
+            // noise this removes.
+            page.resultStatus = ""
             RetryState.reportFailure(message)
         }
     }

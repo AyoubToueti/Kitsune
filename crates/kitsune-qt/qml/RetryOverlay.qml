@@ -45,17 +45,22 @@ Item {
 
             Text {
                 Layout.alignment: Qt.AlignHCenter
-                text: "Couldn't load this page"
+                Layout.fillWidth: true
+                text: RetryState.headline
                 color: Theme.ink
                 font.pixelSize: 17
                 font.bold: true
+                wrapMode: Text.WordWrap
+                horizontalAlignment: Text.AlignHCenter
             }
 
-            // The failure reason, wrapped, so a rate-limit message with a delay
-            // is readable rather than truncated.
+            // The reason, in words a reader understands rather than the
+            // backend's own string ("provider returned HTTP 429: ..."). The
+            // rate-limit case reads the LIVE countdown, so the number here and
+            // the number on the button tick down together.
             Text {
                 Layout.fillWidth: true
-                text: RetryState.message
+                text: RetryState.detail
                 color: Theme.inkMuted
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap

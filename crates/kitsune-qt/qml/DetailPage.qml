@@ -120,6 +120,20 @@ Item {
     Connections {
         target: page.backend
 
+        // A work the provider already had from a list response. Paints the
+        // page immediately, with no request and no skeleton.
+        //
+        // Deliberately does NOT call loadEpisodes / loadListEntry /
+        // RetryState.reset: those have side effects, and `getEpisodes` hits
+        // Jikan, which is not cached -- running it twice would double the
+        // traffic. The authoritative `animeReady` below owns all of them.
+        function onAnimePartial(json) {
+            const parsed = JSON.parse(json)
+            if (parsed === null || parsed.id !== page.animeId) return
+            // A full reply may already have landed; never downgrade it.
+            if (page.anime === null) page.anime = parsed
+        }
+
         function onAnimeReady(json) {
             const parsed = JSON.parse(json)
             if (parsed === null) {

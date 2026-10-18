@@ -10,7 +10,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use super::probe_rank::ProbeOutcome;
-use super::{search_all, Indexer, ReleaseRequest, SearchMode};
+use super::{Indexer, ReleaseCache, ReleaseRequest, SearchMode};
+use kitsune_core::providers::cache::ttl;
 use crate::settings::SharedSettings;
 use crate::types::{Release, ReleasePreference};
 
@@ -33,6 +34,7 @@ pub use kitsune_core::indexer::{download_to, DownloadError};
 pub async fn search_releases(
     registry: State<'_, IndexerRegistry>,
     settings: State<'_, SharedSettings>,
+    cache: State<'_, ReleaseCache>,
     titles: Vec<String>,
     episode: Option<u32>,
     absolute_episode: Option<u32>,
@@ -58,7 +60,10 @@ pub async fn search_releases(
             min_seeders: stored.min_seeders,
         }
     });
-    Ok(search_all(&indexers, &request, &preference).await)
+    Ok(cache
+        .search(&indexers, &request, &preference, ttl::RELEASES, false)
+        .await
+        .unwrap_or_default())
 }
 
 /// Download a `.torrent` file from an indexer to a path the user chose.
@@ -150,6 +155,7 @@ mod tests {
     use super::*;
     use crate::indexer::traits::IndexerError;
     use crate::types::{ProviderId, ReleaseSource, Resolution};
+    use kitsune_core::indexer::search_all;
 
     fn release_named(title: &str) -> Release {
         Release {
@@ -161,6 +167,7 @@ mod tests {
             size_bytes: None,
             seeders: Some(10),
             leechers: None,
+            published_at: None,
             resolution: Resolution::R1080p,
             source: ReleaseSource::WebDl,
             remux: false,

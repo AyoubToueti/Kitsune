@@ -118,9 +118,11 @@ Item {
         }
 
         function onUserListFailed(message) {
-            page.loading = false
-            page.errorText = message
-            // Raise the retry overlay; the loading skeleton stays up.
+            // A transient failure keeps the grid skeleton pulsing behind the
+            // overlay; a content failure drops it rather than pulsing forever.
+            page.loading = RetryState.isTransient(message)
+            // The overlay owns the wording -- no raw backend string here.
+            page.errorText = ""
             RetryState.reportFailure(message)
         }
 

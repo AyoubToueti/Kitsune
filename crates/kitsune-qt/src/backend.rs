@@ -190,14 +190,21 @@ pub mod qobject {
 
         /// Search the indexers for a work's releases. `titles` is a JSON array
         /// of title forms; `mode` is the search-mode wire string.
+        ///
+        /// `tag` is echoed on `releasesReady` / `releasesFailed`, so a slow
+        /// answer for a previous open can be ignored rather than painted into
+        /// the modal. `force` skips the cache and searches again -- the Retry
+        /// button passes it.
         #[qinvokable]
         #[cxx_name = "searchReleases"]
         fn search_releases(
             self: Pin<&mut Self>,
+            tag: QString,
             titles: QString,
             episode: i32,
             absolute_episode: i32,
             mode: QString,
+            force: bool,
         );
 
         /// Add a magnet and return the files it resolves to.
@@ -254,7 +261,7 @@ pub mod qobject {
         /// are the signals.
         #[qinvokable]
         #[cxx_name = "probeReleases"]
-        fn probe_releases(self: Pin<&mut Self>, releases_json: QString);
+        fn probe_releases(self: Pin<&mut Self>, tag: QString, releases_json: QString);
 
         /// Fetch a `.torrent` from an indexer and write it to `path`.
         ///
@@ -565,10 +572,10 @@ pub mod qobject {
 
         #[qsignal]
         #[cxx_name = "releasesReady"]
-        fn releases_ready(self: Pin<&mut Self>, json: QString);
+        fn releases_ready(self: Pin<&mut Self>, tag: QString, json: QString);
         #[qsignal]
         #[cxx_name = "releasesFailed"]
-        fn releases_failed(self: Pin<&mut Self>, message: QString);
+        fn releases_failed(self: Pin<&mut Self>, tag: QString, message: QString);
 
         #[qsignal]
         #[cxx_name = "torrentAdded"]
@@ -588,17 +595,32 @@ pub mod qobject {
         #[cxx_name = "torrentStatsReady"]
         fn torrent_stats_ready(self: Pin<&mut Self>, json: QString);
 
+        /// A provisional work the provider already had from a list response,
+        /// emitted BEFORE `animeReady` so the detail page can paint at once.
+        ///
+        /// Carries no `relations` or `recommendations`; those arrive with
+        /// `animeReady`, which always supersedes this.
+        #[qsignal]
+        #[cxx_name = "animePartial"]
+        fn anime_partial(self: Pin<&mut Self>, json: QString);
+
         /// One release's probe verdict. `badge` is "green"|"yellow"|"red",
         /// `combinedScore` the probe-adjusted rank. Fires in completion order.
         #[qsignal]
         #[cxx_name = "probeResult"]
-        fn probe_result(self: Pin<&mut Self>, index: i32, badge: QString, combined_score: i64);
+        fn probe_result(
+            self: Pin<&mut Self>,
+            tag: QString,
+            index: i32,
+            badge: QString,
+            combined_score: i64,
+        );
 
         /// The whole probe batch finished (or could not start). Always fires,
         /// even when every probe failed, so the UI can stop its spinner.
         #[qsignal]
         #[cxx_name = "probeDone"]
-        fn probe_done(self: Pin<&mut Self>);
+        fn probe_done(self: Pin<&mut Self>, tag: QString);
 
         /// A `.torrent` was written to disk.
         #[qsignal]
@@ -624,9 +646,10 @@ use cxx_qt_lib::QString;
 use kitsune_core::auth::{TokenStore, flow};
 use kitsune_core::diagnostics::speedtest::{SpeedTestProgress, SpeedTester};
 use kitsune_core::indexer::{
-    combined_score, download_to, health_badge, probe_releases_standalone, rank, search_all,
-    HealthBadge, IndexerRegistry, ReleaseRequest, SearchMode,
+    download_to, probe_rank, probe_releases_standalone, rank, HealthBadge, IndexerRegistry,
+    ProbeOutcome, ReleaseCache, ReleaseRequest, SearchMode,
 };
+use kitsune_core::providers::cache::ttl;
 use kitsune_core::auth::LastPlayedStore;
 use kitsune_core::player::state::PlayerState;
 use kitsune_core::player::{LastReleaseStore, WatchPositionStore};
@@ -667,6 +690,10 @@ pub struct BackendRust {
     settings: Arc<SettingsStore>,
     /// The indexers a release search fans out to.
     indexers: Arc<IndexerRegistry>,
+    /// A TTL cache in front of `search_all`, so reopening an episode serves
+    /// the list and its probe badges without another round trip. Empty results
+    /// are not kept, so Retry always does real work.
+    releases: Arc<ReleaseCache>,
     /// The torrent engine + stream bridge + player holds, started lazily on
     /// the first playback. Shares the settings store so the reader's download
     /// directory and player preferences are honoured.
@@ -734,6 +761,7 @@ impl Default for BackendRust {
             player: Arc::new(PlayerState::with_settings(settings.clone())),
             settings,
             indexers: Arc::new(IndexerRegistry::new()),
+            releases: Arc::new(ReleaseCache::new()),
             // A bad client build is not worth failing startup over: it needs
             // a TLS backend, which is present in every shipped build, so a
             // failure here means the environment is broken. `None` lets the
@@ -933,20 +961,48 @@ impl qobject::Backend {
         );
     }
 
-    fn get_anime(self: Pin<&mut Self>, id: i64) {
-        self.spawn_metadata(
-            move |provider| async move {
-                provider
-                    .by_id(id)
-                    .await
-                    // `None` serialises to JSON `null`, which QML already
-                    // handles as "not found".
-                    .map(|anime| serde_json::to_string(&anime).unwrap_or_else(|_| "null".into()))
-                    .map_err(|err| err.to_string())
-            },
-            Self::anime_ready,
-            Self::anime_failed,
-        );
+    fn get_anime(mut self: Pin<&mut Self>, id: i64) {
+        // Paint from what a list response already gave us, before any request.
+        // Synchronous on purpose: the answer is in memory, and emitting it
+        // here guarantees QML sees it before the async reply can arrive.
+        if let Some(partial) = self.rust().provider.cached_partial(id) {
+            let json = serde_json::to_string(&partial).unwrap_or_else(|_| "null".into());
+            // `as_mut` reborrows: the signal takes `Pin<&mut Self>`, and `self`
+            // is still needed for `spawn_metadata` below.
+            self.as_mut().anime_partial(QString::from(&json));
+        }
+
+        // The entry rides in the SAME request as the work, so this costs no
+        // extra round trip. It is emitted on `listEntryReady`, which already
+        // carries exactly `{id,status,progress}`, so `DetailPage` needs no
+        // change and cannot race a separate `getListEntry`.
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let provider = Arc::clone(&self.rust().provider);
+
+        runtime.spawn(async move {
+            match provider.by_id_with_entry(id).await {
+                Ok((anime, entry)) => {
+                    let json =
+                        serde_json::to_string(&anime).unwrap_or_else(|_| "null".into());
+                    // `None` -> JSON `null`, which QML reads as "not on list".
+                    let entry_json =
+                        serde_json::to_string(&entry).unwrap_or_else(|_| "null".into());
+
+                    let _ = qt_thread.clone().queue(move |qobject| {
+                        qobject.anime_ready(QString::from(&json))
+                    });
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.list_entry_ready(QString::from(&entry_json))
+                    });
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.anime_failed(QString::from(&message)));
+                }
+            }
+        });
     }
 
     fn get_recommendations(self: Pin<&mut Self>, id: i64, page: i32, per_page: i32) {
@@ -1249,11 +1305,14 @@ impl qobject::Backend {
 
     fn search_releases(
         self: Pin<&mut Self>,
+        tag: QString,
         titles: QString,
         episode: i32,
         absolute_episode: i32,
         mode: QString,
+        force: bool,
     ) {
+        let tag = tag.to_string();
         let titles = titles.to_string();
         let mode = mode.to_string();
 
@@ -1261,17 +1320,20 @@ impl qobject::Backend {
         let runtime = Arc::clone(&self.rust().runtime);
         let indexers = Arc::clone(&self.rust().indexers);
         let settings = Arc::clone(&self.rust().settings);
+        let releases = Arc::clone(&self.rust().releases);
 
         runtime.spawn(async move {
+            // Every early return echoes the tag, so QML can always tell which
+            // open an answer belongs to.
+            let fail_tagged = |message: String| {
+                let tag = QString::from(&tag);
+                let message = QString::from(&message);
+                let _ = qt_thread.queue(move |qobject| qobject.releases_failed(tag, message));
+            };
+
             let titles: Vec<String> = match serde_json::from_str(&titles) {
                 Ok(titles) => titles,
-                Err(err) => {
-                    let message = format!("bad titles payload: {err}");
-                    let _ = qt_thread.queue(move |qobject| {
-                        qobject.releases_failed(QString::from(&message))
-                    });
-                    return;
-                }
+                Err(err) => return fail_tagged(format!("bad titles payload: {err}")),
             };
 
             // `<= 0` means "no episode" (a film or a title-level search).
@@ -1280,13 +1342,7 @@ impl qobject::Backend {
 
             let mode: SearchMode = match serde_json::from_value(serde_json::Value::String(mode)) {
                 Ok(mode) => mode,
-                Err(err) => {
-                    let message = format!("unknown search mode: {err}");
-                    let _ = qt_thread.queue(move |qobject| {
-                        qobject.releases_failed(QString::from(&message))
-                    });
-                    return;
-                }
+                Err(err) => return fail_tagged(format!("unknown search mode: {err}")),
             };
 
             let request = ReleaseRequest {
@@ -1306,9 +1362,23 @@ impl qobject::Backend {
                 }
             };
 
-            let found = search_all(indexers.indexers(), &request, &preference).await;
+            // A cache hit answers immediately; `force` (Retry) always searches.
+            let found = releases
+                .search(
+                    indexers.indexers(),
+                    &request,
+                    &preference,
+                    ttl::RELEASES,
+                    force,
+                )
+                .await
+                .unwrap_or_default();
+
             let json = serde_json::to_string(&found).unwrap_or_else(|_| "[]".into());
-            let _ = qt_thread.queue(move |qobject| qobject.releases_ready(QString::from(&json)));
+            let tag = QString::from(&tag);
+            let _ = qt_thread.queue(move |qobject| {
+                qobject.releases_ready(tag, QString::from(&json))
+            });
         });
     }
 
@@ -1436,17 +1506,37 @@ impl qobject::Backend {
     /// Probe every release for swarm health, reporting each verdict as it
     /// lands. Nothing is returned: the answers are `probeResult` signals,
     /// terminated by `probeDone`.
-    fn probe_releases(self: Pin<&mut Self>, releases_json: QString) {
+    fn probe_releases(self: Pin<&mut Self>, tag: QString, releases_json: QString) {
+        let tag = tag.to_string();
         let releases_json = releases_json.to_string();
 
         let releases: Vec<Release> = match serde_json::from_str(&releases_json) {
             Ok(releases) => releases,
             Err(err) => {
                 tracing::warn!("bad releases payload for probe: {err}");
-                self.probe_done();
+                self.probe_done(QString::from(&tag));
                 return;
             }
         };
+
+        // A cached batch is replayed rather than re-probed: the verdicts are
+        // index-aligned with this exact list, so they still apply. Emitted one
+        // per release, then `probeDone`, exactly like a live batch.
+        if let Some(cached) = self.rust().releases.cached_probes(&releases) {
+            let qt_thread = self.qt_thread();
+            for outcome in cached {
+                let tag = QString::from(&tag);
+                let badge = QString::from(badge_literal(outcome.badge));
+                let index = outcome.index as i32;
+                let score = outcome.combined_score;
+                let _ = qt_thread.clone().queue(move |qobject| {
+                    qobject.probe_result(tag, index, badge, score)
+                });
+            }
+            let tag = QString::from(&tag);
+            let _ = qt_thread.queue(move |qobject| qobject.probe_done(tag));
+            return;
+        }
 
         // The static half of every score, computed once; a probe only adds to
         // it, so re-deriving per event would be wasted work.
@@ -1466,6 +1556,7 @@ impl qobject::Backend {
 
         let qt_thread = self.qt_thread();
         let runtime = Arc::clone(&self.rust().runtime);
+        let cache = Arc::clone(&self.rust().releases);
 
         runtime.spawn(async move {
             // A dedicated session, matching the Tauri path: registering a
@@ -1473,29 +1564,48 @@ impl qobject::Backend {
             // would make a later playback request for it download nothing.
             let dir = std::env::temp_dir().join("kitsune-probes");
 
+            // Outcomes are collected as they land so the finished batch can be
+            // cached in one write; a partial batch is never stored.
+            let collected: Arc<std::sync::Mutex<Vec<ProbeOutcome>>> =
+                Arc::new(std::sync::Mutex::new(Vec::with_capacity(releases.len())));
+
             let for_events = Arc::clone(&base);
+            let for_store = Arc::clone(&collected);
+            let tag_for_events = tag.clone();
             // The callback fires once per release, so the thread handle is
             // cloned per call rather than moved into the closure once.
             let thread_for_events = qt_thread.clone();
             probe_releases_standalone(dir, &releases, move |index, probe| {
                 let base_score = for_events.get(index).copied().unwrap_or(0);
-                let badge = health_badge(probe);
-                let score = combined_score(base_score, probe);
-                let badge_wire = badge_literal(badge);
+                let outcome = probe_rank::outcome(index, base_score, probe);
+
+                if let Ok(mut collected) = for_store.lock() {
+                    collected.push(outcome.clone());
+                }
 
                 // `queue` needs a `'static` closure, so the values are moved
                 // in, not borrowed.
+                let tag = QString::from(&tag_for_events);
+                let badge = QString::from(badge_literal(outcome.badge));
+                let index = outcome.index as i32;
+                let score = outcome.combined_score;
                 let _ = thread_for_events.clone().queue(move |qobject| {
-                    qobject.probe_result(
-                        index as i32,
-                        QString::from(badge_wire),
-                        score,
-                    )
+                    qobject.probe_result(tag, index, badge, score)
                 });
             })
             .await;
 
-            let _ = qt_thread.queue(|qobject| qobject.probe_done());
+            // Store before `probeDone`, so a modal that reacts to the final
+            // signal by reopening finds a warm cache.
+            let outcomes = std::sync::Arc::try_unwrap(collected)
+                .map(|mutex| mutex.into_inner().unwrap_or_default())
+                .unwrap_or_default();
+            if !outcomes.is_empty() {
+                cache.store_probes(&releases, outcomes);
+            }
+
+            let tag = QString::from(&tag);
+            let _ = qt_thread.queue(move |qobject| qobject.probe_done(tag));
         });
     }
 
@@ -1671,18 +1781,44 @@ impl qobject::Backend {
     }
 
     fn get_list_entry(self: Pin<&mut Self>, media_id: i64) {
-        self.spawn_anilist(
-            move |anilist| async move {
-                anilist
-                    .list_entry(media_id)
-                    .await
-                    // `None` -> JSON `null`, which QML reads as "not on list".
-                    .map(|entry| serde_json::to_string(&entry).unwrap_or_else(|_| "null".into()))
-                    .map_err(|err| err.to_string())
-            },
-            Self::list_entry_ready,
-            Self::auth_error,
-        );
+        // The detail lookup already fetched this entry in its own request, so
+        // answer from that copy when it is known. `Some(None)` is a real
+        // answer (the work is NOT on the list), which is why the outer option
+        // is checked rather than the inner one.
+        if let Some(known) = self.rust().provider.cached_entry(media_id) {
+            let json = serde_json::to_string(&known).unwrap_or_else(|_| "null".into());
+            self.list_entry_ready(QString::from(&json));
+            return;
+        }
+
+        // A plain runtime spawn rather than `spawn_anilist`: that helper reports
+        // failures on `authError`, which is broadcast to every listener in the
+        // app. Reading an entry is not an account operation, so a 429 here used
+        // to surface in the settings footer (and anywhere else listening) for a
+        // page the reader was not even on.
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let anilist = Arc::clone(&self.rust().anilist);
+
+        runtime.spawn(async move {
+            match anilist.list_entry(media_id).await {
+                // `None` -> JSON `null`, which QML reads as "not on list".
+                Ok(entry) => {
+                    let json =
+                        serde_json::to_string(&entry).unwrap_or_else(|_| "null".into());
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.list_entry_ready(QString::from(&json)));
+                }
+                // Deliberately silent. The entry is a decoration on the detail
+                // page's status menu; a failed read leaves it showing nothing
+                // rather than raising an app-wide error the reader cannot act
+                // on. `by_id` already delivers the entry in the common case, so
+                // this path is a cache-miss fallback.
+                Err(err) => {
+                    tracing::warn!("could not read the list entry for {media_id}: {err:#}");
+                }
+            }
+        });
     }
 
     // --- Settings ----------------------------------------------------------

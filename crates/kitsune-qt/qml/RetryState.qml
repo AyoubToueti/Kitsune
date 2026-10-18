@@ -23,6 +23,33 @@ Item {
     property bool active: false
     // The failure message, shown under the heading.
     property string message: ""
+    // Which kind of failure this is: "rateLimit", "connection" or "other".
+    //
+    // Pages report the backend's own error string, which is accurate but
+    // unreadable ("provider returned HTTP 429: rate limited by AniList; try
+    // again in about 20s"). Classifying once here lets the overlay say
+    // something a reader understands, and lets the rate-limit wording read the
+    // LIVE countdown rather than a number baked into that string.
+    property string kind: ""
+
+    // The overlay's heading, per failure kind.
+    readonly property string headline: state.kind === "rateLimit"
+        ? "AniList is rate limiting us"
+        : (state.kind === "connection"
+            ? "Can't reach AniList"
+            : "Couldn't load this page")
+
+    // The line under the heading. The rate-limit case reads `remaining`, so the
+    // seconds tick down with the button instead of freezing at whatever delay
+    // the backend happened to mention. Once the lock lapses the count is gone,
+    // so the wording changes rather than saying "in 0s".
+    readonly property string detail: state.kind === "rateLimit"
+        ? (state.locked
+            ? ("Too many requests. You can retry in " + state.remaining + "s.")
+            : "Too many requests. You can retry now.")
+        : (state.kind === "connection"
+            ? "That looks like a connection problem. Check your internet and try again."
+            : state.message)
     // Whether the Retry button is currently locked behind a countdown.
     property bool locked: false
     // Whole seconds left until the button unlocks.
@@ -45,8 +72,9 @@ Item {
     function reportFailure(message) {
         state.message = message
         state.active = true
+        state.kind = classify(message)
 
-        if (isRateLimit(message)) {
+        if (state.kind === "rateLimit") {
             state.attempts += 1
             // 5, 10, 20, 40, 80, 120 (capped).
             let secs = state.baseSeconds * Math.pow(2, state.attempts - 1)
@@ -60,12 +88,45 @@ Item {
         }
     }
 
-    // Whether a failure message names a rate limit. Kept tolerant of wording:
-    // the backend sends "429" and "rate limited ...", and either is enough.
+    // Which of the three failure shapes `message` is.
+    //
+    // Rate limit and connection failures get their own wording; anything else
+    // keeps the backend's text, which is the only case where it is specific
+    // enough to be worth showing. Matching is tolerant of wording because the
+    // transport strings have changed before and either spelling is enough.
+    function classify(message) {
+        const m = message ? String(message).toLowerCase() : ""
+        if (m === "") return "other"
+        if (m.indexOf("429") !== -1 || m.indexOf("rate limit") !== -1) {
+            return "rateLimit"
+        }
+        const connectionWords = [
+            "transport", "timed out", "timeout", "connection", "dns",
+            "network", "request failed", "unreachable"
+        ]
+        for (let i = 0; i < connectionWords.length; i++) {
+            if (m.indexOf(connectionWords[i]) !== -1) return "connection"
+        }
+        return "other"
+    }
+
+    // Kept as the one place the rate-limit rule is spelled, so a caller that
+    // only needs the yes/no answer does not duplicate the match.
     function isRateLimit(message) {
-        if (!message) return false
-        const m = String(message).toLowerCase()
-        return m.indexOf("429") !== -1 || m.indexOf("rate limit") !== -1
+        return classify(message) === "rateLimit"
+    }
+
+    // Whether the failure is one worth waiting out, rather than a page that
+    // genuinely has nothing to show.
+    //
+    // A page keeps its loading skeleton up for these, so the reader sees the
+    // screen still trying behind the overlay instead of a blank page that
+    // looks like the app gave up. A content failure (a 404, a bad query) is
+    // NOT transient: its skeleton would pulse forever for data that will
+    // never arrive.
+    function isTransient(message) {
+        const kind = classify(message)
+        return kind === "rateLimit" || kind === "connection"
     }
 
     // Called when a page loads successfully: the overlay goes away and the
@@ -75,6 +136,7 @@ Item {
         state.locked = false
         state.remaining = 0
         state.attempts = 0
+        state.kind = ""
         countdown.stop()
     }
 

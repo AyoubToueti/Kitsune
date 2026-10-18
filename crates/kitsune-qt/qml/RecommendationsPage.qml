@@ -63,9 +63,12 @@ Item {
         }
         function onRecommendationsFailed(id, message) {
             if (id !== page.animeId) return
-            page.loading = false
-            page.error = message
-            // Raise the retry overlay; the first-load skeleton stays up.
+            // Transient failures keep the skeleton pulsing behind the overlay;
+            // a content failure drops it rather than pulsing forever.
+            page.loading = RetryState.isTransient(message) && recModel.count === 0
+            // The overlay owns the wording -- no raw backend string here. The
+            // empty-state text below keys off this being empty.
+            page.error = ""
             RetryState.reportFailure(message)
         }
     }
@@ -249,7 +252,10 @@ Item {
         Item {
             Layout.fillWidth: true
             Layout.preferredHeight: 120
-            visible: !page.loading && recModel.count === 0 && page.error.length === 0
+            // Hidden while the retry overlay is up: the page has not concluded
+            // "no suggestions", it has failed to ask, and the overlay says so.
+            visible: !page.loading && recModel.count === 0
+                && page.error.length === 0 && !RetryState.active
 
             Rectangle {
                 anchors.centerIn: parent

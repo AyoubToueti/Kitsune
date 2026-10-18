@@ -94,6 +94,10 @@ pub fn run() {
             // `reqwest::Client`, so rebuilding one per search would waste
             // connections and re-resolve DNS.
             .manage(indexer::IndexerRegistry::new())
+            // A TTL cache in front of the indexer fan-out, so reopening an
+            // episode serves the list without another round trip. Empty
+            // results are not kept, so a retry always does real work.
+            .manage(kitsune_core::indexer::ReleaseCache::new())
             // The AniList token, read from disk at startup so a signed-in
             // reader stays signed in across restarts.
             .manage(auth::TokenStore::new())

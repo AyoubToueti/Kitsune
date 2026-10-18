@@ -45,9 +45,12 @@ Item {
             RetryState.reset()
         }
         function onScheduleFailed(message) {
-            page.loading = false
-            status.text = "Failed: " + message
-            // Raise the retry overlay; the first-load skeleton stays up.
+            // Transient failures keep the skeleton pulsing behind the overlay;
+            // a content failure drops it rather than pulsing forever.
+            page.loading = RetryState.isTransient(message)
+                && airingModel.count === 0
+            // The overlay owns the wording -- no raw backend string here.
+            status.text = ""
             RetryState.reportFailure(message)
         }
     }

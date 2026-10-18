@@ -67,6 +67,11 @@ Popup {
             popup.signedIn = signedInNow
         }
         function onAuthError(message) {
+            // `authError` is a broadcast: every page listens for its own
+            // account failures on it. A CLOSED settings popup must ignore
+            // them, or a failure raised elsewhere prints in the footer of a
+            // popup the reader is not looking at.
+            if (!popup.opened) return
             status.text = message
         }
     }

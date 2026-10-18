@@ -38,6 +38,11 @@ Item {
     property bool searching: false
     property string error: ""
 
+    // Which search a reply belongs to; the backend echoes it back. Bumped on
+    // every search so a slow answer for a previous one is dropped.
+    property int searchGeneration: 0
+    readonly property string searchTag: String(searchGeneration)
+
     // The chosen release's magnet, for reference in the header.
     property string releaseTitle: ""
     property int torrentId: -1
@@ -68,7 +73,8 @@ Item {
             page.search()
         }
 
-        function onReleasesReady(json) {
+        function onReleasesReady(tag, json) {
+            if (tag !== page.searchTag) return
             page.searching = false
             page.releases = JSON.parse(json) || []
             if (page.releases.length === 0) {
@@ -76,7 +82,8 @@ Item {
             }
         }
 
-        function onReleasesFailed(message) {
+        function onReleasesFailed(tag, message) {
+            if (tag !== page.searchTag) return
             page.searching = false
             page.error = message
         }
@@ -126,18 +133,22 @@ Item {
         return Math.max(0, page.absoluteEpisode - page.episodeNumber)
     }
 
-    function search() {
+    // `force` skips the backend's cache; the Retry button passes it.
+    function search(force) {
         if (!backend || titles.length === 0) {
             page.error = "No title to search with."
             return
         }
+        page.searchGeneration += 1
         page.searching = true
         page.error = ""
         backend.searchReleases(
+            page.searchTag,
             JSON.stringify(titles),
             page.episodeNumber,
             page.absoluteEpisode,
-            "episodes")
+            "episodes",
+            force === true)
     }
 
     function pickRelease(release) {
@@ -293,13 +304,51 @@ Item {
                     font.bold: true
                 }
 
-                Text {
-                    visible: page.error.length > 0
+                Column {
+                    // Only while picking a release: `error` is shared with
+                    // playback failures, where a re-search is not the fix.
+                    visible: page.stage === "releases" && !page.searching
+                        && (page.error.length > 0 || page.releases.length === 0)
                     Layout.fillWidth: true
-                    text: page.error
-                    color: Theme.danger
-                    font.pixelSize: 13
-                    wrapMode: Text.WordWrap
+                    spacing: 10
+
+                    Text {
+                        width: parent.width
+                        visible: page.error.length > 0
+                        text: page.error
+                        color: Theme.danger
+                        font.pixelSize: 13
+                        wrapMode: Text.WordWrap
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        implicitWidth: watchRetryLabel.implicitWidth + 28
+                        implicitHeight: 30
+                        radius: 15
+                        color: watchRetryArea.containsMouse ? Theme.accent : Theme.glassFillSubtle
+                        border.width: 1
+                        border.color: watchRetryArea.containsMouse
+                            ? Theme.accent : Theme.glassBorder
+
+                        Text {
+                            id: watchRetryLabel
+                            anchors.centerIn: parent
+                            text: "Retry"
+                            color: watchRetryArea.containsMouse ? "white" : Theme.ink
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+
+                        MouseArea {
+                            id: watchRetryArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.search(true)
+                        }
+                    }
                 }
 
                 // Release list.
