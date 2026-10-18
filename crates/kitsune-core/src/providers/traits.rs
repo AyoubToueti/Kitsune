@@ -102,6 +102,74 @@ pub trait AnimeProvider: Send + Sync {
     /// an error — callers may legitimately probe for ids that do not exist.
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError>;
 
+    /// Look up a single title AND the reader's own list entry for it.
+    ///
+    /// The entry is a field ON the media node, so a provider that supports it
+    /// can answer both in ONE request. That matters because the rate limit is
+    /// counted per request, not per field: fetching the entry separately
+    /// doubled the cost of opening a detail page while signed in.
+    ///
+    /// Defaults to `by_id` plus "no entry", which is correct for a provider
+    /// with no notion of a reader's list, and keeps existing callers working.
+    async fn by_id_with_entry(
+        &self,
+        id: i64,
+    ) -> Result<(Option<Anime>, Option<crate::providers::anilist::ListEntry>), ProviderError>
+    {
+        Ok((self.by_id(id).await?, None))
+    }
+
+    /// The reader's own list entry for a work, when one was already fetched.
+    ///
+    /// [`AnimeProvider::by_id_with_entry`] returns the entry alongside the
+    /// work, so the detail page does not need a second request for it. A
+    /// caller that asks again -- `DetailPage` does, from its own flow -- can
+    /// answer from here instead of paying for the round trip.
+    ///
+    /// A counter that moves whenever the reader's own list changes.
+    ///
+    /// A cache holding list entries keys them on this value, so an add or a
+    /// remove makes the next read miss instead of serving the pre-write
+    /// status for the whole TTL. `None` for a provider with no reader's list.
+    fn list_revision(&self) -> Option<u64> {
+        None
+    }
+
+    /// Three states, which is why the return is doubly optional:
+    ///
+    /// - `None` -- nothing known; the caller must do a real lookup.
+    /// - `Some(None)` -- known, and the work is NOT on the reader's list.
+    /// - `Some(Some(entry))` -- known, with the entry.
+    ///
+    /// The middle case matters: AniList answers `mediaListEntry: null` both
+    /// for "not on the list" and for "signed out", so caching only the
+    /// presence of an entry would send every signed-in reader back for a
+    /// second request on every work they have not added.
+    ///
+    /// Defaulted to `None` for providers that keep no such cache.
+    fn cached_entry(&self, _id: i64) -> Option<Option<super::anilist::ListEntry>> {
+        None
+    }
+
+    /// A work this provider has already listed, without any request.
+    ///
+    /// A card on the home screen, a browse grid or a rail already carries
+    /// nearly everything the detail page renders; only `relations` and
+    /// `recommendations` are held back (see `MEDIA_DETAIL_FIELDS`). Handing
+    /// that copy back lets the UI paint the page immediately instead of
+    /// showing a skeleton until `by_id` answers.
+    ///
+    /// Deliberately SYNCHRONOUS: the point is to avoid a request and a wait,
+    /// so it must be answerable on the UI thread. It returns `None` when the
+    /// work has not been seen, which is the signal to keep the skeleton.
+    ///
+    /// Defaulted to `None` so a provider that does not keep such a map (and
+    /// every test stub) needs no change. The returned value is provisional and
+    /// always superseded by [`AnimeProvider::by_id`].
+    fn cached_partial(&self, _id: i64) -> Option<Anime> {
+        None
+    }
+
     /// A page of community recommendations for a work, highest-rated first.
     ///
     /// Separate from [`AnimeProvider::by_id`] because the detail lookup only

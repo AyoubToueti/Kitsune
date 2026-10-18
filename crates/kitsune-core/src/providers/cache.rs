@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tokio::sync::OnceCell;
 
-use super::anilist::{AniListProvider, UserListEntry};
+use super::anilist::{AniListProvider, ListEntry, UserListEntry};
 use super::traits::{AnimeProvider, ProviderError};
 use crate::types::{
     Anime, AnimePage, BrowseQuery, HomeShelves, ListFilter, MediaTag, ProviderId,
@@ -44,6 +44,10 @@ pub mod ttl {
     pub const LIST: Duration = Duration::from_secs(5 * 60);
     /// Airing times move, so the schedule is the least safe to hold.
     pub const SCHEDULE: Duration = Duration::from_secs(60);
+    /// Indexer results for one search. Uploads are effectively append-only,
+    /// so a short hold hides the per-open refetch without going stale; both
+    /// frontends share this number through the core cache.
+    pub const RELEASES: Duration = Duration::from_secs(5 * 60);
 }
 
 /// Upper bound on stored entries per cache.
@@ -69,12 +73,12 @@ struct Inner<V> {
 /// A small TTL cache with in-flight de-duplication and a bounded size.
 ///
 /// One instance serves one return shape; a provider holds several.
-struct TtlCache<V> {
+pub(crate) struct TtlCache<V> {
     inner: Mutex<Inner<V>>,
 }
 
 impl<V: Clone> TtlCache<V> {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(Inner {
                 map: HashMap::new(),
@@ -88,15 +92,16 @@ impl<V: Clone> TtlCache<V> {
     /// The `load` closure only runs when the key is absent or stale; a live
     /// value is cloned back. Concurrent callers for one key share a single
     /// `load` through the [`OnceCell`].
-    async fn get_or_load<F, Fut>(
+    pub(crate) async fn get_or_load<E, F, Fut>(
         &self,
         key: &str,
         ttl: Duration,
         load: F,
-    ) -> Result<V, ProviderError>
+    ) -> Result<V, E>
     where
+        E: std::error::Error + Send + Sync,
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<V, ProviderError>>,
+        Fut: std::future::Future<Output = Result<V, E>>,
     {
         // Look up (or create) the cell under the lock, dropping a stale entry
         // first so the load below re-runs. Never await while holding the lock.
@@ -125,7 +130,7 @@ impl<V: Clone> TtlCache<V> {
         let entry = cell
             .get_or_try_init(|| async move {
                 let value = load().await?;
-                Ok::<Entry<V>, ProviderError>((value, Instant::now() + ttl))
+                Ok::<Entry<V>, E>((value, Instant::now() + ttl))
             })
             .await?;
 
@@ -133,6 +138,44 @@ impl<V: Clone> TtlCache<V> {
         // a real value exists (a failed load never occupies a slot).
         self.touch(key);
         Ok(entry.0.clone())
+    }
+
+    /// Read `key` when it is still fresh. No load, no de-duplication.
+    ///
+    /// For callers whose value arrives from somewhere other than a loader --
+    /// a probe batch recorded after the fact, say -- and who only want to ask
+    /// "do I already have this?".
+    pub(crate) fn get(&self, key: &str) -> Option<V> {
+        let inner = self.inner.lock().expect("cache poisoned");
+        let (value, expires) = inner.map.get(key)?.get()?;
+        (*expires > Instant::now()).then(|| value.clone())
+    }
+
+    /// Insert `value` under `key` for `ttl`, replacing anything there.
+    ///
+    /// The counterpart to [`Self::get`]: a caller that produced the value
+    /// elsewhere writes it here rather than going through a loader closure.
+    pub(crate) fn store(&self, key: &str, value: V, ttl: Duration) {
+        let cell = std::sync::Arc::new(OnceCell::new());
+        // `set` cannot fail on a fresh cell.
+        let _ = cell.set((value, Instant::now() + ttl));
+        {
+            let mut inner = self.inner.lock().expect("cache poisoned");
+            inner.map.insert(key.to_string(), cell);
+        }
+        self.touch(key);
+    }
+
+    /// Forget `key`, so the next [`Self::get_or_load`] runs `load` again.
+    ///
+    /// Used by callers whose value can turn out to be useless (an empty
+    /// search) and must not be served for the rest of the TTL. Removing the
+    /// cell, rather than just marking it stale, also drops any in-flight load
+    /// awaiting it -- matching what a stale entry does on the next lookup.
+    pub(crate) fn invalidate(&self, key: &str) {
+        let mut inner = self.inner.lock().expect("cache poisoned");
+        inner.map.remove(key);
+        inner.order.retain(|k| k != key);
     }
 
     /// Note `key` as most-recently inserted and evict the oldest if over cap.
@@ -168,6 +211,22 @@ pub struct CachedProvider<P: AnimeProvider> {
     tags: TtlCache<Vec<MediaTag>>,
     schedule: TtlCache<Vec<ScheduledEpisode>>,
     home: TtlCache<HomeShelves>,
+    /// Every work this process has seen in a list response, by id.
+    ///
+    /// Not a cache of `by_id` results: the value is what a LIST query returns,
+    /// which is deliberately missing `relations` and `recommendations`. It
+    /// exists so the detail page can paint from a card the reader just clicked
+    /// without waiting for a request, and it is never written into `by_id` --
+    /// a provisional copy must not satisfy the authoritative lookup.
+    seen: TtlCache<Anime>,
+    /// The reader's list entry for a work, as `Some(None)` when the lookup
+    /// proved it is NOT on the list.
+    ///
+    /// Kept out of `Anime` (which is the shared shape of every list response)
+    /// and keyed by the provider's list revision, because the entry changes by
+    /// the reader's own action: a plain TTL would show a stale status for up
+    /// to `ttl::DETAIL` after an add or remove.
+    entries: TtlCache<Option<ListEntry>>,
 }
 
 impl<P: AnimeProvider> CachedProvider<P> {
@@ -185,6 +244,21 @@ impl<P: AnimeProvider> CachedProvider<P> {
             tags: TtlCache::new(),
             schedule: TtlCache::new(),
             home: TtlCache::new(),
+            seen: TtlCache::new(),
+            entries: TtlCache::new(),
+        }
+    }
+
+    /// Record every work in a list response, so the detail page can paint from
+    /// the card the reader just clicked without a request.
+    ///
+    /// Called on a cache HIT as well as a miss: re-stamping the TTL keeps a
+    /// work the reader is actively browsing answerable, and the cost is one
+    /// lock plus a clone per item -- far less than the request it avoids.
+    fn remember(&self, items: &[Anime]) {
+        for anime in items {
+            self.seen
+                .store(&format!("seen:{}", anime.id), anime.clone(), ttl::LIST);
         }
     }
 }
@@ -249,9 +323,12 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
 
     async fn trending(&self, limit: u32) -> Result<Vec<Anime>, ProviderError> {
         let key = format!("trending:{limit}");
-        self.trending
+        let items = self
+            .trending
             .get_or_load(&key, ttl::LIST, || self.inner.trending(limit))
-            .await
+            .await?;
+        self.remember(&items);
+        Ok(items)
     }
 
     async fn home_shelves(&self) -> Result<HomeShelves, ProviderError> {
@@ -260,16 +337,28 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
         // returning to the home tab re-uses the one reply instead of asking
         // again (and the inner provider's own `home_shelves` is the single
         // combined query, not this trait's six-call default).
-        self.home
+        let shelves = self
+            .home
             .get_or_load("home", ttl::LIST, || self.inner.home_shelves())
-            .await
+            .await?;
+        // Every shelf the home screen shows is a card the reader can click.
+        self.remember(&shelves.trending);
+        self.remember(&shelves.top_airing);
+        self.remember(&shelves.most_popular);
+        self.remember(&shelves.top_rated);
+        self.remember(&shelves.latest_completed);
+        self.remember(&shelves.top_100);
+        Ok(shelves)
     }
 
     async fn list(&self, filter: ListFilter, limit: u32) -> Result<Vec<Anime>, ProviderError> {
         let key = format!("list:{}:{limit}", filter_key(filter));
-        self.list
+        let items = self
+            .list
             .get_or_load(&key, ttl::LIST, || self.inner.list(filter, limit))
-            .await
+            .await?;
+        self.remember(&items);
+        Ok(items)
     }
 
     async fn list_page(
@@ -279,18 +368,86 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
         per_page: u32,
     ) -> Result<AnimePage, ProviderError> {
         let key = format!("list_page:{}:{page}:{per_page}", filter_key(filter));
-        self.list_page
+        let result = self
+            .list_page
             .get_or_load(&key, ttl::LIST, || {
                 self.inner.list_page(filter, page, per_page)
             })
-            .await
+            .await?;
+        self.remember(&result.items);
+        Ok(result)
+    }
+
+    fn cached_partial(&self, id: i64) -> Option<Anime> {
+        self.seen.get(&format!("seen:{id}"))
+    }
+
+    fn list_revision(&self) -> Option<u64> {
+        self.inner.list_revision()
+    }
+
+    fn cached_entry(&self, id: i64) -> Option<Option<ListEntry>> {
+        // `None` here means "not known"; the revision is part of the key so a
+        // write by the reader cannot be answered from a pre-write entry.
+        // Defaults to 0 for a provider with no list (Jikan, test stubs), so
+        // the entry cache still works when there is nothing to invalidate.
+        let revision = self.inner.list_revision().unwrap_or(0);
+        self.entries.get(&format!("entry:{id}:{revision}"))
+    }
+
+    /// The detail lookup and the reader's entry, in ONE upstream request when
+    /// neither is cached.
+    ///
+    /// The entry is cached separately from the work (it changes by the
+    /// reader's own action, the work does not), so a known entry lets the work
+    /// come from its own cache and costs nothing; an unknown one is fetched
+    /// together with the work rather than in a second request.
+    async fn by_id_with_entry(
+        &self,
+        id: i64,
+    ) -> Result<(Option<Anime>, Option<ListEntry>), ProviderError> {
+        // Defaults to 0 so a provider with no list (Jikan, test stubs) still
+        // gets the entry cached, just never invalidated by a write.
+        let revision = self.inner.list_revision().unwrap_or(0);
+        let entry_key = format!("entry:{id}:{revision}");
+
+        if let Some(entry) = self.entries.get(&entry_key) {
+            // Field/method name clash: `self.by_id` is the cache, so the
+            // trait method is spelled out.
+            let anime = AnimeProvider::by_id(self, id).await?;
+            return Ok((anime, entry));
+        }
+
+        let (anime, entry) = self.inner.by_id_with_entry(id).await?;
+
+        self.entries.store(&entry_key, entry.clone(), ttl::LIST);
+        // Warm the work's own cache too, so a later `by_id` is free.
+        self.by_id
+            .store(&format!("anime:{id}"), anime.clone(), ttl::DETAIL);
+        if let Some(found) = &anime {
+            self.seen
+                .store(&format!("seen:{}", found.id), found.clone(), ttl::LIST);
+        }
+
+        Ok((anime, entry))
     }
 
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError> {
         let key = format!("anime:{id}");
-        self.by_id
+        let found = self
+            .by_id
             .get_or_load(&key, ttl::DETAIL, || self.inner.by_id(id))
-            .await
+            .await?;
+        // The authoritative copy also refreshes the partial, so a later click
+        // on a related title paints from what this page already showed.
+        if let Some(anime) = &found {
+            self.seen.store(
+                &format!("seen:{}", anime.id),
+                anime.clone(),
+                ttl::LIST,
+            );
+        }
+        Ok(found)
     }
 
     async fn recommendations(
@@ -343,11 +500,14 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
         // never collide. `serde_json` gives a stable spelling for the struct.
         let query_json = serde_json::to_string(&query).unwrap_or_default();
         let key = format!("browse:{query_json}:{page}:{per_page}");
-        self.browse
+        let result = self
+            .browse
             .get_or_load(&key, ttl::LIST, || {
                 self.inner.browse(query.clone(), page, per_page)
             })
-            .await
+            .await?;
+        self.remember(&result.items);
+        Ok(result)
     }
 }
 
@@ -490,6 +650,113 @@ mod tests {
         cached.trending(10).await.unwrap();
 
         assert_eq!(calls.load(Ordering::SeqCst), 1, "only one upstream call");
+    }
+
+    #[tokio::test]
+    async fn a_listed_work_is_answerable_without_a_request() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        assert!(
+            cached.cached_partial(1).is_none(),
+            "nothing listed yet, so nothing to serve"
+        );
+
+        cached.trending(10).await.unwrap();
+        let upstream = calls.load(Ordering::SeqCst);
+
+        let partial = cached
+            .cached_partial(1)
+            .expect("the listed work should be answerable");
+        assert_eq!(partial.id, 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            upstream,
+            "serving a partial must not reach the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_id_has_no_partial() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.trending(10).await.unwrap();
+
+        assert!(
+            cached.cached_partial(999).is_none(),
+            "an id no list mentioned must not be invented"
+        );
+    }
+
+    /// The partial is a LIST response, so it must not claim the detail-only
+    /// fields. This documents the contract the UI relies on: those sections
+    /// stay absent until `by_id` answers.
+    #[tokio::test]
+    async fn a_partial_carries_no_detail_only_fields() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.trending(10).await.unwrap();
+        let partial = cached.cached_partial(1).expect("listed");
+
+        assert!(partial.relations.is_empty(), "relations are detail-only");
+        assert!(
+            partial.recommendations.is_empty(),
+            "recommendations are detail-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_detail_lookup_also_warms_the_partial() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.by_id(1).await.unwrap();
+        let upstream = calls.load(Ordering::SeqCst);
+        assert!(cached.cached_partial(1).is_some(), "by_id should warm it");
+        assert_eq!(calls.load(Ordering::SeqCst), upstream, "no extra request");
+    }
+
+    /// One detail lookup must answer BOTH the work and the entry, and a
+    /// repeat must cost nothing. This is the whole point of folding the entry
+    /// into the `by_id` query: the rate limit counts requests, so a signed-in
+    /// open used to cost twice what it needed to.
+    #[tokio::test]
+    async fn a_detail_lookup_caches_the_entry_too() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.by_id_with_entry(1).await.unwrap();
+        let after_first = calls.load(Ordering::SeqCst);
+        assert!(after_first > 0, "the first lookup must reach the provider");
+
+        let (anime, entry) = cached.by_id_with_entry(1).await.unwrap();
+        assert!(anime.is_some(), "the cached work should come back");
+        assert!(entry.is_none(), "the fixture lists no entry");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            after_first,
+            "a repeat must be served from cache on both halves"
+        );
+    }
+
+    /// A known "not on the list" is an answer, not a miss: without this the
+    /// Qt bridge would fall back to a second request for every work the reader
+    /// has not added, which is the common case.
+    #[tokio::test]
+    async fn a_known_absent_entry_is_answerable() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.by_id_with_entry(1).await.unwrap();
+
+        assert_eq!(
+            cached.cached_entry(1),
+            Some(None),
+            "known-absent must be distinguishable from unknown"
+        );
+        assert_eq!(cached.cached_entry(999), None, "never looked up");
     }
 
     #[tokio::test]

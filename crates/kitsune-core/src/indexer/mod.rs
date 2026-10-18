@@ -11,6 +11,7 @@
 //! not the requested episode, and orders what is left. It is a free function
 //! over `&dyn Indexer` so it can be tested against a stub without any network.
 
+pub mod cache;
 pub mod download;
 pub mod match_spec;
 pub mod normalize;
@@ -23,6 +24,7 @@ pub mod query;
 pub mod rank;
 pub mod traits;
 
+pub use cache::ReleaseCache;
 pub use download::{download_to, DownloadError};
 pub use match_spec::{EpisodeRequest, MatchRejection};
 pub use nyaa::{NyaaIndexer, NYAA_ENDPOINT};

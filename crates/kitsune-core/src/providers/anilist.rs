@@ -498,6 +498,16 @@ impl AnimeProvider for AniListProvider {
         ProviderId::AniList
     }
 
+    fn list_revision(&self) -> Option<u64> {
+        // Read the field directly rather than calling the inherent
+        // `list_revision()`: inside a trait impl the two spell the same thing,
+        // and going through the field cannot accidentally recurse.
+        Some(
+            self.list_revision
+                .load(std::sync::atomic::Ordering::SeqCst),
+        )
+    }
+
     async fn genres(&self) -> Result<Vec<String>, ProviderError> {
         let data: GenreData = self
             .query("{ GenreCollection }", serde_json::json!({}))
@@ -688,19 +698,49 @@ impl AnimeProvider for AniListProvider {
     }
 
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError> {
+        Ok(self.by_id_with_entry(id).await?.0)
+    }
+
+    /// The detail lookup, carrying the reader's list entry in the SAME request.
+    ///
+    /// `mediaListEntry` is a field on `Media`, so asking for it costs nothing:
+    /// AniList counts requests, not fields, and fetching it separately (as the
+    /// Qt app used to) doubled the cost of opening a page while signed in.
+    ///
+    /// Verified against the live API: `mediaListEntry` is accepted alongside
+    /// `relations` and returns `null` for an anonymous request.
+    async fn by_id_with_entry(
+        &self,
+        id: i64,
+    ) -> Result<(Option<Anime>, Option<ListEntry>), ProviderError> {
         let query = format!(
             r#"
             query ($id: Int) {{
               Media(id: $id, type: ANIME) {{
                 {MEDIA_FIELDS}
                 {MEDIA_DETAIL_FIELDS}
+                mediaListEntry {{
+                  id
+                  status
+                  progress
+                }}
               }}
             }}
             "#
         );
 
-        let data: MediaData = self.query(&query, serde_json::json!({ "id": id })).await?;
-        Ok(data.media.map(map_media))
+        let mut data: MediaData = self.query(&query, serde_json::json!({ "id": id })).await?;
+
+        // `take` rather than `clone`: `Media` is not `Clone` (it is a wire
+        // type, decoded once and consumed), and the entry is not wanted
+        // afterwards anyway.
+        let entry = data
+            .media
+            .as_mut()
+            .and_then(|media| media.list_entry.take())
+            .and_then(map_list_entry);
+
+        Ok((data.media.map(map_media), entry))
     }
 
     async fn recommendations(
@@ -1662,6 +1702,11 @@ struct Media {
     recommendations: Option<RecommendationConnection>,
     #[serde(default)]
     trailer: Option<TrailerWire>,
+    /// The reader's own entry, requested only by the detail lookup. `None`
+    /// both when signed out and when the work is not on the list, which
+    /// AniList does not distinguish.
+    #[serde(rename = "mediaListEntry", default)]
+    list_entry: Option<ListEntryWire>,
 }
 
 #[derive(Deserialize, Default)]
@@ -4215,6 +4260,64 @@ mod tests {
                 "the recommendation sub-query should ask for {field}"
             );
         }
+    }
+
+    /// The detail query must ASK for the reader's entry. Without this the fold
+    /// silently returns `None` and the app pays for a second request -- the
+    /// exact cost the fold exists to remove.
+    #[tokio::test]
+    async fn by_id_query_requests_the_list_entry() {
+        let response = serde_json::json!({ "data": { "Media": media_json() } });
+        let (server, provider) = provider_with(response, 200).await;
+
+        provider.by_id(21).await.unwrap();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("requests should be recorded");
+        let body = String::from_utf8_lossy(&requests[0].body);
+        assert!(
+            body.contains("mediaListEntry"),
+            "the detail query should ask for the reader's entry; body was {body}"
+        );
+    }
+
+    /// The entry arrives from the same request as the work, and both halves
+    /// are returned.
+    #[tokio::test]
+    async fn by_id_with_entry_maps_both_halves() {
+        let mut media = detail_media_json();
+        media["mediaListEntry"] = serde_json::json!({
+            "id": 77,
+            "status": "CURRENT",
+            "progress": 12
+        });
+        let response = serde_json::json!({ "data": { "Media": media } });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let (anime, entry) = provider.by_id_with_entry(21).await.expect("lookup");
+
+        assert_eq!(anime.expect("the work should be present").id, 21);
+        let entry = entry.expect("the entry should be present");
+        assert_eq!(entry.id, 77);
+        assert_eq!(entry.status, ListStatus::Current);
+        assert_eq!(entry.progress, 12);
+    }
+
+    /// Signed out, AniList answers `mediaListEntry: null`. That is a real
+    /// answer ("not on the list"), not a failure.
+    #[tokio::test]
+    async fn by_id_with_entry_tolerates_a_null_entry() {
+        let mut media = media_json();
+        media["mediaListEntry"] = serde_json::Value::Null;
+        let response = serde_json::json!({ "data": { "Media": media } });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let (anime, entry) = provider.by_id_with_entry(21).await.expect("lookup");
+
+        assert!(anime.is_some());
+        assert!(entry.is_none(), "a null entry is not an error");
     }
 
     /// And a list query must NOT request them, since the payload would bloat.
