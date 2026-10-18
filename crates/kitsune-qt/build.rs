@@ -47,6 +47,8 @@ fn main() {
             .qml_file("qml/DetailSkeleton.qml")
             .qml_file("qml/PosterGridSkeleton.qml")
             .qml_file("qml/RetryOverlay.qml")
+            .qml_file("qml/InlineRetry.qml")
+            .qml_file("qml/LoadingMore.qml")
             // These are `pragma Singleton`; the qmldir must mark them or QML
             // refuses to import them.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true))
