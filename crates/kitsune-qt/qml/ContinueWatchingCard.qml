@@ -6,9 +6,9 @@ import com.kitsune.app
 Item {
     id: card
 
-    // A `ContinueWatchingItem`: { anime, progress }[cite: 7].
+    // A `ContinueWatchingItem`: { anime, progress }
     required property var entry
-    // Where the reader stopped, from the local watch-position store, or null[cite: 7].
+    // Where the reader stopped, from the local watch-position store, or null
     property var position: null
 
     signal openAnime(int id)
@@ -37,7 +37,7 @@ Item {
     }
 
     width: 145
-    height: 235
+    height: 240
 
     HoverHandler { id: hover }
 
@@ -49,7 +49,7 @@ Item {
         Rectangle {
             id: poster
             width: parent.width
-            height: 185
+            height: 180
             radius: 12
             color: Theme.surfaceRaised
             clip: true
@@ -126,126 +126,69 @@ Item {
                 }
             }
 
-            // Hover Central Play Button Overlay
-            Rectangle {
-                anchors.centerIn: parent
-                width: 44
-                height: 44
-                radius: 22
-                color: playBtnMouse.containsMouse ? Theme.accentHover : Theme.accent
-                opacity: hover.hovered ? 1.0 : 0.0
-                scale: hover.hovered ? 1.0 : 0.85
-
-                Behavior on opacity { NumberAnimation { duration: 180 } }
-                Behavior on scale { NumberAnimation { duration: 200; easing.type: Easing.OutBack } }
-
-                PlayerIcon {
-                    anchors.centerIn: parent
-                    anchors.horizontalCenterOffset: 1
-                    kind: "play"
-                    color: "white"
-                    width: 18
-                    height: 18
-                }
-
-                MouseArea {
-                    id: playBtnMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: card.openWatch(card.anime.id, card.episode)
-                }
-            }
-
-            // Bottom Quick Action Bar
-            Rectangle {
-                id: quickBar
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: progressTrack.top
-                anchors.margins: 6
-                height: 28
-                radius: 8
-                color: Qt.rgba(0.07, 0.08, 0.12, 0.9)
-                border.width: 1
-                border.color: Theme.glassBorder
-                opacity: hover.hovered ? 1.0 : 0.0
-                y: hover.hovered ? 0 : 4
-
-                Behavior on opacity { NumberAnimation { duration: 160 } }
-                Behavior on y { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 8
-                    spacing: 4
-
-                    Text {
-                        text: "Resume"
-                        color: Theme.ink
-                        font.pixelSize: 11
-                        font.bold: true
-                        Layout.fillWidth: true
-                    }
-
-                    Rectangle {
-                        width: 20
-                        height: 20
-                        radius: 5
-                        color: detailsMouse.containsMouse ? Theme.glassFillHover : Theme.glassFillSubtle
-
-                        PlayerIcon {
-                            anchors.centerIn: parent
-                            kind: "gear"
-                            color: Theme.inkMuted
-                            width: 11
-                            height: 11
-                        }
-
-                        MouseArea {
-                            id: detailsMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: card.openAnime(card.anime.id)
-                        }
-                    }
-                }
-            }
-
-            // Progress Bar Track (Bottom Edge)
-            Rectangle {
-                id: progressTrack
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                height: 4
-                color: Qt.rgba(0, 0, 0, 0.6)
-
-                Rectangle {
-                    width: parent.width * (card.percent / 100)
-                    height: parent.height
-                    color: Theme.accent
-                }
-            }
-
-            // Click poster frame opens anime details page
+            // Click poster background opens anime details page
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.LeftButton
                 cursorShape: Qt.PointingHandCursor
-                onClicked: card.openAnime(card.anime.id)
+                onClicked: card.openAnime(card.anime ? card.anime.id : 0)
+            }
+
+            // Prominent Floating Glass Pill Overlay (Resume Watching)
+            Rectangle {
+                id: resumePill
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 10
+                height: 34
+                radius: 17
+                color: pillMouse.containsMouse ? Theme.accent : Qt.rgba(0.07, 0.09, 0.15, 0.88)
+                border.width: 1
+                border.color: pillMouse.containsMouse ? Theme.accent : Qt.rgba(1, 1, 1, 0.25)
+                opacity: hover.hovered ? 1.0 : 0.0
+                transform: Translate { y: hover.hovered ? 0 : 8 }
+
+                Behavior on opacity { NumberAnimation { duration: 180 } }
+                Behavior on transform { YAnimator { duration: 200; easing.type: Easing.OutCubic } }
+
+                RowLayout {
+                    anchors.centerIn: parent
+                    spacing: 6
+
+                    PlayerIcon {
+                        kind: "play"
+                        color: "white"
+                        width: 11
+                        height: 11
+                    }
+
+                    Text {
+                        text: "Resume EP " + card.episode
+                        color: "white"
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                }
+
+                MouseArea {
+                    id: pillMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: card.openWatch(card.anime ? card.anime.id : 0, card.episode)
+                }
             }
         }
 
-        // --- Card Details Label ---------------------------------------
-        Column {
+        // --- Card Details Column --------------------------------------
+        ColumnLayout {
             width: parent.width
-            spacing: 2
+            spacing: 3
 
+            // Title
             Text {
-                width: parent.width
+                Layout.fillWidth: true
                 text: card.title
                 color: hover.hovered ? Theme.accent : Theme.ink
                 font.pixelSize: 12
@@ -256,15 +199,51 @@ Item {
                 Behavior on color { ColorAnimation { duration: 150 } }
             }
 
-            Text {
-                width: parent.width
-                text: card.position
-                    ? (card.fmtTime(card.position.positionSeconds) + " / " + card.fmtTime(card.position.durationSeconds))
-                    : ("Episode " + card.episode + " • " + card.percent + "%")
-                color: Theme.inkMuted
-                font.pixelSize: 10
-                font.family: "monospace"
-                elide: Text.ElideRight
+            // EP and Time Progress Row
+            RowLayout {
+                Layout.fillWidth: true
+
+                Text {
+                    text: "EP " + card.episode
+                    color: Theme.inkMuted
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                    text: card.position && card.position.durationSeconds
+                        ? (card.fmtTime(card.position.positionSeconds) + " / " + card.fmtTime(card.position.durationSeconds))
+                        : (card.fmtTime(0) + " / " + card.fmtTime(0))
+                    color: Theme.accent
+                    font.pixelSize: 11
+                    font.bold: true
+                    font.family: "monospace"
+                }
+            }
+
+            // Full-Width Progress Bar Track
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.topMargin: 2
+                height: 2
+                radius: 1
+                color: Qt.rgba(1, 1, 1, 0.15)
+
+                readonly property real progressRatio: {
+                    if (card.position && card.position.durationSeconds > 0) {
+                        return Math.min(1.0, Math.max(0.0, card.position.positionSeconds / card.position.durationSeconds))
+                    }
+                    return Math.min(1.0, Math.max(0.0, card.percent / 100))
+                }
+
+                Rectangle {
+                    width: Math.max(0, parent.width * parent.progressRatio)
+                    height: parent.height
+                    radius: parent.radius
+                    color: Theme.accent
+                }
             }
         }
     }
