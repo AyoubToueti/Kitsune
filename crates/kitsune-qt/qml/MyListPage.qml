@@ -1,9 +1,6 @@
 // The reader's own list, mirroring the Svelte /list route: a row of status
 // tabs with counts over a poster grid, each card carrying a menu to move or
 // remove the entry.
-//
-// Signed out, it shows a sign-in banner rather than an error: "nothing to
-// show" is the correct state for a reader with no account.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -11,8 +8,6 @@ import QtQuick.Layouts
 Item {
     id: page
 
-    // Which navbar pill this page lights up. Read by the window to derive the
-    // active route, so re-opening this page does not replay the slide.
     readonly property string pageRoute: "list"
 
     property var backend: null
@@ -20,15 +15,24 @@ Item {
     property bool loading: false
     property string errorText: ""
 
-    // The reader's whole list, as the backend returned it.
     property var entries: []
-    // The active tab's status wire value, or "" for All.
     property string activeTab: ""
+    property string searchText: ""
+    readonly property string normalizedSearchText: searchText.trim().toLowerCase()
+    
+    property string sortKey: ""
+    property bool sortReversed: false
+
+    readonly property bool canReverse: sortKey !== ""
+
+    readonly property var sortOptions: [
+        { "value": "", "label": "Default Order" },
+        { "value": "added", "label": "Recently Added" },
+        { "value": "title", "label": "Title" }
+    ]
 
     signal openAnime(int id)
 
-    // The tabs, in the order they are offered. Labels are the reader's words;
-    // values are AniList's own enum members (the wire format).
     readonly property var tabs: [
         { value: "", label: "All" },
         { value: "current", label: "Watching" },
@@ -38,7 +42,6 @@ Item {
         { value: "dropped", label: "Dropped" }
     ]
 
-    // The statuses a card's menu offers, matching the detail page's.
     readonly property var listStatuses: [
         { value: "current", label: "Watching" },
         { value: "completed", label: "Completed" },
@@ -48,23 +51,59 @@ Item {
     ]
 
     function displayTitle(item) {
+        if (!item) return "(untitled)"
         const t = item.title || {}
         return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
     }
 
-    // The entries the active tab shows. Reading `entries` and `activeTab` here
-    // makes them dependencies of every binding that calls this.
-    function visibleEntries() {
-        if (page.activeTab === "") return page.entries
-        return page.entries.filter(function (e) { return e.status === page.activeTab })
+    readonly property var statusCounts: {
+        const counts = { "": entries.length }
+        for (let i = 0; i < entries.length; i++) {
+            const st = entries[i].status
+            if (st) counts[st] = (counts[st] || 0) + 1
+        }
+        return counts
     }
 
-    // How many entries carry `value`, or the total for "".
     function countFor(value) {
-        if (value === "") return page.entries.length
-        let n = 0
-        for (const e of page.entries) if (e.status === value) n++
-        return n
+        return statusCounts[value] || 0
+    }
+
+    readonly property var filteredEntries: {
+        let list = entries
+
+        if (activeTab !== "") {
+            list = list.filter(function (e) { return e.status === activeTab })
+        }
+
+        const term = normalizedSearchText
+        if (term !== "") {
+            list = list.filter(function (e) {
+                return displayTitle(e.anime).toLowerCase().indexOf(term) !== -1
+            })
+        }
+
+        if (sortKey !== "") {
+            list = list.slice()
+            const direction = sortReversed ? -1 : 1
+
+            if (sortKey === "added") {
+                list.sort(function (a, b) {
+                    const x = a.addedAt || 0
+                    const y = b.addedAt || 0
+                    return (y - x) * direction
+                })
+            } else if (sortKey === "title") {
+                list.sort(function (a, b) {
+                    const x = displayTitle(a.anime).toLowerCase()
+                    const y = displayTitle(b.anime).toLowerCase()
+                    if (x === y) return 0
+                    return (x < y ? -1 : 1) * direction
+                })
+            }
+        }
+
+        return list
     }
 
     function signIn() {
@@ -73,26 +112,20 @@ Item {
         if (url && url.length > 0) Qt.openUrlExternally(url)
     }
 
-    // Optimistically drop a row, then let the backend confirm (it re-reads on
-    // `listChanged`).
     function removeEntry(entryId) {
         if (!backend) return
         page.entries = page.entries.filter(function (e) { return e.entryId !== entryId })
         backend.deleteListEntry(entryId)
     }
 
-    // Optimistically move a row between lists, then write it.
     function moveEntry(entryId, animeId, status) {
         if (!backend) return
         page.entries = page.entries.map(function (e) {
             if (e.entryId !== entryId) return e
-            const copy = {}
-            for (const k in e) copy[k] = e[k]
+            const copy = Object.assign({}, e)
             copy.status = status
             return copy
         })
-        // Progress is deliberately omitted: changing the list must not reset
-        // how far the reader has got.
         backend.setListEntry(animeId, status, 0)
     }
 
@@ -118,16 +151,12 @@ Item {
         }
 
         function onUserListFailed(message) {
-            // A transient failure keeps the grid skeleton pulsing behind the
-            // overlay; a content failure drops it rather than pulsing forever.
             page.loading = RetryState.isTransient(message)
-            // The overlay owns the wording -- no raw backend string here.
             page.errorText = ""
             RetryState.reportFailure(message)
         }
 
         function onListChanged() {
-            // Any successful write re-reads, so the grid is never stale.
             if (page.signedIn) page.backend.userList()
         }
 
@@ -136,8 +165,6 @@ Item {
         }
     }
 
-    // Re-read the reader's list. Called by the retry overlay; only meaningful
-    // when signed in, which is the only state that fetches it.
     function reload() {
         if (!backend || !page.signedIn) return
         page.loading = true
@@ -308,205 +335,332 @@ Item {
             }
         }
 
-        // --- Grid ---------------------------------------------------------
-        // Placeholder grid while the reader's list is in flight, so the page
-        // reads as loading rather than empty.
-        PosterGridSkeleton {
+        // --- Search & Sort Bar --------------------------------------------
+        RowLayout {
             Layout.fillWidth: true
-            Layout.fillHeight: true
             Layout.leftMargin: Theme.pad
             Layout.rightMargin: Theme.pad
             Layout.topMargin: Theme.gap
-            visible: page.signedIn && page.loading
-            count: 12
-            cellWidth: 200
-            cellHeight: 350
-        }
+            visible: page.signedIn && page.entries.length > 0
+            spacing: 8
 
-        GridView {
-            id: grid
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            Layout.leftMargin: Theme.pad
-            Layout.rightMargin: Theme.pad
-            Layout.topMargin: Theme.gap
-            Layout.bottomMargin: Theme.pad
-            visible: page.signedIn && !page.loading
-            clip: true
-            cellWidth: 200
-            cellHeight: 350
-            model: page.visibleEntries()
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 38
+                radius: 19
+                color: Theme.glassFillSubtle
+                border.width: 1
+                border.color: listSearch.activeFocus ? Theme.accent : Theme.glassBorder
 
-            delegate: Item {
-                id: cardRoot
-                required property var modelData
-                width: 180
-                height: 336
+                TextInput {
+                    id: listSearch
+                    anchors.fill: parent
+                    anchors.leftMargin: 16
+                    anchors.rightMargin: 40
+                    verticalAlignment: TextInput.AlignVCenter
+                    color: Theme.ink
+                    font.pixelSize: 12
+                    selectionColor: Theme.accent
+                    selectedTextColor: "white"
+                    clip: true
+                    onTextChanged: page.searchText = text
 
-                // Captured so the menu rows (declared below) can reach the
-                // entry without a nested Repeater shadowing `modelData`.
-                readonly property int entryId: modelData.entryId
-                readonly property int animeId: modelData.anime.id
-                readonly property string entryStatus: modelData.status
-
-                PosterCard {
-                    anchors.left: parent.left
-                    width: 180
-                    animeId: modelData.anime.id
-                    title: page.displayTitle(modelData.anime)
-                    score: modelData.anime.averageScore || 0
-                    cover: modelData.anime.coverImage || ""
-                    format: modelData.anime.format || ""
-                    // Airing state, so the card hides its Completed button for
-                    // a work that is still releasing.
-                    animeStatus: modelData.anime.status || ""
-                    onClicked: page.openAnime(animeId)
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: listSearch.text.length === 0
+                        text: "Search your list\u2026"
+                        color: Theme.inkFaint
+                        font.pixelSize: 12
+                    }
                 }
 
-                // ⋮ menu, top-LEFT (the card's score pill owns the top-right).
-                Rectangle {
-                    id: menuButton
-                    x: 6
-                    y: 6
-                    width: 26
-                    height: 26
-                    radius: 13
-                    color: menuMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
-                    border.width: 1
-                    border.color: Theme.borderSubtle
+                Item {
+                    anchors.right: parent.right
+                    anchors.rightMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 18
+                    height: 18
+                    visible: listSearch.text.length > 0
 
                     Text {
                         anchors.centerIn: parent
-                        text: "⋮"
-                        color: Theme.ink
-                        font.pixelSize: 16
-                        font.bold: true
+                        text: "\u2715"
+                        color: clearArea.containsMouse ? Theme.ink : Theme.inkFaint
+                        font.pixelSize: 12
                     }
 
                     MouseArea {
-                        id: menuMouse
+                        id: clearArea
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: itemMenu.open()
+                        onClicked: listSearch.text = ""
                     }
                 }
+            }
 
-                Popup {
-                    id: itemMenu
-                    parent: menuButton
-                    x: 0
-                    y: menuButton.height + 4
-                    width: 176
-                    padding: 6
-                    modal: false
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+            Rectangle {
+                id: sortGroup
+                Layout.preferredHeight: 38
+                implicitWidth: sortInner.implicitWidth + 10
+                radius: 12
+                color: Theme.glassFillSubtle
+                border.width: 1
+                border.color: Theme.glassBorder
 
-                    background: Rectangle {
-                        color: Theme.surfaceRaised
-                        radius: 12
-                        border.width: 1
-                        border.color: Theme.borderSubtle
+                Row {
+                    id: sortInner
+                    anchors.centerIn: parent
+                    spacing: 4
+
+                    // Reverse toggle with flip animation
+                    Rectangle {
+                        width: 32
+                        height: 32
+                        radius: 9
+                        opacity: page.canReverse ? 1.0 : 0.45
+                        color: reverseMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                        Text {
+                            id: reverseIcon
+                            anchors.centerIn: parent
+                            text: "\u21C5"
+                            color: page.sortReversed ? Theme.accent : Theme.inkMuted
+                            font.pixelSize: 15
+                            rotation: page.sortReversed ? 180 : 0
+
+                            Behavior on rotation {
+                                NumberAnimation {
+                                    duration: 250
+                                    easing.type: Easing.InOutQuad
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            id: reverseMouse
+                            anchors.fill: parent
+                            enabled: page.canReverse
+                            hoverEnabled: true
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: page.sortReversed = !page.sortReversed
+                        }
                     }
 
-                    // The five statuses as explicit rows. A Repeater would be
-                    // tidier but its `modelData` would shadow this delegate's,
-                    // hiding the entry the rows need.
-                    contentItem: Column {
-                        spacing: 2
+                    Rectangle {
+                        width: 1
+                        height: 18
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: Theme.borderSubtle
+                    }
 
-                        Repeater {
-                            model: page.listStatuses
-                            delegate: Rectangle {
-                                required property var modelData
-                                width: itemMenu.width - 12
-                                height: 30
-                                radius: 8
-                                color: optMouse.containsMouse ? Theme.surfaceHover : "transparent"
-
-                                Text {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    // `modelData` here is the STATUS; the
-                                    // entry is reached through the captured
-                                    // `cardRoot` properties.
-                                    text: modelData.label
-                                    color: modelData.value === cardRoot.entryStatus
-                                        ? Theme.accent : Theme.ink
-                                    font.pixelSize: 13
-                                }
-
-                                MouseArea {
-                                    id: optMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        itemMenu.close()
-                                        page.moveEntry(cardRoot.entryId,
-                                            cardRoot.animeId, modelData.value)
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            width: itemMenu.width - 12
-                            height: 1
-                            color: Theme.borderSubtle
-                        }
-
-                        Rectangle {
-                            width: itemMenu.width - 12
-                            height: 30
-                            radius: 8
-                            color: rmMouse.containsMouse ? Theme.surfaceHover : "transparent"
-
-                            Text {
-                                anchors.left: parent.left
-                                anchors.leftMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "Remove from list"
-                                color: Theme.danger
-                                font.pixelSize: 13
-                            }
-
-                            MouseArea {
-                                id: rmMouse
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    itemMenu.close()
-                                    page.removeEntry(cardRoot.entryId)
-                                }
-                            }
+                    ThemeSelect {
+                        anchors.verticalCenter: parent.verticalCenter
+                        preferredWidth: 150
+                        borderless: true
+                        accentText: true
+                        options: page.sortOptions
+                        value: page.sortKey
+                        onSelected: (v) => {
+                            page.sortKey = v
+                            if (v === "") page.sortReversed = false
                         }
                     }
                 }
             }
         }
 
-        // --- Empty / error ------------------------------------------------
-        Text {
+        // --- Grid View Container ------------------------------------------
+        Item {
             Layout.fillWidth: true
-            Layout.topMargin: 24
-            Layout.leftMargin: Theme.pad
-            Layout.rightMargin: Theme.pad
-            visible: page.signedIn && !page.loading
-                && page.visibleEntries().length === 0
-            text: page.activeTab === ""
-                ? "You haven't added any anime to your list yet."
-                : "No titles in this list."
-            color: Theme.inkMuted
-            font.pixelSize: 13
-            horizontalAlignment: Text.AlignHCenter
+            Layout.fillHeight: true
+            visible: page.signedIn
+
+            PosterGridSkeleton {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.pad
+                anchors.rightMargin: Theme.pad
+                anchors.topMargin: Theme.gap
+                visible: page.loading
+                count: 12
+                cellWidth: 200
+                cellHeight: 350
+            }
+
+            GridView {
+                id: grid
+                anchors.fill: parent
+                anchors.leftMargin: Theme.pad
+                anchors.rightMargin: Theme.pad
+                anchors.topMargin: Theme.gap
+                anchors.bottomMargin: Theme.pad
+                visible: !page.loading
+                clip: true
+                cellWidth: 200
+                cellHeight: 350
+                model: page.filteredEntries
+
+                delegate: Item {
+                    id: cardRoot
+                    required property var modelData
+                    width: grid.cellWidth
+                    height: grid.cellHeight
+
+                    readonly property int entryId: modelData.entryId
+                    readonly property int animeId: modelData.anime ? modelData.anime.id : 0
+                    readonly property string entryStatus: modelData.status || ""
+
+                    PosterCard {
+                        anchors.centerIn: parent
+                        width: 180
+                        height: 336
+                        animeId: cardRoot.animeId
+                        title: page.displayTitle(modelData.anime)
+                        score: (modelData.anime && modelData.anime.averageScore) || 0
+                        cover: (modelData.anime && modelData.anime.coverImage) || ""
+                        format: (modelData.anime && modelData.anime.format) || ""
+                        animeStatus: (modelData.anime && modelData.anime.status) || ""
+                        onClicked: page.openAnime(animeId)
+                    }
+
+                    Rectangle {
+                        id: menuButton
+                        x: (parent.width - 180) / 2 + 6
+                        y: (parent.height - 336) / 2 + 6
+                        width: 26
+                        height: 26
+                        radius: 13
+                        color: menuMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
+                        border.width: 1
+                        border.color: Theme.borderSubtle
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: "⋮"
+                            color: Theme.ink
+                            font.pixelSize: 16
+                            font.bold: true
+                        }
+
+                        MouseArea {
+                            id: menuMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: itemMenu.open()
+                        }
+                    }
+
+                    Popup {
+                        id: itemMenu
+                        parent: menuButton
+                        x: 0
+                        y: menuButton.height + 4
+                        width: 176
+                        padding: 6
+                        modal: false
+                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                        background: Rectangle {
+                            color: Theme.surfaceRaised
+                            radius: 12
+                            border.width: 1
+                            border.color: Theme.borderSubtle
+                        }
+
+                        contentItem: Column {
+                            spacing: 2
+
+                            Repeater {
+                                model: page.listStatuses
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    width: itemMenu.width - 12
+                                    height: 30
+                                    radius: 8
+                                    color: optMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                                    Text {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: modelData.label
+                                        color: modelData.value === cardRoot.entryStatus
+                                            ? Theme.accent : Theme.ink
+                                        font.pixelSize: 13
+                                    }
+
+                                    MouseArea {
+                                        id: optMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            itemMenu.close()
+                                            page.moveEntry(cardRoot.entryId, cardRoot.animeId, modelData.value)
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                width: itemMenu.width - 12
+                                height: 1
+                                color: Theme.borderSubtle
+                            }
+
+                            Rectangle {
+                                width: itemMenu.width - 12
+                                height: 30
+                                radius: 8
+                                color: rmMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                                Text {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Remove from list"
+                                    color: Theme.danger
+                                    font.pixelSize: 13
+                                }
+
+                                MouseArea {
+                                    id: rmMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        itemMenu.close()
+                                        page.removeEntry(cardRoot.entryId)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                anchors.centerIn: parent
+                width: parent.width - (Theme.pad * 2)
+                visible: !page.loading && page.filteredEntries.length === 0
+                text: page.normalizedSearchText !== ""
+                    ? ("No titles match \u201c" + page.searchText.trim() + "\u201d"
+                        + (page.activeTab === "" ? "." : " in this list."))
+                    : (page.activeTab === ""
+                        ? "You haven't added any anime to your list yet."
+                        : "No titles in this list.")
+                color: Theme.inkMuted
+                font.pixelSize: 13
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+            }
         }
 
         Text {
             Layout.fillWidth: true
             Layout.leftMargin: Theme.pad
+            Layout.rightMargin: Theme.pad
             Layout.bottomMargin: Theme.pad
             visible: page.errorText !== ""
             text: page.errorText
