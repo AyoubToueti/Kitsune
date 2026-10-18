@@ -1041,6 +1041,7 @@ impl AniListProvider {
                     id
                     status
                     progress
+                    createdAt
                     media {{ {MEDIA_FIELDS} }}
                   }}
                 }}
@@ -1084,6 +1085,7 @@ impl AniListProvider {
                     status,
                     progress: entry.progress.unwrap_or(0),
                     entry_id,
+                    added_at: entry.created_at,
                 });
             }
         }
@@ -1185,6 +1187,13 @@ pub struct UserListEntry {
     pub progress: u32,
     /// The id of the list entry itself, needed to delete it.
     pub entry_id: i64,
+    /// When the reader ADDED the work, as unix seconds; `None` when AniList
+    /// did not report it.
+    ///
+    /// This, not `progress` or the media id, is what the My List page sorts by
+    /// when the reader asks for "recently added". It is stable: a progress
+    /// update does not move it.
+    pub added_at: Option<i64>,
 }
 
 /// One entry in the reader's "Continue Watching" row.
@@ -1301,6 +1310,13 @@ struct MediaListEntry {
     /// A Unix timestamp in seconds. `0` when absent, which sorts last.
     #[serde(rename = "updatedAt", default)]
     updated_at: Option<i64>,
+    /// When the reader ADDED the work, as unix seconds.
+    ///
+    /// Distinct from `updatedAt`, which tracks the last CHANGE to the entry
+    /// (a progress update bumps it). Only the My List page's sort uses this;
+    /// the "Continue Watching" shelf wants `updatedAt`.
+    #[serde(rename = "createdAt", default)]
+    created_at: Option<i64>,
     /// Episodes watched so far. `0` when absent, matching the domain type.
     #[serde(default)]
     progress: Option<u32>,
