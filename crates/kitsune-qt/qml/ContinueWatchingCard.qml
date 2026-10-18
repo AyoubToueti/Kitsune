@@ -80,10 +80,49 @@ Item {
                 }
             }
 
-            // Episode Number Badge (Top-Left)
+            // Remove-from-list button (Top-Left)
             Rectangle {
+                id: removeBtn
+                visible: card.anime && ListStatusStore.isListed(card.anime.id)
                 anchors.top: parent.top
                 anchors.left: parent.left
+                anchors.margins: 8
+                width: 20
+                height: 20
+                radius: 10
+                z: 40
+                color: removeMouse.containsMouse
+                    ? Theme.danger
+                    : Qt.rgba(0.07, 0.08, 0.12, 0.82)
+                border.width: 1
+                border.color: removeMouse.containsMouse ? Theme.danger : Theme.glassBorder
+                scale: removeMouse.containsMouse ? 1.1 : 1.0
+
+                Behavior on color { ColorAnimation { duration: 140 } }
+                Behavior on scale { NumberAnimation { duration: 120 } }
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "\u2715"
+                    color: removeMouse.containsMouse ? "white" : Theme.inkMuted
+                    font.pixelSize: 10
+                    font.bold: true
+                }
+
+                MouseArea {
+                    id: removeMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: ListStatusStore.remove(card.anime.id)
+                }
+            }
+
+            // Episode Number Badge (Top-Right)
+            Rectangle {
+                id: epBadge
+                anchors.top: parent.top
+                anchors.right: parent.right
                 anchors.margins: 8
                 radius: 6
                 color: Qt.rgba(0.07, 0.08, 0.12, 0.8)
@@ -103,31 +142,9 @@ Item {
                 }
             }
 
-            // Score Badge (Top-Right)
-            Rectangle {
-                visible: card.anime && card.anime.averageScore != null
-                anchors.top: parent.top
-                anchors.right: parent.right
-                anchors.margins: 8
-                radius: 6
-                color: Qt.rgba(0.07, 0.08, 0.12, 0.8)
-                border.width: 1
-                border.color: Theme.glassBorder
-                implicitWidth: scoreLabel.implicitWidth + 12
-                implicitHeight: 20
-
-                Text {
-                    id: scoreLabel
-                    anchors.centerIn: parent
-                    text: "★ " + (card.anime ? card.anime.averageScore : "")
-                    color: Theme.score
-                    font.pixelSize: 10
-                    font.bold: true
-                }
-            }
-
-            // Click poster background opens anime details page
+            // Click poster background opens the anime's details page.
             MouseArea {
+                id: posterMouse
                 anchors.fill: parent
                 acceptedButtons: Qt.LeftButton
                 cursorShape: Qt.PointingHandCursor
@@ -143,6 +160,7 @@ Item {
                 anchors.margins: 10
                 height: 34
                 radius: 17
+                z: 30
                 color: pillMouse.containsMouse ? Theme.accent : Qt.rgba(0.07, 0.09, 0.15, 0.88)
                 border.width: 1
                 border.color: pillMouse.containsMouse ? Theme.accent : Qt.rgba(1, 1, 1, 0.25)

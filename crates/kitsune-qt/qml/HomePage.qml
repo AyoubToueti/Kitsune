@@ -148,6 +148,19 @@ Item {
             page.backend.getWatchPositions()
             if (page.signedIn) page.backend.continueWatching(12)
         }
+
+        // An AniList LIST write -- a status change, or a removal from this
+        // very row -- re-reads it too.
+        //
+        // Deliberately separate from `onLibraryChanged`: that fires for LOCAL
+        // stores (last played, watch positions), while this fires for the
+        // remote list. Without it, removing a work left its card on screen
+        // until the page was left and re-entered, because nothing told the row
+        // to re-read.
+        function onListChanged() {
+            if (!page.backend || !page.signedIn) return
+            page.backend.continueWatching(12)
+        }
     }
 
     // Order the row by when each work was last watched, most recent first.
