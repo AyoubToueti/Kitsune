@@ -49,11 +49,13 @@ fn main() {
             .qml_file("qml/RetryOverlay.qml")
             .qml_file("qml/InlineRetry.qml")
             .qml_file("qml/LoadingMore.qml")
+            .qml_file("qml/DragToStatus.qml")
             // These are `pragma Singleton`; the qmldir must mark them or QML
             // refuses to import them.
             .qml_file(QmlFile::from("qml/Theme.qml").singleton(true))
             .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true))
             .qml_file(QmlFile::from("qml/RetryState.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/DragState.qml").singleton(true))
             .qml_file(QmlFile::from("qml/SpeedTestStore.qml").singleton(true)),
     )
     .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])

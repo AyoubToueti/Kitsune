@@ -86,15 +86,33 @@ Item {
 
     // The statuses a quick-add offers, in the order shown. Labels are the
     // reader's words; values are AniList's own wire strings.
+    //
+    // Deliberately only three: the popup menu is small, and these are the
+    // moves a reader makes often. `allStatuses` below is the full set.
     readonly property var menuStatuses: [
         { "value": "current", "label": "Watching" },
         { "value": "completed", "label": "Completed" },
         { "value": "planning", "label": "Plan to watch" }
     ]
 
+    // Every status the API accepts, for surfaces that can show them all --
+    // the drag-to-list overlay, and the My List tabs. Same order as
+    // `MyListPage.tabs`, so the two do not disagree about what "the lists"
+    // are.
+    readonly property var allStatuses: [
+        { "value": "current", "label": "Watching" },
+        { "value": "planning", "label": "Plan to watch" },
+        { "value": "completed", "label": "Completed" },
+        { "value": "paused", "label": "On hold" },
+        { "value": "dropped", "label": "Dropped" }
+    ]
+
+    // The reader's word for a status. Reads `allStatuses`, not `menuStatuses`:
+    // the drag overlay can drop on "dropped", which the menu never offers, and
+    // a toast saying "moved to In list" would be a lie.
     function labelFor(status) {
-        for (let i = 0; i < menuStatuses.length; i++) {
-            if (menuStatuses[i].value === status) return menuStatuses[i].label
+        for (let i = 0; i < allStatuses.length; i++) {
+            if (allStatuses[i].value === status) return allStatuses[i].label
         }
         return "In list"
     }

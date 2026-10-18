@@ -179,13 +179,95 @@ Item {
                     }
                 }
 
-                // Poster Click -> Trigger Signal
+                // One handler for both gestures: a plain click opens the
+                // work, and a middle-click (or Alt + left-drag) starts a drag
+                // into a list. They must share one MouseArea -- two would race
+                // for the grab, and a drag handler that accepts the left
+                // button also swallows the card's normal click.
                 MouseArea {
                     id: cardMouse
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: card.clicked()
+                    acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+
+                    property bool dragCandidate: false
+                    property bool dragging: false
+                    property bool suppressClick: false
+                    property real pressX: 0
+                    property real pressY: 0
+
+                    onPressed: function (mouse) {
+                        pressX = mouse.x
+                        pressY = mouse.y
+                        dragging = false
+                        suppressClick = false
+                        
+                        dragCandidate = card.animeId > 0
+                            && (mouse.button === Qt.MiddleButton
+                                || (mouse.button === Qt.LeftButton
+                                    && (mouse.modifiers & Qt.AltModifier) !== 0))
+
+                        // Prevents parent Flickable/ListView from stealing the grab during Alt+Left drag
+                        preventStealing = dragCandidate
+                    }
+
+                    onPositionChanged: function (mouse) {
+                        if (dragging) {
+                            const held = (mouse.buttons & Qt.LeftButton) !== 0
+                                || (mouse.buttons & Qt.MiddleButton) !== 0
+                            if (!held) {
+                                DragState.cancel()
+                                dragging = false
+                                dragCandidate = false
+                                preventStealing = false
+                                return
+                            }
+                            const moved = mapToItem(null, mouse.x, mouse.y)
+                            DragState.move(moved.x, moved.y)
+                            return
+                        }
+
+                        if (!dragCandidate) return
+
+                        const dx = mouse.x - pressX
+                        const dy = mouse.y - pressY
+                        if (Math.sqrt(dx * dx + dy * dy) < 6) return
+
+                        const point = mapToItem(null, mouse.x, mouse.y)
+                        dragging = true
+                        DragState.begin(card.animeId, card.title || card.displayTitle(card.anime),
+                                        card.cover || (card.anime ? card.anime.coverImage : ""),
+                                        point.x, point.y)
+                    }
+
+                    onReleased: function (mouse) {
+                        if (dragging) {
+                            DragState.finish()
+                            suppressClick = true
+                        }
+                        dragCandidate = false
+                        dragging = false
+                        preventStealing = false
+                    }
+
+                    onCanceled: {
+                        if (dragging) DragState.cancel()
+                        dragCandidate = false
+                        dragging = false
+                        suppressClick = false
+                        preventStealing = false
+                    }
+
+                    onClicked: function (mouse) {
+                        if (suppressClick) {
+                            suppressClick = false
+                            return
+                        }
+                        if (mouse.button !== Qt.LeftButton) return
+                        if ((mouse.modifiers & Qt.AltModifier) !== 0) return
+                        card.clicked()
+                    }
                 }
 
                 // --- Expandable Quick Action Stack (Bottom-Right) -------------

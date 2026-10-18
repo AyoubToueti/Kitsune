@@ -400,6 +400,18 @@ Window {
         z: 100
     }
 
+    // Shown only while a card is being dragged into a list. It carries its own
+    // z (300) so it sits above the page stack and the back/forward cue, while
+    // Qt's `Overlay.overlay` -- where the settings popup and watch modal live
+    // -- still draws above it.
+    DragToStatus {
+        id: dragToStatus
+        anchors.fill: parent
+        visible: DragState.active || DragState.toastVisible
+    }
+
+
+
     function performRetry() {
         const item = stack.currentItem
         RetryState.active = false
