@@ -24,6 +24,25 @@ Item {
     property bool hasMore: true
     property string error: ""
 
+    // A LATER page failed: the loaded grid stays and a retry row appears under
+    // it. Kept separate from `error`, which is the empty-state message.
+    property string loadError: ""
+    property int loadErrorPage: 0
+    property int retryIn: 0
+
+    Timer {
+        id: inlineRetryTimer
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            page.retryIn -= 1
+            if (page.retryIn <= 0) {
+                page.retryIn = 0
+                stop()
+            }
+        }
+    }
+
     // The loaded recommendations, as a ListModel of `{ recJson }` rows.
     //
     // A ListModel (not a plain array) so appending a page emits an incremental
@@ -59,17 +78,29 @@ Item {
             }
             const info = pageObj ? pageObj.pageInfo : null
             page.hasMore = info ? info.hasNextPage !== false : false
+            // A successful page clears the inline failure and any lock.
+            page.loadError = ""
+            page.retryIn = 0
+            inlineRetryTimer.stop()
             RetryState.reset()
         }
         function onRecommendationsFailed(id, message) {
             if (id !== page.animeId) return
-            // Transient failures keep the skeleton pulsing behind the overlay;
-            // a content failure drops it rather than pulsing forever.
-            page.loading = RetryState.isTransient(message) && recModel.count === 0
-            // The overlay owns the wording -- no raw backend string here. The
-            // empty-state text below keys off this being empty.
-            page.error = ""
-            RetryState.reportFailure(message)
+            // A first-page failure has nothing to preserve, so it keeps the
+            // full-screen overlay. A LATER page must not take the grid away.
+            if (recModel.count === 0) {
+                page.loading = RetryState.isTransient(message)
+                page.error = ""
+                RetryState.reportFailure(message)
+                return
+            }
+
+            page.loading = false
+            page.loadError = message
+            // `loadPage` sets `pageNumber` before requesting.
+            page.loadErrorPage = page.pageNumber
+            page.retryIn = RetryState.isRateLimit(message) ? 5 : 0
+            if (page.retryIn > 0) inlineRetryTimer.restart()
         }
     }
 
@@ -91,14 +122,32 @@ Item {
         }
     }
 
-    // Re-run the first page. Called by the retry overlay.
+    // Re-run the first page. Called by the retry overlay, which can now only
+    // appear for a page-1 failure.
     function reload() {
         recModel.clear()
         hasMore = true
         pageNumber = 1
         loading = false
         error = ""
+        page.loadError = ""
+        page.retryIn = 0
+        inlineRetryTimer.stop()
         loadPage(1)
+    }
+
+    // Re-request ONLY the page that failed, keeping the loaded grid.
+    function retryFailedPage() {
+        if (!backend || loading || animeId <= 0) return
+        if (page.retryIn > 0) return
+        if (page.loadErrorPage <= 0) return
+
+        // `loadError` deliberately STAYS set: the row must remain visible and
+        // switch to "Retrying…" rather than vanishing, so the footer does not
+        // jump and the reader can see the retry is in flight.
+        page.retryIn = 0
+        inlineRetryTimer.stop()
+        loadPage(page.loadErrorPage)
     }
     onAnimeIdChanged: maybeLoad()
     onBackendChanged: maybeLoad()
@@ -226,24 +275,45 @@ Item {
             }
 
             onAtYEndChanged: {
-                if (atYEnd && page.hasMore) page.loadPage(page.pageNumber + 1)
+                // The `loadError` guard is essential: a failed page leaves the
+                // sentinel visible, so without it the failure would re-fire on
+                // every scroll tick and hammer the rate limit.
+                if (atYEnd && page.hasMore && !page.loading
+                    && page.loadError === "") {
+                    page.loadPage(page.pageNumber + 1)
+                }
             }
 
+            // One footer for both states, mutually exclusive: the "Loading…"
+            // row while a page is in flight, the retry row once it failed.
             footer: Item {
+                // The height is CONSTANT, and that is load-bearing: a footer's
+                // height feeds contentHeight, which drives `atYEnd`, whose
+                // handler sets `page.loading`. A height that depended on
+                // `loading` closed that loop.
+                readonly property bool showLoading: page.loading
+                    && page.loadError === ""
+
                 width: GridView.view.width
-                height: page.loading ? 52 : 0
+                height: 48
 
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 8
-                    visible: page.loading
+                LoadingMore {
+                    id: loadingRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    visible: parent.showLoading
+                    message: "Loading recommendations\u2026"
+                }
 
-                    Text {
-                        text: "Loading recommendations\u2026"
-                        color: Theme.inkMuted
-                        font.pixelSize: 13
-                        font.bold: true
-                    }
+                InlineRetry {
+                    id: inlineRetry
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    visible: page.loadError !== ""
+                    message: page.loadError
+                    retryIn: page.retryIn
+                    busy: page.loading
+                    onRetry: page.retryFailedPage()
                 }
             }
         }

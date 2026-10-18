@@ -49,6 +49,29 @@ Item {
     property string tagFilter: ""
     property bool loading: false
     property int pageNumber: 1
+
+    // A LATER page failed. The grid stays usable and a retry row appears
+    // beneath it; `loadErrorPage` remembers which page to ask for again, so a
+    // retry never resets the reader back to the top.
+    property string loadError: ""
+    property int loadErrorPage: 0
+    // Seconds left on a rate-limit lock for that retry row.
+    property int retryIn: 0
+
+    // Tick the inline lock down. Started only on a rate-limit failure; stopped
+    // by `retryFailedPage` and on any successful page.
+    Timer {
+        id: inlineRetryTimer
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            page.retryIn -= 1
+            if (page.retryIn <= 0) {
+                page.retryIn = 0
+                stop()
+            }
+        }
+    }
     property string resultStatus: ""
 
     ListModel { id: results }
@@ -139,12 +162,32 @@ Item {
         backend.getBrowse(JSON.stringify(buildQuery()), pageNumber, 40)
     }
 
-    // Re-run the current query from the first page. Called by the retry overlay.
+    // Re-run the current query from the first page. Called by the retry overlay,
+    // which can now only appear for a page-1 failure.
     function reload() {
         results.clear()
         pageNumber = 1
         loading = false
+        page.loadError = ""
+        page.retryIn = 0
+        inlineRetryTimer.stop()
         runSearch(true)
+    }
+
+    // Re-request ONLY the page that failed, leaving the loaded pages alone.
+    function retryFailedPage() {
+        if (!backend || loading) return
+        if (page.retryIn > 0) return
+        if (page.loadErrorPage <= 0) return
+
+        // `loadError` deliberately STAYS set: the row must remain visible and
+        // switch to "Retrying…" rather than vanishing, so the footer does not
+        // jump and the reader can see the retry is in flight. Success clears it
+        // in `onBrowseReady`; another failure re-records it.
+        page.retryIn = 0
+        inlineRetryTimer.stop()
+        page.loading = true
+        backend.getBrowse(JSON.stringify(buildQuery()), page.loadErrorPage, 40)
     }
 
     function applyFilters() {
@@ -282,12 +325,30 @@ Item {
                 })
             }
             page.resultStatus = results.count + " results"
+            // A successful page clears the inline failure, whichever page it
+            // was, and cancels any lock still ticking.
+            page.loadError = ""
+            page.retryIn = 0
+            inlineRetryTimer.stop()
             RetryState.reset()
         }
         function onBrowseFailed(message) {
-            page.loading = RetryState.isTransient(message)
-            page.resultStatus = ""
-            RetryState.reportFailure(message)
+            // A first-page failure has nothing to preserve, so it keeps the
+            // full-screen overlay. A LATER page must not take the grid away.
+            if (results.count === 0) {
+                page.loading = RetryState.isTransient(message)
+                page.resultStatus = ""
+                RetryState.reportFailure(message)
+                return
+            }
+
+            page.loading = false
+            page.loadError = message
+            // The caller advanced `pageNumber` before the request, so it
+            // already names the page that failed.
+            page.loadErrorPage = page.pageNumber
+            page.retryIn = RetryState.isRateLimit(message) ? 5 : 0
+            if (page.retryIn > 0) inlineRetryTimer.restart()
         }
     }
 
@@ -579,9 +640,53 @@ Item {
         }
 
         onAtYEndChanged: {
-            if (atYEnd && !page.loading && results.count > 0) {
+            // `loadError === ""` is essential: a failed page leaves the
+            // sentinel visible, so without this the failure would re-fire on
+            // every scroll tick and hammer the rate limit.
+            if (atYEnd && !page.loading && results.count > 0
+                && page.loadError === "") {
                 page.pageNumber += 1
                 page.runSearch(false)
+            }
+        }
+
+        // A failed LATER page retries here, under the loaded results, rather
+        // than taking over the screen.
+        // One footer for both states, mutually exclusive: the spinner while a
+        // page is in flight, the retry row once it has failed. `loading` alone
+        // was not enough before -- a later page set it with nothing rendered.
+        footer: Item {
+            // The height is CONSTANT, and that is load-bearing.
+            //
+            // A footer's height feeds the GridView's contentHeight, which
+            // drives `atYEnd`, whose handler sets `page.loading`. So a height
+            // that depended on `loading` closed the loop:
+            //   loading -> height -> contentHeight -> atYEnd -> loading
+            // Fixed height breaks the cycle; the two rows below only toggle
+            // `visible`, which does not affect layout.
+            readonly property bool showLoading: page.loading
+                && results.count > 0 && page.loadError === ""
+
+            width: GridView.view.width
+            height: 48
+
+            LoadingMore {
+                id: loadingRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                // Only for a LATER page: the first page has its own skeleton.
+                visible: parent.showLoading
+            }
+
+            InlineRetry {
+                id: inlineRetry
+                anchors.left: parent.left
+                anchors.right: parent.right
+                visible: page.loadError !== ""
+                message: page.loadError
+                retryIn: page.retryIn
+                busy: page.loading
+                onRetry: page.retryFailedPage()
             }
         }
     }

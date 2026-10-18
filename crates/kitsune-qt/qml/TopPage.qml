@@ -20,6 +20,26 @@ Item {
     property bool loading: false
     property bool hasMore: true
 
+    // A LATER page failed: the rows already loaded stay put and a retry row
+    // appears beneath them. `loadErrorPage` is what a retry re-requests, so it
+    // never resets the reader back to the top.
+    property string loadError: ""
+    property int loadErrorPage: 0
+    property int retryIn: 0
+
+    Timer {
+        id: inlineRetryTimer
+        interval: 1000
+        repeat: true
+        onTriggered: {
+            page.retryIn -= 1
+            if (page.retryIn <= 0) {
+                page.retryIn = 0
+                stop()
+            }
+        }
+    }
+
     ListModel { id: rows }
 
     Connections {
@@ -49,15 +69,29 @@ Item {
             page.hasMore = (info ? info.hasNextPage !== false : true)
                 && rows.count < page.maxItems
             status.text = rows.count + " titles"
+            // A successful page clears the inline failure and any lock.
+            page.loadError = ""
+            page.retryIn = 0
+            inlineRetryTimer.stop()
             RetryState.reset()
         }
         function onListFailed(message) {
-            // Transient failures keep the skeleton pulsing behind the overlay;
-            // a content failure drops it rather than pulsing forever.
-            page.loading = RetryState.isTransient(message) && rows.count === 0
-            // The overlay owns the wording -- no raw backend string here.
-            status.text = ""
-            RetryState.reportFailure(message)
+            // A first-page failure has nothing to preserve, so it keeps the
+            // full-screen overlay. A LATER page must not take the rows away.
+            if (rows.count === 0) {
+                page.loading = RetryState.isTransient(message)
+                status.text = ""
+                RetryState.reportFailure(message)
+                return
+            }
+
+            page.loading = false
+            page.loadError = message
+            // `loadPage` sets `pageNumber` before requesting, so it already
+            // names the page that failed.
+            page.loadErrorPage = page.pageNumber
+            page.retryIn = RetryState.isRateLimit(message) ? 5 : 0
+            if (page.retryIn > 0) inlineRetryTimer.restart()
         }
     }
 
@@ -76,13 +110,31 @@ Item {
         backend.getListPaged("topRated", number, perPage)
     }
 
-    // Re-run the first page. Called by the retry overlay.
+    // Re-run the first page. Called by the retry overlay, which can now only
+    // appear for a page-1 failure.
     function reload() {
         rows.clear()
         hasMore = true
         pageNumber = 1
         loading = false
+        page.loadError = ""
+        page.retryIn = 0
+        inlineRetryTimer.stop()
         loadPage(1)
+    }
+
+    // Re-request ONLY the page that failed, keeping the rows already shown.
+    function retryFailedPage() {
+        if (!backend || loading) return
+        if (page.retryIn > 0) return
+        if (page.loadErrorPage <= 0) return
+
+        // `loadError` deliberately STAYS set: the row must remain visible and
+        // switch to "Retrying…" rather than vanishing, so the footer does not
+        // jump and the reader can see the retry is in flight.
+        page.retryIn = 0
+        inlineRetryTimer.stop()
+        loadPage(page.loadErrorPage)
     }
 
     Component.onCompleted: loadPage(1)
@@ -223,17 +275,44 @@ Item {
             // and the `hasMore` flag both live in `loadPage`, so an overshoot
             // here is harmless.
             onAtYEndChanged: {
-                if (atYEnd && page.hasMore) page.loadPage(page.pageNumber + 1)
+                // The `loadError` guard is essential: a failed page leaves the
+                // sentinel visible, so without it the failure would re-fire on
+                // every scroll tick and hammer the rate limit.
+                if (atYEnd && page.hasMore && !page.loading
+                    && page.loadError === "") {
+                    page.loadPage(page.pageNumber + 1)
+                }
             }
 
+            // One footer for both states, mutually exclusive: "Loading…" while
+            // a page is in flight, the retry row once it has failed.
             footer: Item {
+                // The height is CONSTANT, and that is load-bearing: a footer's
+                // height feeds contentHeight, which drives `atYEnd`, whose
+                // handler sets `page.loading`. A height that depended on
+                // `loading` closed that loop.
+                readonly property bool showLoading: page.loading
+                    && page.loadError === ""
+
                 width: ListView.view.width
-                height: page.loading ? 48 : 0
-                Text {
-                    anchors.centerIn: parent
-                    text: "Loading…"
-                    color: Theme.inkFaint
-                    font.pixelSize: 13
+                height: 48
+
+                LoadingMore {
+                    id: loadingRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    visible: parent.showLoading
+                }
+
+                InlineRetry {
+                    id: inlineRetry
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    visible: page.loadError !== ""
+                    message: page.loadError
+                    retryIn: page.retryIn
+                    busy: page.loading
+                    onRetry: page.retryFailedPage()
                 }
             }
         }
