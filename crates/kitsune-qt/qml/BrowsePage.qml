@@ -152,28 +152,17 @@ Item {
     }
 
     // --- In-place navigation ---------------------------------------------
-    //
-    // The window reuses this instance when a search / genre / preset arrives
-    // while the filter page is already showing, instead of pushing a fresh
-    // copy (which `goTo` refuses to do). These mirror what a fresh push would
-    // have produced from the `initial*` props.
-
-    // Narrow the current results by `term`, keeping the other filters.
     function applySearch(term) {
         searchText = term
         applyFilters()
     }
 
-    // A genre link: drop the other filters and start a fresh browse on it,
-    // matching what pushing a new page with `initialGenre` would show.
     function applyGenre(genre) {
         resetFilters()
         genres = genre.length > 0 ? [genre] : []
         applyFilters()
     }
 
-    // A home-page "View more": reset to a clean slate, then apply the preset
-    // status / sort. Any argument may be empty to leave that filter unset.
     function applyPreset(statusValue, sortValue, reversedValue) {
         resetFilters()
         if (statusValue && statusValue.length > 0) status = statusValue
@@ -182,8 +171,6 @@ Item {
         applyFilters()
     }
 
-    // Clear every filter back to its default WITHOUT running a search; the
-    // caller runs one once it has set the filters it wants.
     function resetFilters() {
         searchText = ""
         format = ""
@@ -198,8 +185,6 @@ Item {
     }
 
     // --- Tag helpers ---------------------------------------------------------
-
-    // off -> include -> exclude -> off, mirroring FilterPanel.svelte.
     function cycleTag(name) {
         const next = Object.assign({}, tagStates)
         if (next[name] === undefined) next[name] = "include"
@@ -209,7 +194,6 @@ Item {
         applyFilters()
     }
 
-    // The provider packs a hierarchy with a hyphen; only the FIRST separates.
     function categoryLabel(category) {
         const at = category.indexOf("-")
         if (at === -1) return category
@@ -230,7 +214,6 @@ Item {
     }
 
     // --- Active filters ------------------------------------------------------
-
     function activeFilters() {
         const list = []
         if (searchText.length > 0) list.push({ "label": "“" + searchText + "”", "excluded": false, "clear": "search" })
@@ -274,7 +257,6 @@ Item {
     }
 
     // --- Backend wiring ------------------------------------------------------
-
     Connections {
         target: page.backend
 
@@ -296,7 +278,6 @@ Item {
                     "score": item.averageScore || 0,
                     "cover": item.coverImage || "",
                     "format": item.format || "",
-                    // Airing state, so the card can hide its Completed button.
                     "status": item.status || "",
                 })
             }
@@ -304,13 +285,7 @@ Item {
             RetryState.reset()
         }
         function onBrowseFailed(message) {
-            // A transient failure keeps the skeleton pulsing behind the
-            // overlay, so the page reads as still trying. A real content
-            // failure would pulse forever, so only that case drops it.
             page.loading = RetryState.isTransient(message)
-            // No "Failed: <backend string>" here: the overlay owns the
-            // wording, and duplicating the raw 429 text behind it was the
-            // noise this removes.
             page.resultStatus = ""
             RetryState.reportFailure(message)
         }
@@ -325,9 +300,6 @@ Item {
     }
 
     // --- Layout --------------------------------------------------------------
-
-    // Fixed header: title, toolbar, active-filters bar. The grid scrolls
-    // beneath it.
     Column {
         id: header
         anchors.top: parent.top
@@ -336,7 +308,6 @@ Item {
         topPadding: Theme.pad
         spacing: 14
 
-        // Title.
         Text {
             x: Theme.pad
             text: "Filter anime"
@@ -351,7 +322,6 @@ Item {
             width: parent.width - Theme.pad * 2
             height: 40
 
-            // Filters button (left) with active count.
             Rectangle {
                 id: filtersButton
                 anchors.left: parent.left
@@ -407,7 +377,6 @@ Item {
                 }
             }
 
-            // Results count, beside the button.
             Text {
                 anchors.left: filtersButton.right
                 anchors.leftMargin: 14
@@ -417,7 +386,6 @@ Item {
                 font.pixelSize: 12
             }
 
-            // Sort group (right): reverse button + sort select in one pill.
             Rectangle {
                 id: sortGroup
                 anchors.right: parent.right
@@ -434,7 +402,7 @@ Item {
                     anchors.centerIn: parent
                     spacing: 4
 
-                    // Reverse toggle.
+                    // Reverse toggle with flip animation
                     Rectangle {
                         width: 34
                         height: 32
@@ -442,21 +410,33 @@ Item {
                         color: reverseMouse.containsMouse ? Theme.surfaceHover : "transparent"
 
                         Text {
+                            id: reverseIcon
                             anchors.centerIn: parent
                             text: "⇅"
                             color: page.reversed ? Theme.accent : Theme.inkMuted
                             font.pixelSize: 15
+                            rotation: page.reversed ? 180 : 0
+
+                            Behavior on rotation {
+                                NumberAnimation {
+                                    duration: 250
+                                    easing.type: Easing.InOutQuad
+                                }
+                            }
                         }
+
                         MouseArea {
                             id: reverseMouse
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: { page.reversed = !page.reversed; page.applyFilters() }
+                            onClicked: { 
+                                page.reversed = !page.reversed
+                                page.applyFilters() 
+                            }
                         }
                     }
 
-                    // Divider.
                     Rectangle {
                         width: 1
                         height: 18
@@ -549,9 +529,6 @@ Item {
     }
 
     // --- Results grid ------------------------------------------------------
-    // First-load placeholder: shown until the first page of results arrives.
-    // Later pages append to the grid below and keep the inline status text, so
-    // a skeleton would only jitter the scroll.
     PosterGridSkeleton {
         anchors.top: header.bottom
         anchors.topMargin: Theme.gap
@@ -563,8 +540,8 @@ Item {
         clip: true
         visible: page.loading && results.count === 0
         count: 12
-        cellWidth: 216
-        cellHeight: 380
+        cellWidth: 200
+        cellHeight: 350
     }
 
     GridView {
@@ -576,22 +553,29 @@ Item {
         anchors.bottom: parent.bottom
         clip: true
         model: results
-        cellWidth: 216
-        cellHeight: 380
+        cellWidth: 200
+        cellHeight: 350
         leftMargin: Theme.pad
         rightMargin: Theme.pad
         bottomMargin: Theme.pad
         visible: !(page.loading && results.count === 0)
 
-        delegate: PosterCard {
-            width: 200
-            animeId: model.id
-            title: model.title
-            score: model.score
-            cover: model.cover
-            format: model.format
-            animeStatus: model.status
-            onClicked: page.openAnime(model.id)
+        delegate: Item {
+            width: grid.cellWidth
+            height: grid.cellHeight
+
+            PosterCard {
+                anchors.centerIn: parent
+                width: 180
+                height: 336
+                animeId: model.id
+                title: model.title
+                score: model.score
+                cover: model.cover
+                format: model.format
+                animeStatus: model.status
+                onClicked: page.openAnime(model.id)
+            }
         }
 
         onAtYEndChanged: {
@@ -602,11 +586,7 @@ Item {
         }
     }
 
-    // --- Filters dropdown, a card under the Filters button ----------------
-    //
-    // A fixed-width card rather than a full-bleed banner: anchored to the left
-    // margin (where the button sits) and capped so it reads as a popup over the
-    // grid. `Math.min` keeps it on-screen on a narrow window.
+    // --- Filters dropdown --------------------------------------------------
     Rectangle {
         id: filterPanel
         visible: page.filtersOpen
@@ -635,9 +615,6 @@ Item {
                 width: parent.width
                 spacing: 14
 
-                // Row labels. No "Search" column: the in-panel search box was
-                // removed because the global navbar already owns search, and a
-                // second field writing the same query was redundant.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 12
@@ -666,10 +643,6 @@ Item {
                     Item { Layout.fillWidth: true }
                 }
 
-                // Advanced disclosure. The whole row is the toggle, so a click
-                // anywhere on it works -- the MouseArea fills this Item, which
-                // is sized by the layout (not a child anchored into a layout,
-                // which is undefined behaviour).
                 Item {
                     Layout.fillWidth: true
                     Layout.preferredHeight: disclosureRow.implicitHeight + 8
@@ -707,18 +680,11 @@ Item {
                     }
                 }
 
-                // Catalogue, in its own bounded scroll region.
-                //
-                // 361 chips would push the panel past the window and the filter
-                // rows would scroll away with it. Capping the catalogue keeps
-                // the selects above it in place while the chips scroll.
                 ColumnLayout {
                     Layout.fillWidth: true
                     visible: page.showCatalogue
                     spacing: 12
 
-                    // Fixed above the scroll region: typing here must not
-                    // scroll the box away as the chips move.
                     TextField {
                         Layout.preferredWidth: 300
                         placeholderText: "Type to narrow the list"
@@ -732,8 +698,6 @@ Item {
                         onTextChanged: page.tagFilter = text
                     }
 
-                    // The chips scroll inside a bounded box, so the selects and
-                    // this search box stay put while they move.
                     Flickable {
                         Layout.fillWidth: true
                         Layout.preferredHeight: Math.min(catalogueColumn.implicitHeight + 8, 360)
@@ -747,7 +711,6 @@ Item {
                             width: parent.width
                             spacing: 12
 
-                            // Genres.
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 visible: page.genreOptions.length > 0
@@ -775,7 +738,6 @@ Item {
                                 }
                             }
 
-                            // Tag groups.
                             Repeater {
                                 model: page.tagGroups
                                 delegate: ColumnLayout {
