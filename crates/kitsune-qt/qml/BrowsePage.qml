@@ -126,8 +126,7 @@ Item {
     }
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // --- Query building ------------------------------------------------------
@@ -317,7 +316,7 @@ Item {
             for (const item of items) {
                 results.append({
                     "id": item.id,
-                    "title": page.displayTitle(item),
+                    "titlesJson": JSON.stringify(item.title || {}),
                     "score": item.averageScore || 0,
                     "cover": item.coverImage || "",
                     "format": item.format || "",
@@ -630,7 +629,7 @@ Item {
                 width: 180
                 height: 336
                 animeId: model.id
-                title: model.title
+                title: TitlePreference.title(JSON.parse(model.titlesJson))
                 score: model.score
                 cover: model.cover
                 format: model.format

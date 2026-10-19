@@ -12,8 +12,7 @@ Item {
     implicitHeight: 76
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     Rectangle {

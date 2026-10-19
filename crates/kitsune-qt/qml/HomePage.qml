@@ -60,8 +60,7 @@ Item {
     readonly property int top100Limit: 10
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     Connections {

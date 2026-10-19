@@ -57,7 +57,7 @@ Item {
                 rows.append({
                     "id": item.id,
                     "rank": base + i + 1,
-                    "title": page.displayTitle(item),
+                    "titlesJson": JSON.stringify(item.title || {}),
                     "score": item.averageScore || 0,
                     "cover": item.coverImage || "",
                     "format": item.format || "",
@@ -96,8 +96,7 @@ Item {
     }
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // Fetch a page of the ranked list. Guarded so a scroll burst does not
@@ -237,7 +236,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
-                            text: model.title
+                            text: TitlePreference.title(JSON.parse(model.titlesJson))
                             color: Theme.ink
                             font.pixelSize: 16
                             font.bold: true

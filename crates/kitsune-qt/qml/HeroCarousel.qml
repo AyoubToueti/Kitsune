@@ -20,8 +20,7 @@ Item {
     implicitHeight: 360
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // The inline facts row under the title.
@@ -147,7 +146,10 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         text: carousel.displayTitle(modelData)
-                        color: Theme.ink
+                        // The whole slide sits on a dark scrim over artwork,
+                        // so the text uses the on-artwork palette rather than
+                        // the page ink -- which goes near-black in light mode.
+                        color: Theme.onArtwork
                         font.pixelSize: 26
                         font.bold: true
                         wrapMode: Text.WordWrap
@@ -183,7 +185,7 @@ Item {
                             delegate: Text {
                                 required property string modelData
                                 text: modelData
-                                color: Theme.inkMuted
+                                color: Theme.onArtworkMuted
                                 font.pixelSize: 12
                                 font.bold: true
                             }
@@ -208,7 +210,7 @@ Item {
                                     id: heroGenre
                                     anchors.centerIn: parent
                                     text: modelData
-                                    color: Theme.inkMuted
+                                    color: Theme.onArtworkMuted
                                     font.pixelSize: 11
                                 }
                             }
@@ -220,7 +222,7 @@ Item {
                         Layout.fillWidth: true
                         visible: modelData.description !== undefined && modelData.description !== null
                         text: modelData.description ? String(modelData.description).replace(/<[^>]*>/g, "") : ""
-                        color: Theme.inkMuted
+                        color: Theme.onArtworkMuted
                         font.pixelSize: 12
                         wrapMode: Text.WordWrap
                         maximumLineCount: 2

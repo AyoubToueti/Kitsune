@@ -34,7 +34,7 @@ Item {
             for (const entry of items) {
                 airingModel.append({
                     "id": entry.anime.id,
-                    "title": displayTitle(entry.anime),
+                    "titlesJson": JSON.stringify(entry.anime.title || {}),
                     "cover": entry.anime.coverImage || "",
                     "episode": entry.episode || 0,
                     "time": formatTime(entry.airingAt),
@@ -56,8 +56,7 @@ Item {
     }
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // Unix seconds -> local HH:MM.
@@ -246,7 +245,7 @@ Item {
 
                         Text {
                             Layout.fillWidth: true
-                            text: model.title
+                            text: TitlePreference.title(JSON.parse(model.titlesJson))
                             color: Theme.ink
                             font.pixelSize: 15
                             font.bold: true

@@ -51,9 +51,7 @@ Item {
     ]
 
     function displayTitle(item) {
-        if (!item) return "(untitled)"
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     readonly property var statusCounts: {

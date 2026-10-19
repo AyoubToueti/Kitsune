@@ -332,9 +332,9 @@ Item {
                 implicitWidth: emptyText.implicitWidth + 32
                 implicitHeight: 40
                 radius: 20
-                color: Qt.rgba(1, 1, 1, 0.04)
+                color: Theme.fieldFill
                 border.width: 1
-                border.color: Theme.glassBorder
+                border.color: Theme.borderSubtle
 
                 Text {
                     id: emptyText

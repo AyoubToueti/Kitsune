@@ -206,7 +206,7 @@ Rectangle {
         radius: 18
         color: searchField.activeFocus
             ? Theme.surface
-            : (searchHover.hovered ? Theme.surfaceHover : Qt.rgba(1, 1, 1, 0.03))
+            : (searchHover.hovered ? Theme.surfaceHover : Theme.fieldFill)
         border.width: 1
         border.color: searchField.activeFocus
             ? Theme.accent

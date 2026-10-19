@@ -521,8 +521,7 @@ Popup {
     }
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     function offset() {
@@ -625,9 +624,9 @@ Popup {
 
     function badgeColor(index) {
         const b = modal.badges[index]
-        if (b === "green") return "#4ade80"
-        if (b === "yellow") return "#facc15"
-        if (b === "red") return "#e5484d"
+        if (b === "green") return Theme.healthGreen
+        if (b === "yellow") return Theme.healthYellow
+        if (b === "red") return Theme.healthRed
         return Theme.inkFaint
     }
 
@@ -1919,7 +1918,7 @@ Popup {
                                 Rectangle {
                                     width: 8; height: 8; radius: 4
                                     color: modal.paused ? Theme.inkFaint
-                                        : (modal.fileFraction() >= 1 ? "#4ade80" : Theme.accent)
+                                        : (modal.fileFraction() >= 1 ? Theme.healthGreen : Theme.accent)
                                 }
                                 Text {
                                     text: modal.paused ? "Paused"
@@ -2022,7 +2021,7 @@ Popup {
                                 }
                                 Text {
                                     text: "Health " + modal.healthLabel()
-                                    color: modal.healthLabel() === "Healthy" ? "#4ade80" : Theme.inkMuted
+                                    color: modal.healthLabel() === "Healthy" ? Theme.healthGreen : Theme.inkMuted
                                     font.pixelSize: 10
                                     font.bold: true
                                 }

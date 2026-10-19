@@ -21,11 +21,7 @@ Item {
 
     readonly property var anime: recommendation ? recommendation.anime : null
     readonly property int animeId: anime ? (anime.id || 0) : 0
-    readonly property string title: {
-        if (!anime) return "Untitled"
-        const t = anime.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "Untitled"
-    }
+    readonly property string title: TitlePreference.title(anime)
 
     // Real-time watch status tracking
     readonly property string currentStatus: (typeof ListStatusStore !== "undefined" && ListStatusStore && ListStatusStore.getStatus && card.animeId > 0)

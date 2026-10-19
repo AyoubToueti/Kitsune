@@ -15,11 +15,7 @@ Item {
     signal openWatch(int animeId, int episode)
 
     readonly property var anime: entry ? entry.anime : null
-    readonly property string title: {
-        if (!anime) return "Untitled"
-        const t = anime.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "Untitled"
-    }
+    readonly property string title: TitlePreference.title(anime)
     readonly property int episode: Math.max(1, entry ? entry.progress : 1)
     readonly property real percent: {
         if (!anime || !anime.episodeCount) return 0

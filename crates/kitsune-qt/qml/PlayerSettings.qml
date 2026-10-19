@@ -484,7 +484,7 @@ Item {
                     RowLayout {
                         Layout.fillWidth: true
                         SettingLabel { text: "Show subtitles"; Layout.fillWidth: true }
-                        Switch {
+                        ThemedSwitch {
                             checked: card.subVisible
                             onToggled: {
                                 card.subVisible = checked
@@ -761,6 +761,11 @@ Item {
         }
         Slider {
             Layout.fillWidth: true
+            palette.highlight: Theme.accent
+            palette.mid: Theme.separator
+            palette.button: Theme.ink
+            palette.base: Theme.surface
+            palette.window: Theme.surfaceRaised
             from: sliderRoot.from
             to: sliderRoot.to
             stepSize: sliderRoot.step

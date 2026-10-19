@@ -198,8 +198,8 @@ Item {
 
                     const point = mapToItem(null, mouse.x, mouse.y)
                     dragging = true
-                    DragState.begin(card.animeId, card.title || card.displayTitle(card.anime),
-                                    card.cover || (card.anime ? card.anime.coverImage : ""),
+                    DragState.begin(card.animeId, card.title || "(untitled)",
+                                    card.cover,
                                     point.x, point.y)
                 }
 

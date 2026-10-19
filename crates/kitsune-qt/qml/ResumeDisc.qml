@@ -85,8 +85,7 @@ Item {
 
     function title() {
         if (!disc.anime) return ""
-        const t = disc.anime.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "Untitled"
+        return TitlePreference.title(disc.anime)
     }
 
     HoverHandler { id: hover }
@@ -168,9 +167,9 @@ Item {
         Rectangle {
             anchors.fill: parent
             radius: width / 2
-            color: "#111319"
+            color: Theme.surfaceSunken
             border.width: 1
-            border.color: hover.hovered ? Theme.accent : "#2a2e3d"
+            border.color: hover.hovered ? Theme.accent : Theme.separator
             Behavior on border.color { ColorAnimation { duration: 150 } }
 
             Rectangle {
@@ -268,9 +267,12 @@ Item {
         width: 240
         height: cardCol.implicitHeight + 24
         radius: 14
-        color: Qt.rgba(0.07, 0.08, 0.12, 0.96)
+        // A floating panel over the page, not over artwork, so it follows the
+        // page palette. The dark literal here made the card unreadable in
+        // light mode once `Theme.ink` went near-black.
+        color: Theme.surfaceRaised
         border.width: 1
-        border.color: Theme.glassBorder
+        border.color: Theme.borderSubtle
 
         Behavior on opacity { NumberAnimation { duration: 180 } }
         Behavior on scale { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }

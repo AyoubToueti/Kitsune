@@ -28,8 +28,7 @@ Item {
     readonly property bool canComplete: !card.anime || card.anime.status !== "RELEASING"
 
     function displayTitle(item) {
-        const t = item ? (item.title || {}) : {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // Trimmed to a fixed budget so the vertical line never runs too long.

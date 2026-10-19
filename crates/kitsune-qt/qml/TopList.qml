@@ -15,8 +15,7 @@ Column {
     signal openAnime(int id)
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // A stable hue per genre, derived from the name so a genre is the same

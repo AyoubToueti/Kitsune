@@ -24,6 +24,9 @@ fn main() {
             .qml_file("qml/WatchPage.qml")
             .qml_file("qml/NavBar.qml")
             .qml_file("qml/ThemeSelect.qml")
+            .qml_file("qml/ThemedSwitch.qml")
+            .qml_file("qml/ThemedSlider.qml")
+            .qml_file("qml/ThemedSpinBox.qml")
             .qml_file("qml/Chip.qml")
             .qml_file("qml/NavButton.qml")
             .qml_file("qml/PosterCard.qml")
@@ -56,6 +59,7 @@ fn main() {
             .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true))
             .qml_file(QmlFile::from("qml/RetryState.qml").singleton(true))
             .qml_file(QmlFile::from("qml/DragState.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/TitlePreference.qml").singleton(true))
             .qml_file(QmlFile::from("qml/SpeedTestStore.qml").singleton(true)),
     )
     .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])

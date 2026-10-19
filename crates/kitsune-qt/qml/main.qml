@@ -30,9 +30,11 @@ Window {
         id: backend
     }
 
+    // Delegates to `TitlePreference` so the reader's chosen language applies
+    // here too. The wrapper stays because every call site already spells it
+    // this way.
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // Which segmented navbar pill is active
@@ -241,8 +243,9 @@ Window {
             var yBottom = yCenter + (waveSpan / 2)
             var isReady = pullDistance >= 70
 
-            ctx.fillStyle = isReady ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.28) 
-                                    : Qt.rgba(0.08, 0.10, 0.15, 0.95)
+            ctx.fillStyle = isReady
+                ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.28)
+                : Qt.rgba(Theme.surfaceRaised.r, Theme.surfaceRaised.g, Theme.surfaceRaised.b, 0.95)
 
             ctx.beginPath()
 
@@ -260,7 +263,7 @@ Window {
                 if (arrowOpacity > 0) {
                     ctx.save()
                     ctx.globalAlpha = arrowOpacity
-                    ctx.strokeStyle = isReady ? Theme.accent : "#FFFFFF"
+                    ctx.strokeStyle = isReady ? Theme.accent : Theme.ink
                     ctx.lineWidth = 3.6
                     ctx.lineCap = "round"
                     ctx.lineJoin = "round"
@@ -287,7 +290,7 @@ Window {
                 if (arrowOpacityR > 0) {
                     ctx.save()
                     ctx.globalAlpha = arrowOpacityR
-                    ctx.strokeStyle = isReady ? Theme.accent : "#FFFFFF"
+                    ctx.strokeStyle = isReady ? Theme.accent : Theme.ink
                     ctx.lineWidth = 3.6
                     ctx.lineCap = "round"
                     ctx.lineJoin = "round"
@@ -423,6 +426,22 @@ Window {
         function onRetryRequested() { root.performRetry() }
     }
 
+    // The reader's display preferences, pushed into their singletons.
+    //
+    // `settings_ready` fires on the startup `getSettings()` above AND after
+    // every `setSettings`, so saving in the Settings popup updates every open
+    // page without any extra plumbing: both are properties, and every binding
+    // reads them through `title()` / `Theme.dark`.
+    Connections {
+        target: root.backend
+        function onSettingsReady(json) {
+            const s = JSON.parse(json)
+            if (s === null) return
+            TitlePreference.language = s.titleLanguage || "english"
+            Theme.choice = s.theme || "system"
+        }
+    }
+
     Component {
         id: detailComponent
         DetailPage {
@@ -514,6 +533,10 @@ Window {
         // The speed test is app-wide: the Settings card and the watch modal
         // share one measurement rather than each running its own.
         SpeedTestStore.setBackend(root.backend)
+
+        // Read the title-language preference once at startup. `settings_ready`
+        // also fires after every save, so the handler below keeps it current.
+        root.backend.getSettings()
 
         if (initialOpenId > 0) {
             root.navigate(detailComponent, { "animeId": initialOpenId, "backend": root.backend })

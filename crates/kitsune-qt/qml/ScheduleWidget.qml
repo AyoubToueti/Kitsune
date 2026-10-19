@@ -41,8 +41,7 @@ Item {
     implicitHeight: content.implicitHeight
 
     function displayTitle(item) {
-        const t = item.title || {}
-        return t.userPreferred || t.english || t.romaji || t.native || "(untitled)"
+        return TitlePreference.title(item)
     }
 
     // Unix seconds -> "hh:mm AM/PM" in the viewer's timezone.
