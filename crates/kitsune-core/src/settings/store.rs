@@ -74,6 +74,13 @@ pub struct Settings {
     /// against a file size can pick the matching one. Defaults to `false`,
     /// which keeps the familiar "42 Mbps" reading.
     pub use_binary_units: bool,
+    /// Which title form the UI shows: `"english"` or `"romaji"`.
+    ///
+    /// A `String` rather than an enum, matching `theme` and `resume_behavior`:
+    /// the vocabulary belongs to the frontend, and an unrecognised value must
+    /// degrade to a usable default rather than fail the whole file's decode.
+    /// Read through [`Settings::title_language`], which validates it.
+    pub title_language: String,
 }
 
 impl Default for Settings {
@@ -101,6 +108,9 @@ impl Default for Settings {
             // Mbps by default: it is how connections are sold, and what the
             // result has always read as. MiB/s is opt-in.
             use_binary_units: false,
+            // English first: that is what every surface showed before this
+            // setting existed, so an existing reader sees no change.
+            title_language: "english".to_string(),
         }
     }
 }
@@ -116,6 +126,19 @@ impl Settings {
             return Settings::default().ready_fraction;
         }
         self.ready_fraction.min(1.0)
+    }
+
+    /// The title form to display, validated.
+    ///
+    /// Only `"romaji"` and `"english"` are meaningful; anything else -- a value
+    /// written by a newer build, a typo, or a hand-edited file -- falls back to
+    /// `"english"` rather than propagating garbage into the UI. Same
+    /// clamp-don't-trust stance as [`Settings::ready_fraction`].
+    pub fn title_language(&self) -> &str {
+        match self.title_language.as_str() {
+            "romaji" => "romaji",
+            _ => "english",
+        }
     }
 }
 
@@ -242,6 +265,7 @@ mod tests {
             resume_behavior: "seek".to_string(),
             resume_rewind_seconds: 35,
             use_binary_units: true,
+            title_language: "romaji".to_string(),
         };
 
         store.write(&settings).expect("write");
@@ -303,5 +327,58 @@ mod tests {
     fn ask_every_time_defaults_to_true() {
         // The prompt is opt-out, so an existing reader sees no change.
         assert!(Settings::default().ask_every_time);
+    }
+
+    #[test]
+    fn title_language_defaults_to_english() {
+        // Every surface showed the English-first order before this setting
+        // existed, so a fresh install must not change what anyone sees.
+        assert_eq!(Settings::default().title_language(), "english");
+    }
+
+    #[test]
+    fn title_language_accepts_romaji() {
+        let mut settings = Settings::default();
+        settings.title_language = "romaji".to_string();
+        assert_eq!(settings.title_language(), "romaji");
+    }
+
+    /// A value this build does not know -- written by a newer one, hand-edited,
+    /// or a typo -- must not reach the UI.
+    #[test]
+    fn an_unknown_title_language_falls_back_to_english() {
+        let mut settings = Settings::default();
+
+        for nonsense in ["", "Romaji", "native", "klingon"] {
+            settings.title_language = nonsense.to_string();
+            assert_eq!(
+                settings.title_language(),
+                "english",
+                "{nonsense:?} should not be usable"
+            );
+        }
+    }
+
+    /// A settings file from before the field existed must still parse, and the
+    /// missing key must land on the English default.
+    #[test]
+    fn a_legacy_file_without_title_language_reads_as_english() {
+        let (_dir, store) = store();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        std::fs::write(store.path(), r#"{"player":"mpv","theme":"dark"}"#).unwrap();
+
+        let settings = store.read();
+        assert_eq!(settings.theme, "dark");
+        assert_eq!(settings.title_language(), "english");
+    }
+
+    #[test]
+    fn title_language_round_trips() {
+        let (_dir, store) = store();
+        let mut settings = Settings::default();
+        settings.title_language = "romaji".to_string();
+
+        store.write(&settings).expect("write");
+        assert_eq!(store.read().title_language(), "romaji");
     }
 }
