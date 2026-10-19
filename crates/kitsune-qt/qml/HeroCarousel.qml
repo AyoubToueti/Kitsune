@@ -1,6 +1,5 @@
-// The home page's spotlight carousel: the top few trending titles, one per
-// slide, auto-advancing with a smooth, infinite forward loop.
-// Mirrors `HeroCarousel.svelte`.
+// The home page's spotlight carousel: top trending titles auto-advancing with a smooth,
+// infinite forward loop and seamless full-bleed background integration.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -9,7 +8,6 @@ import com.kitsune.app
 Item {
     id: carousel
 
-    // The anime to feature, in order. The page passes the top few trending.
     property var items: []
 
     signal openAnime(int id)
@@ -23,7 +21,6 @@ Item {
         return TitlePreference.title(item)
     }
 
-    // The inline facts row under the title.
     function facts(item) {
         const out = []
         if (item.format) out.push(item.format)
@@ -38,14 +35,9 @@ Item {
     Rectangle {
         id: frame
         anchors.fill: parent
-        radius: 16
-        color: Theme.surfaceRaised
-        border.width: 1
-        border.color: Theme.glassBorder
+        color: Theme.surface
         clip: true
 
-        // PathView is circular, so stepping forward from the last slide
-        // slides smoothly into the first one (no snap back).
         PathView {
             id: swipe
             anchors.fill: parent
@@ -54,8 +46,6 @@ Item {
             model: carousel.items
             interactive: carousel.items.length > 1
 
-            // Current slide plus one on each side, so the next slide is
-            // already in place when wrapping from last to first.
             pathItemCount: 3
             preferredHighlightBegin: 0.5
             preferredHighlightEnd: 0.5
@@ -64,8 +54,6 @@ Item {
             highlightMoveDuration: 600
             flickDeceleration: 1500
 
-            // A straight horizontal line, 3 slides long. Slides sit at
-            // -0.5w, 0.5w and 1.5w, so the middle one fills the frame.
             path: Path {
                 startX: -swipe.width
                 startY: swipe.height / 2
@@ -82,45 +70,54 @@ Item {
                 width: swipe.width
                 height: swipe.height
 
-                // Backdrop banner/cover image
+                // Center-aligned full-bleed artwork
                 Image {
                     anchors.fill: parent
+                    horizontalAlignment: Image.AlignHCenter
+                    verticalAlignment: Image.AlignVCenter
                     source: modelData.bannerImage || modelData.coverImage || ""
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                 }
 
-                // Horizontal gradient for text contrast
+                // 1. Horizontal vignette overlay:
+                // Fades in on the left for text readability, clears through the center,
+                // and mirrors the bottom fade style across the right edge (80% to 100%).
                 Rectangle {
                     anchors.fill: parent
                     gradient: Gradient {
                         orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: Qt.rgba(0.05, 0.06, 0.09, 0.96) }
-                        GradientStop { position: 0.55; color: Qt.rgba(0.05, 0.06, 0.09, 0.82) }
-                        GradientStop { position: 1.0; color: Qt.rgba(0.05, 0.06, 0.09, 0.25) }
+                        GradientStop { position: 0.00; color: Theme.heroFadeStart }
+                        GradientStop { position: 0.22; color: Theme.heroFadeStart }
+                        GradientStop { position: 0.38; color: Theme.heroFadeMid }
+                        GradientStop { position: 0.55; color: "transparent" }
+                        GradientStop { position: 0.80; color: "transparent" }
+                        GradientStop { position: 1.00; color: Theme.heroFadeStart }
                     }
                 }
 
-                // Bottom gradient blend
+                // 2. Vertical vignette overlay:
+                // Smoothly fades only the bottom edge (80% to 100%) into the surface background.
                 Rectangle {
                     anchors.fill: parent
                     gradient: Gradient {
-                        GradientStop { position: 0.0; color: "transparent" }
-                        GradientStop { position: 1.0; color: Qt.rgba(0.05, 0.06, 0.09, 0.9) }
+                        GradientStop { position: 0.00; color: "transparent" }
+                        GradientStop { position: 0.80; color: "transparent" }
+                        GradientStop { position: 1.00; color: Theme.heroFadeStart }
                     }
                 }
 
-                // Strictly bounded content column
+                // Compact left text content column
                 ColumnLayout {
                     anchors.left: parent.left
                     anchors.leftMargin: 36
                     anchors.right: parent.right
-                    anchors.rightMargin: parent.width * 0.28
+                    anchors.rightMargin: parent.width * 0.64
                     anchors.top: parent.top
                     anchors.topMargin: 24
                     anchors.bottom: parent.bottom
-                    anchors.bottomMargin: 52
-                    spacing: 8
+                    anchors.bottomMargin: 48
+                    spacing: 6
 
                     // Spotlight rank badge
                     Rectangle {
@@ -146,11 +143,8 @@ Item {
                     Text {
                         Layout.fillWidth: true
                         text: carousel.displayTitle(modelData)
-                        // The whole slide sits on a dark scrim over artwork,
-                        // so the text uses the on-artwork palette rather than
-                        // the page ink -- which goes near-black in light mode.
-                        color: Theme.onArtwork
-                        font.pixelSize: 26
+                        color: Theme.ink
+                        font.pixelSize: 24
                         font.bold: true
                         wrapMode: Text.WordWrap
                         maximumLineCount: 2
@@ -159,14 +153,14 @@ Item {
 
                     // Score & facts
                     RowLayout {
-                        spacing: 12
+                        spacing: 10
 
                         Rectangle {
                             visible: modelData.averageScore != null
                             radius: 6
-                            color: Qt.rgba(0.07, 0.08, 0.12, 0.75)
+                            color: Theme.fieldFill
                             border.width: 1
-                            border.color: Theme.glassBorder
+                            border.color: Theme.borderSubtle
                             implicitWidth: scoreText.implicitWidth + 12
                             implicitHeight: 22
 
@@ -185,7 +179,7 @@ Item {
                             delegate: Text {
                                 required property string modelData
                                 text: modelData
-                                color: Theme.onArtworkMuted
+                                color: Theme.inkMuted
                                 font.pixelSize: 12
                                 font.bold: true
                             }
@@ -200,9 +194,9 @@ Item {
                             delegate: Rectangle {
                                 required property string modelData
                                 radius: 8
-                                color: Qt.rgba(1, 1, 1, 0.08)
+                                color: Theme.fieldFill
                                 border.width: 1
-                                border.color: Theme.glassBorder
+                                border.color: Theme.borderSubtle
                                 implicitWidth: heroGenre.implicitWidth + 16
                                 implicitHeight: 22
 
@@ -210,34 +204,35 @@ Item {
                                     id: heroGenre
                                     anchors.centerIn: parent
                                     text: modelData
-                                    color: Theme.onArtworkMuted
+                                    color: Theme.inkMuted
                                     font.pixelSize: 11
                                 }
                             }
                         }
                     }
 
-                    // Synopsis (clamped to 2 lines)
+                    // Compact Synopsis
+                    // Compact Synopsis
                     Text {
                         Layout.fillWidth: true
                         visible: modelData.description !== undefined && modelData.description !== null
                         text: modelData.description ? String(modelData.description).replace(/<[^>]*>/g, "") : ""
-                        color: Theme.onArtworkMuted
+                        color: Theme.inkMuted
                         font.pixelSize: 12
                         wrapMode: Text.WordWrap
-                        maximumLineCount: 2
+                        maximumLineCount: 4
                         elide: Text.ElideRight
-                        lineHeight: 1.3
+                        lineHeight: 1.25
                     }
 
                     Item { Layout.fillHeight: true }
 
                     // Action button: View Details
                     Rectangle {
-                        height: 38
-                        radius: 19
+                        height: 36
+                        radius: 18
                         color: detailsMouse.containsMouse ? Theme.accentHover : Theme.accent
-                        implicitWidth: btnRow.implicitWidth + 28
+                        implicitWidth: btnRow.implicitWidth + 24
                         scale: detailsMouse.containsMouse ? 1.03 : 1.0
 
                         Behavior on scale { NumberAnimation { duration: 150 } }
@@ -275,7 +270,7 @@ Item {
             }
         }
 
-        // Expanding pill indicators (bottom-left)
+        // Active slide pill indicators
         Row {
             visible: carousel.items.length > 1
             anchors.left: parent.left
@@ -292,7 +287,8 @@ Item {
                     width: swipe.currentIndex === index ? 24 : 8
                     height: 8
                     radius: 4
-                    color: swipe.currentIndex === index ? Theme.accent : Qt.rgba(1, 1, 1, 0.3)
+                    color: swipe.currentIndex === index ? Theme.accent : Theme.inkFaint
+                    opacity: swipe.currentIndex === index ? 1.0 : 0.45
 
                     Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutQuad } }
                     Behavior on color { ColorAnimation { duration: 200 } }
@@ -307,8 +303,6 @@ Item {
         }
     }
 
-    // Auto-advance: always steps forward and loops seamlessly.
-    // Paused while the user is dragging or the view is still moving.
     Timer {
         interval: carousel.advanceMs
         repeat: true
