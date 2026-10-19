@@ -167,9 +167,9 @@ Item {
         Rectangle {
             anchors.fill: parent
             radius: width / 2
-            color: Theme.surfaceSunken
+            color: "#111319"
             border.width: 1
-            border.color: hover.hovered ? Theme.accent : Theme.separator
+            border.color: hover.hovered ? Theme.accent : "#2a2e3d"
             Behavior on border.color { ColorAnimation { duration: 150 } }
 
             Rectangle {

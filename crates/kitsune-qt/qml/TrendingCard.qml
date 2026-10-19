@@ -43,7 +43,8 @@ Item {
     }
 
     // Base64 Data URI generator for resolution-independent SVG icons
-    function getSvgIcon(name) {
+    function getSvgIcon(name, color) {
+        var fill = color === undefined ? "#ffffff" : Theme.hex(color)
         var path = ""
         if (name === "play")
             path = "M8 5v14l11-7z"
@@ -56,7 +57,7 @@ Item {
         else // "plus"
             path = "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
 
-        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'><path d='" + path + "'/></svg>"
+        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
         // URL-encoded, NOT base64: `Qt.btoa` is deprecated in Qt 6 (its
         // output differs from the standard Web API).
         return "data:image/svg+xml," + encodeURIComponent(xml)

@@ -106,6 +106,36 @@ QtObject {
     readonly property color onArtworkMuted: "#c8cdd8"
     readonly property color onArtworkFaint: "#9aa3b8"
 
+    // The detail page's hero banner sits on the PAGE, not on a poster, so its
+    // scrim follows the mode: a dark wash in dark mode, a pale one in light,
+    // fading into `surface` either way.
+    readonly property color heroScrim: dark ? "#cc0b0d12" : "#d9eef1f7"
+
+    // The home carousel fades into the page rather than sitting on a scrim:
+    // the left stop IS `surface`, so the slide has no visible left edge and the
+    // text reads as part of the page. The stops are derived from `surface`
+    // per palette rather than being translucent overlays, because an overlay
+    // can only ever approximate the background colour.
+    readonly property color heroFadeStart: dark ? "#ff0b0d12" : "#fff5f6f9"
+    readonly property color heroFadeMid: dark ? "#f20b0d12" : "#f2f5f6f9"
+    readonly property color heroFadeEnd: dark ? "#000b0d12" : "#00f5f6f9"
+    // The seam where the clear artwork meets the faded text area.
+    readonly property color heroArtEdge: dark ? "#000b0d12" : "#00f5f6f9"
+
+    /// A colour as an SVG-safe `#rrggbb` string.
+    ///
+    /// The icon helpers build SVG data URIs, and SVG's `fill` cannot take a QML
+    /// colour object. `Qt`'s own `toString()` yields `#aarrggbb`, which is CSS
+    /// Color 4 and not universally understood by the SVG renderer, so the three
+    /// channels are formatted explicitly.
+    function hex(c) {
+        function two(v) {
+            const n = Math.round(Math.max(0, Math.min(1, v)) * 255)
+            return (n < 16 ? "0" : "") + n.toString(16)
+        }
+        return "#" + two(c.r) + two(c.g) + two(c.b)
+    }
+
     // Spacing
     readonly property int radius: 12
     readonly property int gap: 16

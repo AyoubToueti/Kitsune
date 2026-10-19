@@ -314,7 +314,7 @@ Item {
                 Rectangle {
                     anchors.fill: parent
                     gradient: Gradient {
-                        GradientStop { position: 0.0; color: "#cc0b0d12" }
+                        GradientStop { position: 0.0; color: Theme.heroScrim }
                         GradientStop { position: 1.0; color: Theme.surface }
                     }
                 }

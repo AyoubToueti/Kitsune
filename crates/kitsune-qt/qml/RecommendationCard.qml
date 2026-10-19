@@ -47,8 +47,13 @@ Item {
     implicitWidth: 180
     implicitHeight: width * 1.5 + 84
 
-    // Pure ASCII Base64 Data URI generator for resolution-independent SVG icons
-    function getSvgIcon(name) {
+    // Resolution-independent SVG icons as data URIs.
+    //
+    // `color` defaults to white for the buttons that sit on an accent fill; the
+    // vote arrows pass a theme colour so they stay visible on the card's own
+    // surface, which is light in light mode.
+    function getSvgIcon(name, color) {
+        var fill = color === undefined ? "#ffffff" : Theme.hex(color)
         var path = ""
         if (name === "play")
             path = "M8 5v14l11-7z"
@@ -65,7 +70,7 @@ Item {
         else // "plus"
             path = "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
 
-        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'><path d='" + path + "'/></svg>"
+        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
         // URL-encoded, NOT base64: `Qt.btoa` is deprecated in Qt 6 (its
         // output differs from the standard Web API).
         return "data:image/svg+xml," + encodeURIComponent(xml)
@@ -411,7 +416,11 @@ Item {
                     anchors.centerIn: parent
                     width: 12
                     height: 12
-                    source: card.getSvgIcon("arrowUp")
+                    // The arrow sits on the card's own surface, not on the
+                    // poster, so it follows the theme rather than staying
+                    // white (which was invisible in light mode).
+                    source: card.getSvgIcon("arrowUp",
+                        card.userVote === "rateUp" ? Theme.accent : Theme.inkMuted)
                     sourceSize.width: 24
                     sourceSize.height: 24
                     smooth: true
@@ -430,9 +439,12 @@ Item {
             Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 radius: 6
-                color: Qt.rgba(0.07, 0.08, 0.12, 0.6)
+                // Below the poster, on the card's own surface -- so this
+                // follows the page palette. The dark literal made it an opaque
+                // black pill under a light card.
+                color: Theme.fieldFill
                 border.width: 1
-                border.color: Theme.glassBorder
+                border.color: Theme.borderSubtle
                 implicitWidth: tallyRow.implicitWidth + 12
                 implicitHeight: 22
 
@@ -473,7 +485,8 @@ Item {
                     anchors.centerIn: parent
                     width: 12
                     height: 12
-                    source: card.getSvgIcon("arrowDown")
+                    source: card.getSvgIcon("arrowDown",
+                        card.userVote === "rateDown" ? Theme.danger : Theme.inkMuted)
                     sourceSize.width: 24
                     sourceSize.height: 24
                     smooth: true

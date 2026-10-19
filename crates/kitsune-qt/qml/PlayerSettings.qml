@@ -759,13 +759,9 @@ Item {
                 font.bold: true
             }
         }
-        Slider {
+        ThemedSlider {
             Layout.fillWidth: true
-            palette.highlight: Theme.accent
-            palette.mid: Theme.separator
-            palette.button: Theme.ink
-            palette.base: Theme.surface
-            palette.window: Theme.surfaceRaised
+            implicitHeight: 20
             from: sliderRoot.from
             to: sliderRoot.to
             stepSize: sliderRoot.step

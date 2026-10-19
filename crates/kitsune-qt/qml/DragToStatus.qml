@@ -82,7 +82,10 @@ Item {
             Text {
                 Layout.alignment: Qt.AlignHCenter
                 text: "Move to list"
-                color: Theme.ink
+                // The overlay is its own dark scrim, so it uses the on-artwork
+                // palette rather than the page ink, which goes near-black in
+                // light mode.
+                color: Theme.onArtwork
                 font.pixelSize: 18
                 font.bold: true
             }
@@ -141,7 +144,7 @@ Item {
                                 // that media glyphs render as colour emoji on
                                 // some systems and ignore the theme.
                                 text: target.modelData.label
-                                color: target.hovered ? "white" : Theme.inkMuted
+                                color: target.hovered ? Theme.onArtwork : Theme.onArtworkMuted
                                 font.pixelSize: 13
                                 font.bold: true
                             }
@@ -168,7 +171,7 @@ Item {
                                     id: currentLabel
                                     anchors.centerIn: parent
                                     text: "Current"
-                                    color: target.hovered ? "white" : Theme.accentHover
+                                    color: target.hovered ? Theme.onArtwork : Theme.accentHover
                                     font.pixelSize: 9
                                     font.bold: true
                                     font.letterSpacing: 0.4

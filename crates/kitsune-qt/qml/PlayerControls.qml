@@ -319,7 +319,7 @@ Item {
                             width: 2
                             height: 6
                             radius: 1
-                            color: Qt.rgba(1, 1, 1, 0.6)
+                            color: Theme.inkFaint
                             z: 5
                         }
                     }
@@ -334,7 +334,7 @@ Item {
                         radius: 6
                         color: Theme.accent
                         border.width: 2
-                        border.color: "white"
+                        border.color: Theme.surfaceRaised
                         z: 10
                     }
 
@@ -583,9 +583,11 @@ Item {
                         closePolicy: Popup.CloseOnEscape
                         background: Rectangle {
                             radius: 10
-                            color: Qt.rgba(0.07, 0.07, 0.11, 0.96)
+                            // A panel, not a scrim over artwork, so it follows
+                            // the theme like the rest of the player chrome.
+                            color: Theme.surfaceRaised
                             border.width: 1
-                            border.color: Theme.glassBorder
+                            border.color: Theme.borderSubtle
                         }
                         padding: 8
 
@@ -677,10 +679,10 @@ Item {
                             }
                         }
 
-                        Slider {
+                        ThemedSlider {
                             id: volSlider
                             Layout.preferredWidth: 52
-                            focusPolicy: Qt.NoFocus
+                            implicitHeight: 18
                             from: 0
                             to: 130
                             value: bar.vol()

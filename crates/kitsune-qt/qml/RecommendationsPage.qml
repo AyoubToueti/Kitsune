@@ -58,8 +58,13 @@ Item {
 
     // An inline back chevron. URL-encoded, NOT base64: `Qt.btoa` is deprecated
     // in Qt 6 (its output differs from the standard Web API).
+    //
+    // The fill comes from the theme: the button sits on the header bar, which
+    // is light in light mode, so a hard-coded white chevron disappeared.
     function getBackArrowSvg() {
-        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='white'><path d='M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z'/></svg>"
+        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='"
+            + Theme.hex(Theme.ink)
+            + "'><path d='M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z'/></svg>"
         return "data:image/svg+xml," + encodeURIComponent(xml)
     }
 

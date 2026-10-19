@@ -237,7 +237,10 @@ Item {
             id: body
             width: parent.width
             spacing: 24
-            topPadding: Theme.pad
+            // No top padding: the hero is full-bleed and fades into the page,
+            // so an inset would put a visible band of background above it and
+            // break the seamless join.
+            topPadding: 0
             bottomPadding: Theme.pad
 
             // --- Hero carousel ------------------------------------------
@@ -250,8 +253,9 @@ Item {
             }
 
             HeroCarousel {
-                x: Theme.pad
-                width: parent.width - Theme.pad * 2
+                // Full-bleed: the slide's own gradient fades into the page, so
+                // insetting it would reintroduce the visible edge.
+                width: parent.width
                 items: page.heroItems
                 visible: !page.trendingLoading
                 onOpenAnime: (id) => page.openAnime(id)

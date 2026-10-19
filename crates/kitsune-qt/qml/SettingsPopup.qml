@@ -17,6 +17,24 @@ Popup {
     // Whether a token is stored, from `authStatus`.
     property bool signedIn: false
 
+    // True while `onSettingsReady` is populating the controls from disk.
+    //
+    // Every control auto-saves on change now, and that population step writes
+    // to those same properties -- without this guard it would immediately
+    // write the values straight back, and the resulting `settings_ready`
+    // broadcast would start an endless save/read loop.
+    property bool loading: false
+
+    // Coalesces rapid writes from a dragged slider. Dragging emits `moved`
+    // on every pixel, and each save is a file write plus a `settings_ready`
+    // broadcast -- so the timer keeps that to one write per gesture.
+    Timer {
+        id: saveDebounce
+        interval: 250
+        repeat: false
+        onTriggered: popup.save()
+    }
+
     // Centred over the window.
     parent: Overlay.overlay
     anchors.centerIn: parent
@@ -35,10 +53,8 @@ Popup {
         }
     }
 
-    // Auto-save whenever the popup is dismissed (Done button, Escape, or clicking outside).
-    onClosed: {
-        popup.save()
-    }
+    // No save on close: every control writes as soon as it changes, so by the
+    // time the popup is dismissed there is nothing left to flush.
 
     Connections {
         target: popup.backend
@@ -47,9 +63,17 @@ Popup {
             const s = JSON.parse(json)
             if (s === null) return
             popup.current = s
-            playerField.text = s.player || ""
-            playerArgsField.text = (s.playerArgs || []).join(" ")
-            downloadField.text = s.downloadDir || ""
+            // Suppress the auto-save handlers while the fields are being
+            // filled in, or this population would write itself straight back.
+            popup.loading = true
+            // Text fields are only rewritten when they are not focused: a
+            // save raised by another control would otherwise wipe whatever
+            // the reader is halfway through typing here.
+            if (!playerField.activeFocus) playerField.text = s.player || ""
+            if (!playerArgsField.activeFocus) {
+                playerArgsField.text = (s.playerArgs || []).join(" ")
+            }
+            if (!downloadField.activeFocus) downloadField.text = s.downloadDir || ""
             thresholdSlider.value = s.readyFraction !== undefined ? s.readyFraction : 0.05
             seedersBox.value = s.minSeeders !== undefined ? s.minSeeders : 0
             askSwitch.checked = s.askEveryTime !== false
@@ -59,8 +83,11 @@ Popup {
             popup.rewindValue = (s.resumeRewindSeconds !== undefined && s.resumeRewindSeconds !== null)
                 ? s.resumeRewindSeconds : 20
             popup.binaryUnitsValue = s.useBinaryUnits === true
+            popup.titleLanguageValue = s.titleLanguage || "english"
+            popup.loading = false
         }
         function onSettingsFailed(message) {
+            popup.loading = false
             status.text = "Failed: " + message
         }
         function onAuthStatusReady(signedInNow) {
@@ -78,6 +105,9 @@ Popup {
 
     // Which appearance segment is selected.
     property string themeValue: "system"
+
+    // Which title form the UI shows: "english" or "romaji".
+    property string titleLanguageValue: "english"
 
     // Resume behaviour: "ask" | "seek" | "fresh".
     property string resumeValue: "ask"
@@ -150,8 +180,13 @@ Popup {
 
     // Write every edited field back as one Settings object. Untouched fields
     // ride along in `current`, so nothing else is reset.
+    //
+    // Called on every change now that the Done button is gone. The `loading`
+    // guard is what makes that safe: while `onSettingsReady` is filling the
+    // controls in, the change handlers would otherwise fire and write the
+    // values straight back.
     function save() {
-        if (!current) return
+        if (!current || loading) return
         const s = current
         s.player = playerField.text
         s.playerArgs = playerArgsField.text.trim().length > 0
@@ -166,6 +201,7 @@ Popup {
         s.shortcuts = popup.shortcuts
         s.resumeBehavior = popup.resumeValue
         s.useBinaryUnits = popup.binaryUnitsValue
+        s.titleLanguage = popup.titleLanguageValue
         backend.setSettings(JSON.stringify(s))
     }
 
@@ -176,6 +212,7 @@ Popup {
             let p = selectedFolder.toString()
             if (p.startsWith("file://")) p = p.slice(7)
             downloadField.text = decodeURIComponent(p)
+            popup.save()
         }
     }
 
@@ -281,7 +318,7 @@ Popup {
                                 text: popup.signedIn
                                     ? "●  Connected to AniList"
                                     : "○  Not signed in"
-                                color: popup.signedIn ? "#4ade80" : Theme.inkMuted
+                                color: popup.signedIn ? Theme.healthGreen : Theme.inkMuted
                                 font.pixelSize: 13
                             }
                             Item { Layout.fillWidth: true }
@@ -351,6 +388,10 @@ Popup {
                                 radius: 8; color: Theme.surface; border.width: 1
                                 border.color: playerField.activeFocus ? Theme.accent : Theme.borderSubtle
                             }
+                            // Commit on blur/Enter rather than per keystroke:
+                            // saving mid-word would fire a write per character
+                            // and make the field jitter as values round-trip.
+                            onEditingFinished: popup.save()
                         }
 
                         Text { text: "Extra Arguments"; color: Theme.ink; font.pixelSize: 12; font.bold: true }
@@ -365,6 +406,7 @@ Popup {
                                 radius: 8; color: Theme.surface; border.width: 1
                                 border.color: playerArgsField.activeFocus ? Theme.accent : Theme.borderSubtle
                             }
+                            onEditingFinished: popup.save()
                         }
                         Text {
                             text: "Passed directly to player before stream URL"
@@ -382,7 +424,10 @@ Popup {
                                 color: Theme.ink
                                 font.pixelSize: 12
                             }
-                            Switch { id: askSwitch }
+                            ThemedSwitch {
+                                id: askSwitch
+                                onToggled: popup.save()
+                            }
                         }
                     }
                 }
@@ -457,6 +502,7 @@ Popup {
                                             delete next[modelData.key]
                                             popup.shortcuts = next
                                             focus = false
+                                            popup.save()
                                             event.accepted = true
                                             return
                                         }
@@ -472,6 +518,7 @@ Popup {
                                             popup.shortcuts = next
                                         }
                                         focus = false
+                                        popup.save()
                                         event.accepted = true
                                     }
                                 }
@@ -539,10 +586,84 @@ Popup {
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: popup.themeValue = modelData.value
+                                        onClicked: {
+                                            popup.themeValue = modelData.value
+                                            // Painted at once from the
+                                            // singleton, then persisted.
+                                            Theme.choice = popup.themeValue
+                                            popup.save()
+                                        }
                                     }
                                 }
                             }
+                        }
+
+                        // Title language. Same segmented shape as the theme
+                        // row above rather than a new component: two choices
+                        // and no state beyond the value.
+                        Text {
+                            Layout.topMargin: 4
+                            text: "TITLE LANGUAGE"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Repeater {
+                                model: [
+                                    { "value": "english", "label": "English" },
+                                    { "value": "romaji", "label": "Romaji" }
+                                ]
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    Layout.fillWidth: true
+                                    height: 34
+                                    radius: 8
+                                    readonly property bool active:
+                                        popup.titleLanguageValue === modelData.value
+                                    color: titleLangMouse.containsMouse && !active
+                                        ? Theme.surfaceHover : "transparent"
+                                    border.width: 1
+                                    border.color: active ? Theme.accent : Theme.borderSubtle
+
+                                    Text {
+                                        anchors.centerIn: parent
+                                        text: modelData.label
+                                        color: active ? Theme.accent : Theme.inkMuted
+                                        font.pixelSize: 12
+                                        font.bold: active
+                                    }
+                                    MouseArea {
+                                        id: titleLangMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            popup.titleLanguageValue = modelData.value
+                                            // Apply before the round-trip so
+                                            // every open page repaints now.
+                                            TitlePreference.language = popup.titleLanguageValue
+                                            popup.save()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Names the order actually in force, since the choice
+                        // falls back to the other forms when a work has no
+                        // title in the chosen language.
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Falls back to the other form when a work has no title in the chosen language."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }
@@ -611,7 +732,10 @@ Popup {
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: popup.resumeValue = modelData.value
+                                        onClicked: {
+                                            popup.resumeValue = modelData.value
+                                            popup.save()
+                                        }
                                     }
                                 }
                             }
@@ -642,6 +766,7 @@ Popup {
                                     const n = parseInt(text, 10)
                                     popup.rewindValue = isFinite(n) && n >= 0 ? n : 0
                                     text = String(popup.rewindValue)
+                                    popup.save()
                                 }
                             }
                             Text {
@@ -704,6 +829,7 @@ Popup {
                                     radius: 8; color: Theme.surface; border.width: 1
                                     border.color: downloadField.activeFocus ? Theme.accent : Theme.borderSubtle
                                 }
+                                onEditingFinished: popup.save()
                             }
                             Rectangle {
                                 width: 80; height: 32; radius: 8
@@ -761,12 +887,13 @@ Popup {
                                 font.bold: true
                             }
                         }
-                        Slider {
+                        ThemedSlider {
                             id: thresholdSlider
                             Layout.fillWidth: true
                             from: 0.01
                             to: 1.0
                             stepSize: 0.01
+                            onMoved: saveDebounce.restart()
                         }
 
                         Text {
@@ -776,10 +903,11 @@ Popup {
                             font.pixelSize: 12
                             font.bold: true
                         }
-                        SpinBox {
+                        ThemedSpinBox {
                             id: seedersBox
                             from: 0
                             to: 1000
+                            onEdited: popup.save()
                         }
                     }
                 }
@@ -834,7 +962,7 @@ Popup {
                                 font.pixelSize: 12
                             }
 
-                            Switch {
+                            ThemedSwitch {
                                 id: unitsSwitch
                                 checked: popup.binaryUnitsValue
                                 onToggled: {
@@ -979,9 +1107,14 @@ Popup {
         }
 
         // --- Footer -----------------------------------------------------
+        //
+        // Only as tall as its contents, and only present at all when there is
+        // a message to show. With the Done button gone the footer would
+        // otherwise be a 60px strip of nothing at the bottom of the popup.
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 60
+            Layout.preferredHeight: status.text.length > 0 ? 60 : 0
+            visible: status.text.length > 0
             color: Theme.surfaceRaised
 
             Rectangle {
@@ -1001,30 +1134,9 @@ Popup {
                 font.pixelSize: 11
             }
 
-            Rectangle {
-                anchors.right: parent.right
-                anchors.rightMargin: 24
-                anchors.verticalCenter: parent.verticalCenter
-                width: 80
-                height: 34
-                radius: 8
-                color: doneMouse.containsMouse ? Theme.accentHover : Theme.accent
-
-                Text {
-                    anchors.centerIn: parent
-                    text: "Done"
-                    color: "white"
-                    font.pixelSize: 13
-                    font.bold: true
-                }
-                MouseArea {
-                    id: doneMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: popup.close()
-                }
-            }
+            // Changes save as they happen, so the footer only carries status.
+            // The header's close button (and Escape / outside-click) dismisses
+            // the popup.
         }
     }
 }
