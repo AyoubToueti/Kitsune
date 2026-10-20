@@ -31,7 +31,8 @@ Item {
 
     signal retry()
 
-    implicitHeight: 96
+    implicitHeight: 180
+    height: implicitHeight
 
     Rectangle {
         id: pill
@@ -43,17 +44,18 @@ Item {
         color: Theme.glassFillSubtle
         border.width: 1
         border.color: Theme.glassBorder
+        clip: true
 
         ErrorState {
             anchors.fill: parent
             anchors.margins: 8
             compact: true
-            showArt: false
-            title: row.busy ? "Retrying\u2026" : "Couldn't load more"
-            // The reason, not the backend's raw string: `RetryState` has
-            // already turned "HTTP 429 ..." into words.
-            message: row.message
-            primaryText: "Retry"
+            showArt: true
+            artWidth: 72
+            failureMessage: row.message
+            title: row.busy ? "Retrying\u2026" : ""
+            message: ""
+            primaryText: ""
             retryAfter: row.retryIn
             showActions: !row.busy
             onPrimaryClicked: row.retry()

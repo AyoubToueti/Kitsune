@@ -1,14 +1,14 @@
 // The "a page is in flight" row for an infinite-scrolling list.
 //
 // Deliberately the counterpart of `InlineRetry`: same footer slot, same
-// height, so swapping between them does not shift the grid. The spinner is
-// what tells the reader a request is actually running -- text alone reads as
-// a stuck list.
+// height, so swapping between them does not shift the grid. The thinking fox
+// is what tells the reader a request is actually running -- text alone reads
+// as a stuck list.
 //
-// The glyph is `PlayerIcon`'s `spinner` arc with a rotation animation on the
-// Canvas item itself, so the path is drawn once and spun rather than redrawn
-// every frame.
+// It renders the compact `ErrorState` "loading" kind, so every wait in the app
+// (a release search, the next page, a buffering player) wears the same face.
 import QtQuick
+import com.kitsune.app
 
 Item {
     id: row
@@ -17,37 +17,29 @@ Item {
     // generic line without duplicating the layout.
     property string message: "Loading more\u2026"
 
-    implicitHeight: 48
+    // CONSTANT, and that is load-bearing: the footer's height feeds the
+    // view's contentHeight, which drives `atYEnd`, whose handler starts the
+    // next load. Matches `InlineRetry`, so swapping the two never shifts.
+    implicitHeight: 118
 
-    Row {
+    Rectangle {
         anchors.centerIn: parent
-        spacing: 10
+        width: Math.min(560, row.width - 32)
+        height: row.implicitHeight - 16
+        radius: 14
+        color: Theme.glassFillSubtle
+        border.width: 1
+        border.color: Theme.glassBorder
 
-        PlayerIcon {
-            id: spinner
-            anchors.verticalCenter: parent.verticalCenter
-            kind: "spinner"
-            width: 15
-            height: 15
-            color: Theme.inkMuted
-
-            // `running` follows the theme flag, so reduced motion freezes the
-            // arc instead of leaving it spinning.
-            RotationAnimation on rotation {
-                from: 0
-                to: 360
-                duration: 900
-                loops: Animation.Infinite
-                running: Theme.animationsEnabled
-            }
-        }
-
-        Text {
-            anchors.verticalCenter: parent.verticalCenter
-            text: row.message
-            color: Theme.inkMuted
-            font.pixelSize: 13
-            font.bold: true
+        ErrorState {
+            anchors.fill: parent
+            anchors.margins: 4
+            compact: true
+            kind: "loading"
+            showActions: false
+            title: row.message
+            message: ""
+            artWidth: 72
         }
     }
 }

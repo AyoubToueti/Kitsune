@@ -192,8 +192,24 @@ Item {
         // in `onBrowseReady`; another failure re-records it.
         page.retryIn = 0
         inlineRetryTimer.stop()
+        page.loadError = "" // Clear error so state switches to LoadingMore
+        page.stickToEnd = false
         page.loading = true
         backend.getBrowse(JSON.stringify(buildQuery()), page.loadErrorPage, 40)
+    }
+
+    // While true, any growth of the content keeps the view glued to the bottom,
+    // so the footer's height animation can't leave the error card cut off.
+    property bool stickToEnd: false
+
+    function pinToEnd() {
+        grid.contentY = Math.max(grid.originY,
+            grid.originY + grid.contentHeight - grid.height + grid.bottomMargin)
+    }
+
+    function scrollToBottom() {
+        stickToEnd = true
+        Qt.callLater(pinToEnd)
     }
 
     function applyFilters() {
@@ -360,6 +376,7 @@ Item {
             page.loadErrorPage = page.pageNumber
             page.retryIn = RetryState.isRateLimit(message) ? 5 : 0
             if (page.retryIn > 0) inlineRetryTimer.restart()
+            page.scrollToBottom()
         }
     }
 
@@ -646,6 +663,19 @@ Item {
         bottomMargin: Theme.pad
         visible: !(page.loading && results.count === 0) && !page.loadFailed
 
+        // Auto-scroll to show the error card as soon as it appears
+        Connections {
+            target: page
+            function onLoadErrorChanged() {
+                if (page.loadError !== "") page.scrollToBottom()
+            }
+        }
+
+        // Follow the footer while it grows/animates.
+        onContentHeightChanged: if (page.stickToEnd) page.pinToEnd()
+        // The user took over scrolling: stop pinning.
+        onMovementStarted: page.stickToEnd = false
+
         delegate: Item {
             width: grid.cellWidth
             height: grid.cellHeight
@@ -681,32 +711,28 @@ Item {
         // page is in flight, the retry row once it has failed. `loading` alone
         // was not enough before -- a later page set it with nothing rendered.
         footer: Item {
-            // The height is CONSTANT, and that is load-bearing.
-            //
-            // A footer's height feeds the GridView's contentHeight, which
-            // drives `atYEnd`, whose handler sets `page.loading`. So a height
-            // that depended on `loading` closed the loop:
-            //   loading -> height -> contentHeight -> atYEnd -> loading
-            // Fixed height breaks the cycle; the two rows below only toggle
-            // `visible`, which does not affect layout.
             readonly property bool showLoading: page.loading
                 && results.count > 0 && page.loadError === ""
 
             width: GridView.view.width
-            // Tall enough for the compact `InlineRetry` block, and still
-            // CONSTANT so the footer height never feeds back into `atYEnd`.
-            height: 96
+            // Must equal the row heights: InlineRetry = 180, LoadingMore = 118.
+            height: page.loadError !== "" ? 180 : 118
+
+            Behavior on height {
+                NumberAnimation { duration: 200; easing.type: Easing.InOutQuad }
+            }
 
             LoadingMore {
                 id: loadingRow
+                anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.right: parent.right
-                // Only for a LATER page: the first page has its own skeleton.
                 visible: parent.showLoading
             }
 
             InlineRetry {
                 id: inlineRetry
+                anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.right: parent.right
                 visible: page.loadError !== ""

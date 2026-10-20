@@ -1184,75 +1184,46 @@ Popup {
                         }
                     }
 
-                    Column {
+                    ErrorState {
                         Layout.fillWidth: true
-                        Layout.alignment: Qt.AlignHCenter
-                        spacing: 8
+                        Layout.preferredHeight: implicitHeight
                         visible: modal.searching
-                        topPadding: 30
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: "\u25CC"
-                            color: Theme.accent
-                            font.pixelSize: 26
-                        }
-                        Text {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            text: "Searching indexers\u2026"
-                            color: Theme.inkMuted
-                            font.pixelSize: 12
-                        }
+                        compact: true
+                        kind: "loading"
+                        showActions: false
+                        title: "Searching indexers\u2026"
+                        message: ""
+                        artWidth: 96
                     }
 
-                    Column {
+                    // Only in the releases stage: `error` is shared with
+                    // file/stream failures, and Retry means nothing there. An
+                    // empty result set counts as a failed search, so either way
+                    // the primary button forces a real search.
+                    ErrorState {
+                        // A search that found nothing is not a failure: `kind`
+                        // is left to `failureMessage`, which maps "No ... found"
+                        // onto the not-found fox rather than the error one.
+                        readonly property bool noHits:
+                            modal.error.toLowerCase().indexOf("no ") === 0
+
                         Layout.fillWidth: true
-                        // Only in the releases stage: `error` is shared with
-                        // file/stream failures, and Retry means nothing there.
                         visible: modal.stage === "releases" && !modal.searching
                             && (modal.error !== "" || modal.releases.length === 0)
-                        spacing: 10
-                        topPadding: modal.error !== "" ? 0 : 30
-
-                        Text {
-                            width: parent.width
-                            visible: modal.error !== ""
-                            text: modal.error
-                            color: Theme.danger
-                            font.pixelSize: 12
-                            wrapMode: Text.WordWrap
-                            horizontalAlignment: Text.AlignHCenter
-                        }
-
-                        // A failed or empty search is the reader's cue to try
-                        // again; either way the button forces a real search.
-                        Rectangle {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            visible: !modal.probing
-                            implicitWidth: retryLabel.implicitWidth + 28
-                            implicitHeight: 30
-                            radius: 15
-                            color: retryArea.containsMouse ? Theme.accent : Theme.glassFillSubtle
-                            border.width: 1
-                            border.color: retryArea.containsMouse
-                                ? Theme.accent : Theme.glassBorder
-
-                            Text {
-                                id: retryLabel
-                                anchors.centerIn: parent
-                                text: "Retry"
-                                color: retryArea.containsMouse ? "white" : Theme.ink
-                                font.pixelSize: 11
-                                font.bold: true
-                            }
-
-                            MouseArea {
-                                id: retryArea
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: modal.search(true)
-                            }
-                        }
+                        compact: true
+                        artWidth: 96
+                        kind: modal.error !== "" ? "" : "sleeping"
+                        failureMessage: modal.error
+                        title: noHits
+                            ? (modal.releaseMode === "packs"
+                                ? "No season packs found" : "No releases found")
+                            : ""
+                        message: noHits
+                            ? "Nothing on the indexers matched. Try another search."
+                            : ""
+                        primaryText: modal.probing ? "" : "Retry"
+                        showActions: !modal.probing
+                        onPrimaryClicked: modal.search(true)
                     }
 
                     ColumnLayout {
@@ -1864,38 +1835,35 @@ Popup {
                             }
                         }
 
-                        GlassPanel {
+                        // The same thinking fox as every other wait in the app.
+                        // It sits over the video, so it carries its own scrim
+                        // rather than a solid card.
+                        Item {
                             anchors.centerIn: parent
                             z: 15
+                            width: Math.min(340, parent.width - 64)
+                            height: bufferFox.implicitHeight + 24
+
                             visible: modal.stage === "play" && modal.playerBuffering()
-                            radius: 14
-                            implicitWidth: bufferRow.implicitWidth + 32
-                            implicitHeight: 40
 
-                            Row {
-                                id: bufferRow
+                            Rectangle {
+                                anchors.fill: parent
+                                radius: 16
+                                color: Qt.rgba(0, 0, 0, 0.55)
+                                border.width: 1
+                                border.color: Theme.glassBorder
+                            }
+
+                            ErrorState {
+                                id: bufferFox
                                 anchors.centerIn: parent
-                                spacing: 10
-
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: "\u25CC"
-                                    color: Theme.accent
-                                    font.pixelSize: 18
-                                    NumberAnimation on rotation {
-                                        from: 0; to: 360
-                                        duration: 900
-                                        loops: Animation.Infinite
-                                        running: modal.playerBuffering()
-                                    }
-                                }
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: "Buffering\u2026 " + modal.percent(modal.fileFraction()) + "%"
-                                    color: Theme.ink
-                                    font.pixelSize: 13
-                                    font.bold: true
-                                }
+                                width: parent.width - 24
+                                compact: true
+                                kind: "loading"
+                                showActions: false
+                                title: "Buffering\u2026"
+                                message: modal.percent(modal.fileFraction()) + "%"
+                                artWidth: 88
                             }
                         }
                     }

@@ -264,6 +264,37 @@ Item {
                 anchors.fill: parent
             }
 
+            // Buffering wears the same thinking fox as every other wait. It
+            // sits over the video, so it carries its own scrim.
+            Item {
+                anchors.centerIn: parent
+                z: 15
+                width: Math.min(340, parent.width - 64)
+                height: watchBufferFox.implicitHeight + 24
+
+                visible: player.buffering === true
+
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 16
+                    color: Qt.rgba(0, 0, 0, 0.55)
+                    border.width: 1
+                    border.color: Theme.glassBorder
+                }
+
+                ErrorState {
+                    id: watchBufferFox
+                    anchors.centerIn: parent
+                    width: parent.width - 24
+                    compact: true
+                    kind: "loading"
+                    showActions: false
+                    title: "Buffering\u2026"
+                    message: ""
+                    artWidth: 88
+                }
+            }
+
             // The same OSD bar the modal uses -- chapter markers, the chapter
             // dropdown, and skip-intro/ED all read `player.chapterList`, which
             // is fed by the mpv chapter-list observation.
@@ -295,59 +326,47 @@ Item {
                 spacing: 12
 
                 Text {
-                    text: page.searching
-                        ? "Searching…"
-                        : (page.stage === "files" ? "Files in torrent" : "Releases")
+                    text: page.stage === "files" ? "Files in torrent" : "Releases"
                     color: Theme.ink
                     font.pixelSize: 18
                     font.bold: true
                 }
 
-                Column {
-                    // Only while picking a release: `error` is shared with
-                    // playback failures, where a re-search is not the fix.
+                ErrorState {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: implicitHeight
+                    visible: page.stage === "releases" && page.searching
+                    compact: true
+                    kind: "loading"
+                    showActions: false
+                    title: "Searching indexers\u2026"
+                    message: ""
+                    artWidth: 96
+                }
+
+                // Only while picking a release: `error` is shared with playback
+                // failures, where a re-search is not the fix. An empty result set
+                // counts as a failed search, so Retry means "search again".
+                ErrorState {
+                    // A search that found nothing is not a failure: `kind` is
+                    // left to `failureMessage`, which maps "No ... found" onto
+                    // the not-found fox rather than the error one.
+                    readonly property bool noHits: page.error.toLowerCase().indexOf("no ") === 0
+
                     visible: page.stage === "releases" && !page.searching
                         && (page.error.length > 0 || page.releases.length === 0)
                     Layout.fillWidth: true
-                    spacing: 10
-
-                    Text {
-                        width: parent.width
-                        visible: page.error.length > 0
-                        text: page.error
-                        color: Theme.danger
-                        font.pixelSize: 13
-                        wrapMode: Text.WordWrap
-                        horizontalAlignment: Text.AlignHCenter
-                    }
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        implicitWidth: watchRetryLabel.implicitWidth + 28
-                        implicitHeight: 30
-                        radius: 15
-                        color: watchRetryArea.containsMouse ? Theme.accent : Theme.glassFillSubtle
-                        border.width: 1
-                        border.color: watchRetryArea.containsMouse
-                            ? Theme.accent : Theme.glassBorder
-
-                        Text {
-                            id: watchRetryLabel
-                            anchors.centerIn: parent
-                            text: "Retry"
-                            color: watchRetryArea.containsMouse ? "white" : Theme.ink
-                            font.pixelSize: 12
-                            font.bold: true
-                        }
-
-                        MouseArea {
-                            id: watchRetryArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.search(true)
-                        }
-                    }
+                    Layout.preferredHeight: implicitHeight
+                    compact: true
+                    artWidth: 96
+                    kind: page.error.length > 0 ? "" : "sleeping"
+                    failureMessage: page.error
+                    title: noHits ? "No releases found" : ""
+                    message: noHits
+                        ? "Nothing on the indexers matched this episode. Try another search."
+                        : ""
+                    primaryText: "Retry"
+                    onPrimaryClicked: page.search(true)
                 }
 
                 // Release list.
