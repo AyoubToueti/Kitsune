@@ -50,7 +50,6 @@ fn main() {
             .qml_file("qml/DetailSkeleton.qml")
             .qml_file("qml/PosterGridSkeleton.qml")
             .qml_file("qml/ErrorState.qml")
-            .qml_file("qml/RetryOverlay.qml")
             .qml_file("qml/InlineRetry.qml")
             .qml_file("qml/LoadingMore.qml")
             .qml_file("qml/DragToStatus.qml")

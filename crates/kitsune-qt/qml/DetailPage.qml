@@ -14,6 +14,11 @@ Item {
     property int animeId: 0
     property var anime: null
 
+    // The work itself failed to load: the skeleton gives way to an error block
+    // with a retry, rather than pulsing forever.
+    property bool loadFailed: false
+    property string loadError: ""
+
     // The shared Backend, passed in explicitly by the window when it pushes this page.
     property var backend: null
 
@@ -36,6 +41,7 @@ Item {
     property int episodeOffset: 0
     property bool episodesLoading: false
     property var episodeInfo: []
+    property bool sortAscending: true
 
     // --- Jump-to-episode --------------------------------------------------
     property int jumpQuery: 0
@@ -116,20 +122,36 @@ Item {
         page.openWatch(page.animeId, malId, epNum, epNum + page.episodeOffset)
     }
 
+    function toggleEpisodeSort() {
+        page.sortAscending = !page.sortAscending
+        if (page.episodes && page.episodes.length > 0) {
+            page.episodes = page.episodes.slice().reverse()
+        }
+    }
+
+    function scrollToLastWatched() {
+        if (page.watchedThrough <= 0 || !page.episodes || page.episodes.length === 0) return
+
+        let found = -1
+        for (let i = 0; i < page.episodes.length; i++) {
+            const n = page.episodes[i].number !== undefined
+                ? page.episodes[i].number : (i + 1)
+            if (n === page.watchedThrough) { found = i; break }
+        }
+
+        if (found !== -1) {
+            page.highlightedIndex = found
+            episodeGrid.positionViewAtIndex(found, GridView.Center)
+            highlightTimer.restart()
+        }
+    }
+
     Connections {
         target: page.backend
 
-        // A work the provider already had from a list response. Paints the
-        // page immediately, with no request and no skeleton.
-        //
-        // Deliberately does NOT call loadEpisodes / loadListEntry /
-        // RetryState.reset: those have side effects, and `getEpisodes` hits
-        // Jikan, which is not cached -- running it twice would double the
-        // traffic. The authoritative `animeReady` below owns all of them.
         function onAnimePartial(json) {
             const parsed = JSON.parse(json)
             if (parsed === null || parsed.id !== page.animeId) return
-            // A full reply may already have landed; never downgrade it.
             if (page.anime === null) page.anime = parsed
         }
 
@@ -139,12 +161,16 @@ Item {
                 page.anime = null
             } else if (parsed.id === page.animeId) {
                 page.anime = parsed
+                page.loadFailed = false
+                page.loadError = ""
                 page.loadEpisodes()
                 page.loadListEntry()
                 RetryState.reset()
             }
         }
         function onAnimeFailed(message) {
+            page.loadFailed = true
+            page.loadError = message
             RetryState.reportFailure(message)
         }
         function onEpisodesReady(json) {
@@ -198,7 +224,11 @@ Item {
             anime.status || "",
             anime.coverImage || "",
             JSON.stringify(episodeInfo))
-        page.episodes = JSON.parse(json) || []
+        var list = JSON.parse(json) || []
+        if (!page.sortAscending) {
+            list.reverse()
+        }
+        page.episodes = list
         page.episodeOffset = computeOffset(page.episodes)
     }
 
@@ -254,6 +284,8 @@ Item {
     function maybeLoad() {
         if (animeId > 0 && backend) {
             page.anime = null
+            page.loadFailed = false
+            page.loadError = ""
             page.signedIn = false
             page.listStatus = ""
             page.listEntryId = 0
@@ -264,6 +296,8 @@ Item {
     function reload() {
         if (animeId > 0 && backend) {
             page.anime = null
+            page.loadFailed = false
+            page.loadError = ""
             backend.getAnime(animeId)
         }
     }
@@ -277,9 +311,17 @@ Item {
         onTriggered: page.statusBusy = false
     }
 
+    ErrorState {
+        anchors.fill: parent
+        visible: page.loadFailed
+        failureMessage: page.loadError
+        retryAfter: RetryState.remaining
+        onPrimaryClicked: page.reload()
+    }
+
     DetailSkeleton {
         anchors.fill: parent
-        visible: page.anime === null
+        visible: page.anime === null && !page.loadFailed
     }
 
     Flickable {
@@ -495,6 +537,21 @@ Item {
                             Item { Layout.fillWidth: true }
                         }
 
+                        // A list add/remove failure. Compact and non-actionable:
+                        // Retry cannot know which mutation failed, so the strip
+                        // just reports it and clears on the next attempt.
+                        ErrorState {
+                            Layout.fillWidth: true
+                            visible: page.statusError !== ""
+                            compact: true
+                            showArt: false
+                            showActions: false
+                            failureMessage: page.statusError
+                            detail: page.statusError
+                            title: "Couldn't update your list"
+                            message: ""
+                        }
+
                         // --- Metadata strip ----------------------------------
                         Flow {
                             Layout.fillWidth: true
@@ -525,7 +582,10 @@ Item {
                         Text {
                             Layout.fillWidth: true
                             Layout.topMargin: 4
-                            visible: page.anime !== null && page.anime.description
+                            // `!!` is load-bearing: `a && b` yields `b`, so a
+                            // missing `description` (undefined) would be
+                            // assigned straight to a bool and warn.
+                            visible: !!(page.anime && page.anime.description)
                             text: page.anime
                                 ? String(page.anime.description).replace(/<[^>]*>/g, "")
                                 : ""
@@ -554,7 +614,7 @@ Item {
 
                     RowLayout {
                         width: parent.width
-                        spacing: 12
+                        spacing: 10
 
                         Text {
                             text: "Episodes"
@@ -563,10 +623,10 @@ Item {
                             font.bold: true
                         }
 
-                        // Season packs button placed directly next to "Episodes" title
+                        // Season packs button
                         Rectangle {
                             visible: page.anime !== null && page.anime.episodeCount !== 0
-                            implicitWidth: packsRow.implicitWidth + 24
+                            implicitWidth: packsRow.implicitWidth + 20
                             height: 28
                             radius: 14
                             color: packsMouse.containsMouse ? Theme.surfaceHover : "transparent"
@@ -578,7 +638,7 @@ Item {
                             Row {
                                 id: packsRow
                                 anchors.centerIn: parent
-                                spacing: 6
+                                spacing: 4
 
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
@@ -598,6 +658,76 @@ Item {
                                     const mal = page.anime && page.anime.idMal ? page.anime.idMal : 0
                                     page.openPacks(page.animeId, mal)
                                 }
+                            }
+                        }
+
+                        // Sort order toggle button (Oldest / Newest)
+                        Rectangle {
+                            visible: page.anime !== null && page.episodes.length > 1
+                            implicitWidth: sortRow.implicitWidth + 20
+                            height: 28
+                            radius: 14
+                            color: sortMouse.containsMouse ? Theme.surfaceHover : "transparent"
+                            border.width: 1
+                            border.color: sortMouse.containsMouse ? Theme.accent : Theme.borderSubtle
+
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            Row {
+                                id: sortRow
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: page.sortAscending ? "↓ Oldest" : "↑ Newest"
+                                    color: sortMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
+
+                            MouseArea {
+                                id: sortMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: page.toggleEpisodeSort()
+                            }
+                        }
+
+                        // Scroll to last watched episode button
+                        Rectangle {
+                            visible: page.watchedThrough > 0 && page.episodes.length > 0
+                            implicitWidth: lastWatchRow.implicitWidth + 20
+                            height: 28
+                            radius: 14
+                            color: lastWatchMouse.containsMouse ? Theme.surfaceHover : "transparent"
+                            border.width: 1
+                            border.color: lastWatchMouse.containsMouse ? Theme.accent : Theme.borderSubtle
+
+                            Behavior on border.color { ColorAnimation { duration: 150 } }
+
+                            Row {
+                                id: lastWatchRow
+                                anchors.centerIn: parent
+                                spacing: 4
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "🎯 Ep " + page.watchedThrough
+                                    color: lastWatchMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
+                            }
+
+                            MouseArea {
+                                id: lastWatchMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: page.scrollToLastWatched()
                             }
                         }
 
@@ -878,12 +1008,22 @@ Item {
                         }
                     }
 
-                    Text {
+                    // Empty Episode State
+                    Rectangle {
                         visible: page.episodes.length === 0 && page.anime !== null
-                        text: "Episode info unavailable"
-                        color: Theme.inkFaint
-                        font.pixelSize: 13
-                        topPadding: 8
+                        width: parent.width
+                        implicitHeight: 260
+                        radius: 14
+                        color: Theme.surfaceRaised
+                        border.width: 1
+                        border.color: Theme.borderSubtle
+
+                        ErrorState {
+                            anchors.fill: parent
+                            anchors.margins: 16
+                            kind: "sleeping"
+                            artWidth: 120
+                        }
                     }
                 }
 
@@ -1017,7 +1157,7 @@ Item {
 
                                             Rectangle {
                                                 radius: 4
-                                                color: "#337c5cff"
+                                                color: Qt.alpha(Theme.accent, 0.2)
                                                 implicitWidth: relBadgeText.implicitWidth + 12
                                                 implicitHeight: relBadgeText.implicitHeight + 4
 

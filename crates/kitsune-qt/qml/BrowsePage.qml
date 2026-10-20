@@ -58,6 +58,11 @@ Item {
     // Seconds left on a rate-limit lock for that retry row.
     property int retryIn: 0
 
+    // A FIRST page failed: there is no grid to keep, so the page shows a
+    // full-area error block with a retry that re-runs the same query.
+    property bool loadFailed: false
+    property string pageError: ""
+
     // Tick the inline lock down. Started only on a rate-limit failure; stopped
     // by `retryFailedPage` and on any successful page.
     Timer {
@@ -169,6 +174,8 @@ Item {
         loading = false
         page.loadError = ""
         page.retryIn = 0
+        page.loadFailed = false
+        page.pageError = ""
         inlineRetryTimer.stop()
         runSearch(true)
     }
@@ -328,15 +335,20 @@ Item {
             // was, and cancels any lock still ticking.
             page.loadError = ""
             page.retryIn = 0
+            page.loadFailed = false
+            page.pageError = ""
             inlineRetryTimer.stop()
             RetryState.reset()
         }
         function onBrowseFailed(message) {
-            // A first-page failure has nothing to preserve, so it keeps the
-            // full-screen overlay. A LATER page must not take the grid away.
+            // A first-page failure has nothing to preserve, so the whole
+            // results area becomes an error block. A LATER page must not take
+            // the grid away.
             if (results.count === 0) {
-                page.loading = RetryState.isTransient(message)
+                page.loading = false
                 page.resultStatus = ""
+                page.loadFailed = true
+                page.pageError = message
                 RetryState.reportFailure(message)
                 return
             }
@@ -589,6 +601,20 @@ Item {
     }
 
     // --- Results grid ------------------------------------------------------
+    // A first-page failure replaces the results area: there is no grid to
+    // keep, so the reader retries the same query in place.
+    ErrorState {
+        anchors.top: header.bottom
+        anchors.topMargin: Theme.gap
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        visible: page.loadFailed
+        failureMessage: page.pageError
+        retryAfter: page.retryIn
+        onPrimaryClicked: page.reload()
+    }
+
     PosterGridSkeleton {
         anchors.top: header.bottom
         anchors.topMargin: Theme.gap
@@ -598,7 +624,7 @@ Item {
         anchors.rightMargin: Theme.pad
         anchors.bottom: parent.bottom
         clip: true
-        visible: page.loading && results.count === 0
+        visible: page.loading && results.count === 0 && !page.loadFailed
         count: 12
         cellWidth: 200
         cellHeight: 350
@@ -618,7 +644,7 @@ Item {
         leftMargin: Theme.pad
         rightMargin: Theme.pad
         bottomMargin: Theme.pad
-        visible: !(page.loading && results.count === 0)
+        visible: !(page.loading && results.count === 0) && !page.loadFailed
 
         delegate: Item {
             width: grid.cellWidth
@@ -667,7 +693,9 @@ Item {
                 && results.count > 0 && page.loadError === ""
 
             width: GridView.view.width
-            height: 48
+            // Tall enough for the compact `InlineRetry` block, and still
+            // CONSTANT so the footer height never feeds back into `atYEnd`.
+            height: 96
 
             LoadingMore {
                 id: loadingRow

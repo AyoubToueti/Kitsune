@@ -31,6 +31,10 @@ Item {
     property var heroItems: []
     property var railItems: []
     property bool trendingLoading: true
+    // The single home request failed: the skeletons are replaced by a
+    // full-page error block rather than pulsing forever behind an overlay.
+    property bool loadFailed: false
+    property string loadError: ""
 
     // --- the four curated blocks ------------------------------------------
     // Each is filled by the tagged list request that names it.
@@ -107,13 +111,16 @@ Item {
             page.latestCompletedItems = shelves.latestCompleted || []
             page.top100Items = shelves.top100 || []
             // A clean load clears any retry overlay and resets its backoff.
+            page.loadFailed = false
+            page.loadError = ""
             RetryState.reset()
         }
         function onHomeFailed(message) {
-            // Leave the skeleton up (data never arrived) and raise the retry
-            // overlay, so the reader can retry in place instead of restarting.
-            // `trendingLoading` stays true, which keeps every placeholder
-            // visible behind the overlay.
+            // Drop the skeletons and show an in-page error block: the page
+            // owns its failure now, so the reader retries where they are.
+            page.trendingLoading = false
+            page.loadFailed = true
+            page.loadError = message
             RetryState.reportFailure(message)
         }
 
@@ -201,6 +208,8 @@ Item {
     // previous (empty) state.
     function reload() {
         if (!backend) return
+        page.loadFailed = false
+        page.loadError = ""
         page.trendingLoading = true
         page.heroItems = []
         page.railItems = []
@@ -225,6 +234,17 @@ Item {
         backend.getWatchPositions()
     }
 
+    // A failed home load takes the whole content area: there is nothing worth
+    // preserving, and leaving the skeletons pulsing would read as "still
+    // loading" forever.
+    ErrorState {
+        anchors.fill: parent
+        visible: page.loadFailed
+        failureMessage: page.loadError
+        retryAfter: RetryState.remaining
+        onPrimaryClicked: page.reload()
+    }
+
     Flickable {
         id: scroller
         anchors.fill: parent
@@ -232,6 +252,7 @@ Item {
         contentHeight: body.height
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        visible: !page.loadFailed
 
         Column {
             id: body

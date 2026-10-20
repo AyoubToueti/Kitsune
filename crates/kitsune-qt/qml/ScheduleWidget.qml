@@ -196,19 +196,28 @@ Item {
             }
         }
 
-        Text {
+        ErrorState {
             visible: widget.errorText !== ""
-            text: "Could not load that day. " + widget.errorText
-            color: Theme.inkFaint
-            font.pixelSize: 12
+            width: parent.width
+            compact: true
+            showArt: false
+            failureMessage: widget.errorText
+            title: "Could not load that day"
+            message: ""
+            primaryText: "Retry"
+            onPrimaryClicked: widget.loadDay(widget.selectedOffset)
         }
 
-        Text {
+        ErrorState {
             visible: !widget.loading && widget.errorText === ""
                 && widget.airing.length === 0
-            text: "Nothing airing this day."
-            color: Theme.inkFaint
-            font.pixelSize: 12
+            width: parent.width
+            compact: true
+            showArt: false
+            showActions: false
+            kind: "sleeping"
+            title: "Nothing airing this day"
+            message: ""
         }
 
         Repeater {

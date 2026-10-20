@@ -30,6 +30,11 @@ Item {
     property int loadErrorPage: 0
     property int retryIn: 0
 
+    // A FIRST page failed: no grid to preserve, so the results area becomes an
+    // error block with a retry for page 1.
+    property bool loadFailed: false
+    property string pageError: ""
+
     Timer {
         id: inlineRetryTimer
         interval: 1000
@@ -86,16 +91,20 @@ Item {
             // A successful page clears the inline failure and any lock.
             page.loadError = ""
             page.retryIn = 0
+            page.loadFailed = false
+            page.pageError = ""
             inlineRetryTimer.stop()
             RetryState.reset()
         }
         function onRecommendationsFailed(id, message) {
             if (id !== page.animeId) return
-            // A first-page failure has nothing to preserve, so it keeps the
-            // full-screen overlay. A LATER page must not take the grid away.
+            // A first-page failure has nothing to preserve, so the results
+            // area becomes an error block. A LATER page must not take the grid.
             if (recModel.count === 0) {
-                page.loading = RetryState.isTransient(message)
+                page.loading = false
                 page.error = ""
+                page.loadFailed = true
+                page.pageError = message
                 RetryState.reportFailure(message)
                 return
             }
@@ -137,6 +146,8 @@ Item {
         error = ""
         page.loadError = ""
         page.retryIn = 0
+        page.loadFailed = false
+        page.pageError = ""
         inlineRetryTimer.stop()
         loadPage(1)
     }
@@ -227,14 +238,25 @@ Item {
                     }
 
                     Text {
-                        text: page.error.length > 0
-                            ? ("Failed: " + page.error)
-                            : (recModel.count + " suggestions found")
-                        color: page.error.length > 0 ? Theme.danger : Theme.inkMuted
+                        // The failure is reported by the error block below, so
+                        // the header only ever counts what actually arrived.
+                        text: recModel.count + " suggestions found"
+                        color: Theme.inkMuted
                         font.pixelSize: 12
+                        visible: !page.loadFailed
                     }
                 }
             }
+        }
+
+        // A first-page failure replaces the results area.
+        ErrorState {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: page.loadFailed
+            failureMessage: page.pageError
+            retryAfter: page.retryIn
+            onPrimaryClicked: page.reload()
         }
 
         // First-load placeholder: shown until the first page of recommendations
@@ -246,7 +268,7 @@ Item {
             Layout.leftMargin: Theme.pad
             Layout.rightMargin: Theme.pad
             Layout.topMargin: Theme.gap
-            visible: page.loading && recModel.count === 0
+            visible: page.loading && recModel.count === 0 && !page.loadFailed
             count: 8
             cellWidth: 200
             cellHeight: 356
@@ -265,7 +287,7 @@ Item {
             rightMargin: Theme.pad
             topMargin: Theme.gap
             bottomMargin: Theme.pad
-            visible: !(page.loading && recModel.count === 0)
+            visible: !(page.loading && recModel.count === 0) && !page.loadFailed
 
             delegate: RecommendationCard {
                 required property string recJson
@@ -300,7 +322,9 @@ Item {
                     && page.loadError === ""
 
                 width: GridView.view.width
-                height: 48
+                // Tall enough for the compact `InlineRetry` block, and still
+                // CONSTANT for the `atYEnd` reason spelled above.
+                height: 96
 
                 LoadingMore {
                     id: loadingRow
@@ -330,7 +354,7 @@ Item {
             // Hidden while the retry overlay is up: the page has not concluded
             // "no suggestions", it has failed to ask, and the overlay says so.
             visible: !page.loading && recModel.count === 0
-                && page.error.length === 0 && !RetryState.active
+                && page.error.length === 0 && !page.loadFailed
 
             Rectangle {
                 anchors.centerIn: parent

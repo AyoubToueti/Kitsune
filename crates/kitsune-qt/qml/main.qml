@@ -81,10 +81,6 @@ Window {
             settingsPopup.close()
             return
         }
-        if (RetryState.active) {
-            RetryState.reset()
-            return
-        }
         if (stack.depth <= 1) return
 
         const leaving = pageEntries[pageEntries.length - 1]
@@ -396,12 +392,7 @@ Window {
         }
     }
 
-    RetryOverlay {
-        id: retryOverlay
-        anchors.fill: parent
-        visible: RetryState.active
-        z: 100
-    }
+
 
     // Shown only while a card is being dragged into a list. It carries its own
     // z (300) so it sits above the page stack and the back/forward cue, while
@@ -415,16 +406,7 @@ Window {
 
 
 
-    function performRetry() {
-        const item = stack.currentItem
-        RetryState.active = false
-        if (item && typeof item.reload === "function") item.reload()
-    }
 
-    Connections {
-        target: RetryState
-        function onRetryRequested() { root.performRetry() }
-    }
 
     // The reader's display preferences, pushed into their singletons.
     //

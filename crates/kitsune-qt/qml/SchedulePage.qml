@@ -22,6 +22,10 @@ Item {
     // Whether a day's broadcasts are in flight, so the list can show a skeleton
     // on the first load rather than an empty area.
     property bool loading: false
+    // A day failed to load with nothing on screen to preserve: the list area
+    // shows an error block instead of an empty page.
+    property bool loadFailed: false
+    property string pageError: ""
 
     ListModel { id: dayModel }
     ListModel { id: airingModel }
@@ -41,15 +45,22 @@ Item {
                 })
             }
             page.loading = false
+            page.loadFailed = false
+            page.pageError = ""
             status.text = items.length + " airing"
             RetryState.reset()
         }
         function onScheduleFailed(message) {
-            // Transient failures keep the skeleton pulsing behind the overlay;
-            // a content failure drops it rather than pulsing forever.
-            page.loading = RetryState.isTransient(message)
-                && airingModel.count === 0
-            // The overlay owns the wording -- no raw backend string here.
+            // With nothing on screen there is nothing to preserve, so the list
+            // area becomes an error block. A day switch keeps the previous
+            // day's rows, so only the empty case takes over the view.
+            if (airingModel.count === 0) {
+                page.loading = false
+                page.loadFailed = true
+                page.pageError = message
+            } else {
+                page.loading = false
+            }
             status.text = ""
             RetryState.reportFailure(message)
         }
@@ -76,6 +87,8 @@ Item {
     function loadDay(offset) {
         if (!backend) return
         page.loading = true
+        page.loadFailed = false
+        page.pageError = ""
         const from = dayStart(offset)
         const to = from + 24 * 3600
         backend.getSchedule(from, to, 50)
@@ -191,13 +204,22 @@ Item {
         // arrive. Switching days keeps the previous day's rows visible (the
         // model clears only on the reply), so a skeleton on every load would
         // flash; it is limited to the empty first load.
+        ErrorState {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            visible: page.loadFailed
+            failureMessage: page.pageError
+            retryAfter: RetryState.remaining
+            onPrimaryClicked: page.reload()
+        }
+
         RankedListSkeleton {
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.leftMargin: Theme.pad
             Layout.rightMargin: Theme.pad
             Layout.topMargin: Theme.gap
-            visible: page.loading && airingModel.count === 0
+            visible: page.loading && airingModel.count === 0 && !page.loadFailed
             count: 7
         }
 
@@ -212,7 +234,7 @@ Item {
             topMargin: Theme.gap
             bottomMargin: Theme.pad
             spacing: 10
-            visible: !(page.loading && airingModel.count === 0)
+            visible: !(page.loading && airingModel.count === 0) && !page.loadFailed
 
             delegate: Rectangle {
                 width: ListView.view.width - Theme.pad * 2

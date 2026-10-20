@@ -15,6 +15,10 @@ Item {
     property bool loading: false
     property string errorText: ""
 
+    // The list failed to load: the grid area becomes an error block rather
+    // than an empty collection.
+    property bool loadFailed: false
+
     property var entries: []
     property string activeTab: ""
     property string searchText: ""
@@ -144,13 +148,15 @@ Item {
         function onUserListReady(json) {
             page.entries = JSON.parse(json) || []
             page.loading = false
+            page.loadFailed = false
             page.errorText = ""
             RetryState.reset()
         }
 
         function onUserListFailed(message) {
-            page.loading = RetryState.isTransient(message)
-            page.errorText = ""
+            page.loading = false
+            page.loadFailed = true
+            page.errorText = message
             RetryState.reportFailure(message)
         }
 
@@ -166,6 +172,7 @@ Item {
     function reload() {
         if (!backend || !page.signedIn) return
         page.loading = true
+        page.loadFailed = false
         page.errorText = ""
         backend.userList()
     }
@@ -208,63 +215,21 @@ Item {
             Rectangle {
                 anchors.centerIn: parent
                 width: 440
-                height: 250
+                height: 300
                 radius: 16
                 color: Theme.surfaceRaised
                 border.width: 1
                 border.color: Theme.borderSubtle
 
-                Column {
-                    anchors.centerIn: parent
-                    width: parent.width - 48
-                    spacing: 10
-
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "◎"
-                        color: Theme.accent
-                        font.pixelSize: 34
-                    }
-                    Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Sign in to sync your list"
-                        color: Theme.ink
-                        font.pixelSize: 16
-                        font.bold: true
-                    }
-                    Text {
-                        width: parent.width
-                        horizontalAlignment: Text.AlignHCenter
-                        text: "Connect your AniList account to track episodes, sync watch states, and organize your collection."
-                        color: Theme.inkMuted
-                        font.pixelSize: 12
-                        wrapMode: Text.WordWrap
-                    }
-
-                    Item { width: 1; height: 6 }
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        width: 190
-                        height: 40
-                        radius: 10
-                        color: signInMouse.containsMouse ? Theme.accentHover : Theme.accent
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "Sign in with AniList"
-                            color: "white"
-                            font.pixelSize: 13
-                            font.bold: true
-                        }
-                        MouseArea {
-                            id: signInMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: page.signIn()
-                        }
-                    }
+                ErrorState {
+                    anchors.fill: parent
+                    anchors.margins: 16
+                    kind: "sleeping"
+                    artWidth: 110
+                    title: "Sign in to sync your list"
+                    message: "Connect your AniList account to track episodes, sync watch states, and organize your collection."
+                    primaryText: "Sign in with AniList"
+                    onPrimaryClicked: page.signIn()
                 }
             }
         }
@@ -474,12 +439,20 @@ Item {
             Layout.fillHeight: true
             visible: page.signedIn
 
+            ErrorState {
+                anchors.fill: parent
+                visible: page.loadFailed
+                failureMessage: page.errorText
+                retryAfter: RetryState.remaining
+                onPrimaryClicked: page.reload()
+            }
+
             PosterGridSkeleton {
                 anchors.fill: parent
                 anchors.leftMargin: Theme.pad
                 anchors.rightMargin: Theme.pad
                 anchors.topMargin: Theme.gap
-                visible: page.loading
+                visible: page.loading && !page.loadFailed
                 count: 12
                 cellWidth: 200
                 cellHeight: 350
@@ -492,7 +465,7 @@ Item {
                 anchors.rightMargin: Theme.pad
                 anchors.topMargin: Theme.gap
                 anchors.bottomMargin: Theme.pad
-                visible: !page.loading
+                visible: !page.loading && !page.loadFailed
                 clip: true
                 cellWidth: 200
                 cellHeight: 350
