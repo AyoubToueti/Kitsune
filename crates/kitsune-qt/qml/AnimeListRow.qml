@@ -96,7 +96,10 @@ Item {
 
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: row.anime && row.anime.format
+                        // `!!` is load-bearing: `a && b` yields `b`, so a
+                        // missing `format` (undefined) would be assigned
+                        // straight to a bool and warn.
+                        visible: !!(row.anime && row.anime.format)
                         text: row.anime && row.anime.format ? row.anime.format : ""
                         color: Theme.inkFaint
                         font.pixelSize: 10
