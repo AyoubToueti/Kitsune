@@ -4,6 +4,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Qt5Compat.GraphicalEffects
 
 Rectangle {
     id: bar
@@ -92,8 +93,8 @@ Rectangle {
                 // Vector, so it stays sharp at any size or DPI; it needs the
                 // qtsvg image-format plugin at runtime (see flake.nix).
                 Item {
-                    width: 60
-                    height: 60
+                    width: 50
+                    height: 50
                     anchors.verticalCenter: parent.verticalCenter
                     scale: brandMouse.containsMouse ? 1.05 : 1.0
 
@@ -111,15 +112,71 @@ Rectangle {
                     }
                 }
 
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "Kitsune"
-                    color: brandMouse.containsMouse ? Theme.accent : Theme.ink
-                    font.pixelSize: 22
-                    font.bold: true
+Item {
+    id: brandTextItem
+    anchors.verticalCenter: parent.verticalCenter
+    implicitWidth: brandText.implicitWidth
+    implicitHeight: brandText.implicitHeight
 
-                    Behavior on color { ColorAnimation { duration: 150 } }
-                }
+    // Scale animation matching the logo hover effect
+    scale: brandMouse.containsMouse ? 1.05 : 1.0
+    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
+
+    // 0 = gradient at rest, 1 = gradient fully slid to the right
+    property real slide: 0
+
+    // Slide the gradient right while hovered — 700ms InOutCubic, silky
+    NumberAnimation {
+        target: brandTextItem
+        property: "slide"
+        to: 1
+        duration: 300
+        easing.type: Easing.InOutCubic
+        running: brandMouse.containsMouse
+    }
+
+    // Ease it back when the mouse leaves
+    NumberAnimation {
+        target: brandTextItem
+        property: "slide"
+        to: 0
+        duration: 500
+        easing.type: Easing.InOutCubic
+        running: !brandMouse.containsMouse && brandTextItem.slide > 0
+    }
+
+    // 1. Text mask source
+    Text {
+        id: brandText
+        text: "Kitsune"
+        font.pixelSize: 22
+        font.bold: true
+        visible: false
+    }
+
+    // 2. Gradient driven by `slide` — no Behaviors on the points needed
+    LinearGradient {
+        id: textGradient
+        anchors.fill: brandText
+        visible: false
+
+        start: Qt.point(brandText.width * 0.5 * brandTextItem.slide, 0)
+        end:   Qt.point(brandText.width + brandText.width * 0.5 * brandTextItem.slide, brandText.height)
+
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: "#F44949" } // Primary Fox Red
+            GradientStop { position: 0.5; color: "#FEC42D" } // Ear Yellow
+            GradientStop { position: 1.0; color: "#FEF7E0" } // Cream Highlight
+        }
+    }
+
+    // 3. Apply gradient mask
+    OpacityMask {
+        anchors.fill: brandText
+        source: textGradient
+        maskSource: brandText
+    }
+}
             }
 
             MouseArea {

@@ -42,7 +42,7 @@
         <img
           src={logo}
           alt=""
-          class="h-15 w-15 max-w-none object-contain drop-shadow-sm"
+          class="h-12 w-12 max-w-none object-contain drop-shadow-sm"
         />
       </div>
       <span
