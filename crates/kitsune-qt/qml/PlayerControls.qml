@@ -78,6 +78,18 @@ Item {
         return ""
     }
 
+    // The spans of the timeline mpv can serve from its cache right now.
+    //
+    // This is the buffered bar's source of truth. An empty list means mpv has
+    // not reported any yet (the first moments of a load), and the caller falls
+    // back to `bufferedFraction`.
+    function seekableSpans() {
+        if (!bar.player || bar.player.seekableRanges === undefined) return []
+        const raw = bar.player.seekableRanges
+        if (!raw || raw.length === undefined) return []
+        return raw
+    }
+
     function pos() { return bar.player !== null ? bar.player.position : 0 }
     function dur() { return bar.player !== null ? bar.player.duration : 0 }
     function isPaused() { return bar.player !== null ? bar.player.paused : true }
@@ -289,8 +301,45 @@ Item {
                         color: Theme.glassFillHover
                     }
 
-                    // Buffered Progress
+                    // Buffered Progress: what mpv can actually play right now.
+                    //
+                    // Drawn from the demuxer's own `seekable-ranges`, not from
+                    // the torrent's byte count. Those are different things: a
+                    // torrent can have 40% of its bytes with none of them
+                    // contiguous, and a seek inside a downloaded gap still has
+                    // to wait. mpv knows which spans it can serve instantly, so
+                    // the bar shows exactly those -- the same picture VLC gives
+                    // for a local file. `bufferedFraction` remains the fallback
+                    // for the hover-preview player and any load where mpv has
+                    // not reported ranges yet.
+                    Repeater {
+                        model: bar.seekableSpans()
+
+                        delegate: Rectangle {
+                            required property var modelData
+
+                            visible: bar.dur() > 0
+                            anchors.verticalCenter: parent.verticalCenter
+                            // A Repeater's parent is the Repeater, not the
+                            // track, so the geometry comes from `seek`.
+                            x: bar.dur() > 0
+                                ? (Math.min(modelData.start, bar.dur()) / bar.dur()) * seek.width
+                                : 0
+                            width: bar.dur() > 0
+                                ? Math.max(0, Math.min(modelData.end, bar.dur())
+                                    - Math.min(modelData.start, bar.dur()))
+                                    / bar.dur() * seek.width
+                                : 0
+                            height: 4
+                            radius: 2
+                            color: Theme.glassBorderHover
+                        }
+                    }
+
+                    // Fallback fill, used only while mpv reports no ranges (a
+                    // load in its first moments, or the preview player).
                     Rectangle {
+                        visible: bar.seekableSpans().length === 0
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width * Math.min(bar.bufferedFraction, 1)
                         height: 4

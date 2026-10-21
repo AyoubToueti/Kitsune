@@ -26,6 +26,15 @@ namespace {
 /// `reply_userdata` tagged onto the `chapter-list` observation, so
 /// `drainMpvEvents` can tell which observed property an event belongs to.
 constexpr uint64_t kChapterListObserveId = 1;
+
+/// How long mpv must be starved before the buffering overlay is shown.
+///
+/// mpv pauses for cache for a few hundred milliseconds quite often -- a
+/// demuxer hiccup, the seek index arriving late -- and showing a panel for
+/// each one makes a healthy episode look broken. Anything shorter than this
+/// is invisible to the viewer anyway. Long enough to swallow those, short
+/// enough that a genuine stall still reports promptly.
+constexpr qint64 kBufferingGraceMs = 700;
 }
 
 // The QML type name under the com.kitsune.app module.
@@ -210,6 +219,10 @@ MpvObject::MpvObject(QQuickItem* parent)
   , mpv{ mpv_create() }
   , mpv_gl(nullptr)
 {
+  // One switch for every high-volume diagnostic (per-event lines, mpv's own
+  // log messages, the 1 Hz sampler). Read once here so the event loop does not
+  // hit the environment on every tick.
+  verbose_ = qEnvironmentVariableIsSet("KITSUNE_MPV_LOG");
   if (mpv == nullptr) {
     throw std::runtime_error("could not create mpv context");
   }
@@ -242,6 +255,35 @@ MpvObject::MpvObject(QQuickItem* parent)
   // any other way. `nvdec-copy` (a copy-mode decoder) needs no interop, so
   // hardware decoding still works without this probe.
   mpv_set_option_string(mpv, "gpu-hwdec-interop", "no");
+
+  // --- streaming source -------------------------------------------------
+  //
+  // The source is a loopback HTTP server that blocks on missing pieces, so it
+  // is always "still growing". These are the flags that make mpv behave well
+  // against one:
+  //
+  // - `cache=yes` keeps a demuxer cache instead of reading the socket once.
+  //   Without it a seek back re-requests bytes and a brief stall ends the
+  //   stream, which is what made the player take so long to start and then
+  //   fight every seek.
+  // - `cache-pause-initial=no` is the START-LATENCY fix: mpv's default waits
+  //   for a full cache-fill pass before showing the first frame, which is
+  //   pointless when the file is arriving as it plays. With this off, playback
+  //   begins as soon as the demuxer has the header.
+  // - `cache-pause-wait=2` still pauses for a rebuffer mid-play, so a slow
+  //   swarm stalls cleanly rather than playing choppy audio.
+  // - The byte caps are BOUNDED on purpose. The webview player once ate all
+  //   RAM with an unbounded cache; 64 MiB forward and 16 MiB back cover a
+  //   normal seek window without growing with the file.
+  // - `demuxer-readahead-secs=30` matches the forward cap so the two limits
+  //   agree; whichever is hit first applies.
+  mpv_set_option_string(mpv, "cache", "yes");
+  mpv_set_option_string(mpv, "cache-pause", "yes");
+  mpv_set_option_string(mpv, "cache-pause-initial", "no");
+  mpv_set_option_string(mpv, "cache-pause-wait", "2");
+  mpv_set_option_string(mpv, "demuxer-max-bytes", "64MiB");
+  mpv_set_option_string(mpv, "demuxer-max-back-bytes", "16MiB");
+  mpv_set_option_string(mpv, "demuxer-readahead-secs", "30");
 
   connect(
     this, &MpvObject::onUpdate, this, &MpvObject::doUpdate, Qt::QueuedConnection);
@@ -376,20 +418,195 @@ MpvObject::pollState()
     changed = true;
   }
 
-  // A stall is either an explicit cache wait or an idle core. `core-idle` alone
-  // would also read true while the reader has PAUSED, which is not buffering --
-  // so a user pause is excluded.
+  // `paused-for-cache` is the ONLY reliable "waiting for data" signal.
+  //
+  // `core-idle` is NOT a buffering signal, despite reading like one. mpv sets
+  // it whenever the core is not actively rendering -- including "nothing is
+  // playing yet" AND while a frame is on screen and the core is merely waiting
+  // for the next vsync. Measured: `idle=1` in the sampler while `pos` advanced
+  // from 25.27s to 30.28s, i.e. the video was playing normally. Combining it
+  // into `buffering` therefore pinned the overlay over healthy playback, which
+  // is the "it says buffering although there is enough to play" report.
+  //
+  // It IS still needed for the one case it legitimately covers: the window
+  // between `loadfile` and the file being opened, when there is no duration yet
+  // and no cache to report. `duration_ <= 0` distinguishes that from normal
+  // playback, because the demuxer fills the duration as soon as it has the
+  // header.
   const bool cache_wait = mpv_flag(mpv, "paused-for-cache", false);
   const bool idle = mpv_flag(mpv, "core-idle", false);
-  const bool buffering = !paused_ && (cache_wait || idle);
+  const bool still_opening = idle && duration_ <= 0.0;
+  // A user pause is never buffering, even while the cache is empty.
+  const bool buffering = !paused_ && (cache_wait || still_opening);
   if (buffering != buffering_) {
+    // The overlay's on/off is logged because it is the thing the reader
+    // actually complains about: "it says buffering although it is playing".
+    // A transition here that does not line up with `pos` moving is the bug.
+    if (verbose_) {
+      qDebug("[mpv] buffering=%d (cache-wait=%d idle=%d dur=%.2fs pos=%.2fs)",
+             buffering ? 1 : 0,
+             cache_wait ? 1 : 0,
+             idle ? 1 : 0,
+             duration_,
+             position_);
+    }
     buffering_ = buffering;
+    buffering_since_ =
+      buffering ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
+    if (!buffering && buffering_delayed_) {
+      buffering_delayed_ = false;
+    }
     changed = true;
+  }
+
+  // Hold the overlay until the stall proves it is real. A sub-grace pause is
+  // a demuxer hiccup, not something to tell the reader about; showing it makes
+  // the panel flash over healthy video.
+  if (buffering_ && !buffering_delayed_) {
+    const auto held = std::chrono::steady_clock::now() - buffering_since_;
+    if (held >= std::chrono::milliseconds(kBufferingGraceMs)) {
+      buffering_delayed_ = true;
+      changed = true;
+      if (verbose_) {
+        qDebug("[mpv] buffering overlay shown after %lldms of stall",
+               static_cast<long long>(
+                 std::chrono::duration_cast<std::chrono::milliseconds>(held)
+                   .count()));
+      }
+    }
+  }
+
+  // --- streaming diagnostics ---------------------------------------------
+  //
+  // `demuxer-cache-state` is a node map. It is only present while a file is
+  // open, so a failed read means "nothing playing" and the values reset --
+  // otherwise a finished episode's buffer would be reported for the next one.
+  qint64 forward = 0;
+  bool eof = false;
+  int percent = -1;
+  QVariantList ranges;
+  mpv_node cache_node{};
+  if (mpv_get_property(mpv,
+                       "demuxer-cache-state",
+                       MPV_FORMAT_NODE,
+                       &cache_node) >= 0) {
+    const QVariantMap cache = node_to_variant(cache_node).toMap();
+    mpv_free_node_contents(&cache_node);
+
+    forward = cache.value("fw-bytes").toLongLong();
+    eof = cache.value("eof").toBool();
+    if (cache.contains("cache-buffering-state")) {
+      percent = cache.value("cache-buffering-state").toInt();
+    }
+
+    // `seekable-ranges` is the demuxer's own answer to "what can be played
+    // without waiting for the network", which is what the buffered bar should
+    // draw. Each entry is `{ start, end }` in seconds; `end` is exclusive.
+    const QVariantList raw = cache.value("seekable-ranges").toList();
+    for (const QVariant& entry : raw) {
+      const QVariantMap range = entry.toMap();
+      if (!range.contains("start") || !range.contains("end")) {
+        continue;
+      }
+      const double start = range.value("start").toDouble();
+      const double end = range.value("end").toDouble();
+      // mpv reports a 1e99 sentinel for "to the end of the file"; clamp it so
+      // the bar can divide by the duration without an infinity.
+      if (end > start) {
+        ranges.append(QVariantMap{ { "start", start }, { "end", end } });
+      }
+    }
+  }
+  if (forward != cache_forward_bytes_ || eof != cache_eof_ ||
+      percent != cache_buffering_percent_) {
+    cache_forward_bytes_ = forward;
+    cache_eof_ = eof;
+    cache_buffering_percent_ = percent;
+    changed = true;
+  }
+  if (ranges != seekable_ranges_) {
+    seekable_ranges_ = ranges;
+    // A separate signal because the bar is the only consumer and it redraws
+    // more often than the transport controls need to.
+    emit seekableRangesChanged();
+  }
+
+  // Time to first frame: a positive `time-pos` plus a configured video output
+  // means a frame is being shown, not merely decoded into a cache. Measured
+  // once per load so the overlay can report the real start latency.
+  if (!first_frame_seen_ && load_started_.time_since_epoch().count() != 0 &&
+      position_ > 0.0 && mpv_flag(mpv, "vo-configured", false)) {
+    first_frame_seen_ = true;
+    const auto elapsed = std::chrono::steady_clock::now() - load_started_;
+    time_to_first_frame_ms_ =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    changed = true;
+    if (qEnvironmentVariableIsSet("KITSUNE_MPV_LOG")) {
+      qDebug("first frame after %lld ms (fw-bytes=%lld)",
+             static_cast<long long>(time_to_first_frame_ms_),
+             static_cast<long long>(cache_forward_bytes_));
+    }
+  }
+
+  // --- 1 Hz sampler -----------------------------------------------------
+  //
+  // The one line that answers "the file is 40% downloaded, why is it not
+  // playing?". It pairs the player's own view (position, what the demuxer can
+  // serve) with the reader's view (how many bytes are on disk, reported by the
+  // Rust side when it polls stats). Reading both lines for the same second is
+  // the comparison that turns a guess into a diagnosis:
+  //
+  //   cache-end=3.2s seekable=1 last-end=3.0s fw-bytes=0.4MiB idle=yes
+  //   file_progress[2]=950MB / 1400MB
+  //
+  // A small cache-end next to a large file_progress means the bytes on disk
+  // are NOT the bytes mpv is reading -- the file selection, not the swarm.
+  //
+  // Bucketed on whole seconds so it fires exactly once per second even though
+  // `pollState` runs at 200ms.
+  if (verbose_ && load_started_.time_since_epoch().count() != 0) {
+    const qint64 bucket = msSinceLoad() / 1000;
+    if (bucket != last_sample_bucket_) {
+      last_sample_bucket_ = bucket;
+      double cache_end = -1.0;
+      mpv_double(mpv, "demuxer-cache-time", &cache_end);
+      double last_seekable = -1.0;
+      for (const QVariant& entry : seekable_ranges_) {
+        const double end = entry.toMap().value("end").toDouble();
+        // Ignore mpv's "to EOF" sentinel when reporting the edge.
+        if (end < 1e90 && end > last_seekable) {
+          last_seekable = end;
+        }
+      }
+      qDebug(
+        "[mpv] t=+%llds pos=%.2fs dur=%.2fs cache-end=%.2fs seekable=%d "
+        "last-end=%.2fs fw-bytes=%.1fMiB cache-pct=%d idle=%d",
+        static_cast<long long>(bucket),
+        position_,
+        duration_,
+        cache_end,
+        static_cast<int>(seekable_ranges_.size()),
+        last_seekable,
+        static_cast<double>(cache_forward_bytes_) / (1024.0 * 1024.0),
+        cache_buffering_percent_,
+        mpv_flag(mpv, "core-idle", false) ? 1 : 0);
+    }
   }
 
   if (changed) {
     emit stateChanged();
   }
+}
+
+qint64
+MpvObject::msSinceLoad() const
+{
+  if (load_started_.time_since_epoch().count() == 0) {
+    return -1;
+  }
+  const auto elapsed = std::chrono::steady_clock::now() - load_started_;
+  return std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
 }
 
 void
@@ -435,12 +652,109 @@ MpvObject::drainMpvEvents()
         }
       }
       if (qEnvironmentVariableIsSet("KITSUNE_MPV_LOG")) {
-        qDebug("chapter-list change: entries=%d", next.size());
+        // `%lld` with an explicit cast: `QVariantList::size()` returns
+        // `qsizetype` (a 64-bit long on this platform), not `int`. Passing it
+        // to `%d` is undefined behaviour, not just a compiler grumble -- it
+        // reads the wrong half of the argument.
+        qDebug("chapter-list change: entries=%lld",
+               static_cast<long long>(next.size()));
       }
       if (next != chapterList_) {
         chapterList_ = next;
         emit chapterListChanged();
       }
+      continue;
+    }
+
+    // Everything below is diagnostic. It is what turns "it just buffers" into
+    // a reason: mpv reports WHY a load failed in the END_FILE event, and until
+    // this existed that reason was dropped on the floor.
+    switch (event->event_id) {
+      case MPV_EVENT_START_FILE:
+        if (verbose_) {
+          qDebug("[mpv] start-file (t=+%lldms)",
+                 static_cast<long long>(msSinceLoad()));
+        }
+        break;
+
+      case MPV_EVENT_FILE_LOADED:
+        if (verbose_) {
+          double duration = 0.0;
+          mpv_double(mpv, "duration", &duration);
+          qDebug("[mpv] file-loaded after %lldms (duration=%.3fs)",
+                 static_cast<long long>(msSinceLoad()), duration);
+        }
+        break;
+
+      case MPV_EVENT_PLAYBACK_RESTART:
+        if (verbose_) {
+          qDebug("[mpv] playback-restart after %lldms",
+                 static_cast<long long>(msSinceLoad()));
+        }
+        break;
+
+      case MPV_EVENT_VIDEO_RECONFIG:
+        if (verbose_) {
+          qDebug("[mpv] video-reconfig after %lldms",
+                 static_cast<long long>(msSinceLoad()));
+        }
+        break;
+
+      case MPV_EVENT_END_FILE: {
+        // THE important one. `reason` distinguishes a normal EOF from an
+        // error, and `error` carries mpv's own text ("Failed to open", HTTP
+        // 500, "no video", ...). Always logged, not just under
+        // KITSUNE_MPV_LOG: a failed load is never noise.
+        const auto* end = static_cast<mpv_event_end_file*>(event->data);
+        const char* reason = "unknown";
+        const char* error = "";
+        if (end != nullptr) {
+          switch (end->reason) {
+            case MPV_END_FILE_REASON_EOF:
+              reason = "eof";
+              break;
+            case MPV_END_FILE_REASON_STOP:
+              reason = "stop";
+              break;
+            case MPV_END_FILE_REASON_QUIT:
+              reason = "quit";
+              break;
+            case MPV_END_FILE_REASON_ERROR:
+              reason = "error";
+              break;
+            case MPV_END_FILE_REASON_REDIRECT:
+              reason = "redirect";
+              break;
+            default:
+              break;
+          }
+          if (end->error != MPV_ERROR_SUCCESS) {
+            error = mpv_error_string(end->error);
+          }
+        }
+        if (error[0] != '\0') {
+          qWarning("[mpv] END_FILE reason=%s error=%s (after %lldms)", reason,
+                   error, static_cast<long long>(msSinceLoad()));
+        } else if (verbose_) {
+          qDebug("[mpv] END_FILE reason=%s (after %lldms)", reason,
+                 static_cast<long long>(msSinceLoad()));
+        }
+        break;
+      }
+
+      case MPV_EVENT_LOG_MESSAGE:
+        if (verbose_) {
+          const auto* msg = static_cast<mpv_event_log_message*>(event->data);
+          if (msg != nullptr) {
+            // One line per message: mpv's text already ends in a newline.
+            qDebug("[mpv/%s] %s", msg->prefix,
+                   QString::fromUtf8(msg->text).trimmed().toUtf8().constData());
+          }
+        }
+        break;
+
+      default:
+        break;
     }
   }
 }
@@ -458,10 +772,30 @@ MpvObject::command(const QVariant& params)
   // context is created on the first rendered frame -- after the QML item is
   // built -- so a load from `Component.onCompleted` races it and sometimes
   // loses. Queuing here fixes every caller at once.
-  if (!renderReady_ && list.size() > 0
-      && list.first().toString() == QLatin1String("loadfile")) {
+  const bool isLoad =
+    list.size() > 0 && list.first().toString() == QLatin1String("loadfile");
+  if (!renderReady_ && isLoad) {
     pendingLoad_ = params;
     return;
+  }
+  // Start the time-to-first-frame clock at the moment of the REQUEST, and
+  // forget the previous load's measurement, so a second episode's number is
+  // its own rather than the first one's.
+  if (isLoad) {
+    load_started_ = std::chrono::steady_clock::now();
+    first_frame_seen_ = false;
+    time_to_first_frame_ms_ = 0;
+    last_sample_bucket_ = -1;
+    // The URL is the one thing that cannot be inferred from any later line:
+    // it says WHICH file index and which bridge port this load used, which is
+    // how a wrong-file selection or a stale port shows up immediately. Gated
+    // on verbose because the hover-preview player loads files too, and those
+    // would otherwise drown the main timeline.
+    if (verbose_) {
+      qDebug("[mpv] loadfile t=+0ms %s",
+             list.size() > 1 ? list.at(1).toString().toUtf8().constData()
+                             : "(no url)");
+    }
   }
 
   QList<QByteArray> args;

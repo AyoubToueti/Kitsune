@@ -157,12 +157,36 @@ Item {
         backend.addMagnet(release.magnetUri)
     }
 
+    // The buffering overlay's second line: the numbers that tell "the swarm is
+    // slow" apart from "the player is blocked on a range". `cacheForwardBytes`
+    // is mpv's own read-ahead, so zero here with a climbing file percentage
+    // means the player is waiting on a specific piece, not merely on bandwidth.
+    function bufferDetail(p) {
+        if (!p) return ""
+        const parts = []
+        const forward = p.cacheForwardBytes || 0
+        parts.push(forward > 0
+            ? (forward / 1048576).toFixed(1) + " MiB buffered ahead"
+            : "waiting for the first pieces")
+        if (page.progress !== null) {
+            const total = page.progress.totalBytes || 0
+            const done = page.progress.progressBytes || 0
+            if (total > 0) parts.push("download " + Math.floor((done / total) * 100) + "%")
+            const speed = page.progress.downloadMbps || 0
+            if (speed > 0) parts.push(speed.toFixed(1) + " MiB/s")
+        }
+        return parts.join("  \u00b7  ")
+    }
+
     function play(idx) {
         if (torrentId < 0) return
         page.chosenIdx = idx
-        // Narrow the download to this file, then resolve its stream URL.
-        backend.setOnlyFiles(torrentId, idx)
-        backend.getStreamUrl(torrentId, idx)
+        // ONE call: it narrows the download to this file, waits until the
+        // engine has accepted that, warms the head and tail, and only then
+        // answers with the URL. Split into two calls the selection raced the
+        // torrent's initial hash and was dropped, so the engine downloaded
+        // files nobody was watching.
+        backend.prepareStream(torrentId, idx)
     }
 
     function togglePause() {
@@ -272,7 +296,11 @@ Item {
                 width: Math.min(340, parent.width - 64)
                 height: watchBufferFox.implicitHeight + 24
 
-                visible: player.buffering === true
+                // `bufferingDelayed`, not `buffering`: mpv's raw flag flickers
+                // on sub-second demuxer hiccups and would flash this panel over
+                // healthy video. The delayed flag only reports a stall that
+                // persisted. See the property's comment in mpvitem.h.
+                visible: player.bufferingDelayed === true
 
                 Rectangle {
                     anchors.fill: parent
@@ -290,7 +318,7 @@ Item {
                     kind: "loading"
                     showActions: false
                     title: "Buffering\u2026"
-                    message: ""
+                    message: page.bufferDetail(player)
                     artWidth: 88
                 }
             }

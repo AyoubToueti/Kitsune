@@ -42,6 +42,50 @@ const LIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// How often to re-check whether a torrent has gone live.
 const LIVE_POLL: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// Bytes to request when warming the HEAD of a stream.
+///
+/// The head only exists to make the first pieces high-priority so the demuxer
+/// can identify the container; a couple of MiB is plenty. It is BOUNDED on
+/// purpose: the earlier `bytes=0-` meant "everything from here to EOF", so a
+/// cold start had to download the full drain cap before a URL was returned --
+/// measured at 13.9s for 8.7MiB, which dominated the start latency.
+const WARM_HEAD_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Bytes to request when warming the TAIL of a stream.
+///
+/// The tail must cover the seek index: Matroska `Cues` for a two-hour episode
+/// can run to hundreds of KiB, and mpv seeks there before it will play past
+/// the first few seconds. 4MiB is comfortably above one piece plus the index.
+const WARM_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Cap on the HEAD request.
+///
+/// This one IS awaited, so it directly delays the URL. Kept tight for that
+/// reason: a cold swarm should cost a few seconds at most, not the full
+/// drain cap.
+const WARM_HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Cap on one warm-up request.
+///
+/// A warm-up must never delay playback indefinitely, so a dead swarm costs a
+/// bounded wait rather than a hang. It is longer than it looks like it should
+/// be because the warm-up now really downloads: the tail alone is up to
+/// [`WARM_BYTES`] (4 MiB), which at a modest 1 MiB/s is four seconds on its
+/// own. Five seconds used to be enough when only headers were awaited; it
+/// would have cut a legitimate tail fetch off mid-piece.
+const WARM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How much of a warm-up response body to actually read.
+///
+/// The warm-up must FETCH bytes, not merely request them: awaiting headers
+/// alone pulled nothing and left the player blocked on the file's tail index
+/// (see [`fetch_first_chunk`]). But reading the whole remainder of the file
+/// would be worse, so the drain stops here.
+///
+/// Matches [`WARM_TAIL_BYTES`] so a tail request of that size can complete
+/// fully; it is only a backstop for the unbounded head range on a tiny file.
+const WARM_DRAIN_BYTES: u64 = WARM_TAIL_BYTES;
+
 /// How often to check whether an external player has exited.
 ///
 /// A second is imperceptible for cleanup that happens after a window closes,
@@ -188,6 +232,18 @@ struct Inner {
     /// falls back to the built-in defaults, which keeps the existing suite
     /// hermetic and free of disk access.
     settings: Option<Arc<SettingsStore>>,
+    /// `(torrent, file)` pairs with a warm-up already in flight.
+    ///
+    /// The watch page calls `prepare_stream` several times for the same file
+    /// (measured: four calls inside one second). Each one used to spawn its
+    /// own head AND tail reader, and librqbit shares the piece queue EQUALLY
+    /// between open readers (`iter_next_pieces` round-robins them), so nine
+    /// readers turned the tail -- the one range mpv blocks on for the Matroska
+    /// index -- into 1/9th priority. That is why a torrent with 91MB down and
+    /// 23 healthy peers still sat at `00:00 / 00:00`.
+    ///
+    /// Synchronous and never held across an await, so a plain mutex.
+    warmups: Mutex<HashSet<(usize, usize)>>,
 }
 
 impl PlayerState {
@@ -198,6 +254,7 @@ impl PlayerState {
                 player: Mutex::new(resolve_player(None)),
                 holds: Mutex::new(Holds::default()),
                 settings: None,
+                warmups: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -216,6 +273,7 @@ impl PlayerState {
                 player: Mutex::new(player),
                 holds: Mutex::new(Holds::default()),
                 settings: Some(store),
+                warmups: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -278,6 +336,15 @@ impl PlayerState {
 
     /// Start the torrent engine and stream bridge, once.
     async fn start_session(download_dir: PathBuf) -> Result<Session> {
+        // Logged once, and only once per process, because the whole design
+        // assumes a single session: two sessions would bind two bridges, run
+        // two DHTs, and split the piece queue between them. Seeing this line
+        // twice means that assumption broke.
+        tracing::info!(
+            "start_session: creating the torrent session (dir={})",
+            download_dir.display()
+        );
+
         let engine = TorrentEngine::start(EngineConfig::new(download_dir))
             .await
             .context("failed to start the torrent session")?;
@@ -455,6 +522,137 @@ impl PlayerState {
         }
 
         Ok(session.bridge.url_for(torrent_id, file_idx))
+    }
+
+    /// Restrict the download to `file_idx`, warm both ends of it, and return
+    /// the URL a player should open.
+    ///
+    /// This is the play path the Qt app uses, and it exists because three
+    /// separate things have to happen in a specific ORDER for playback to
+    /// start promptly:
+    ///
+    /// 1. **Select the file** -- and WAIT for the selection to be accepted.
+    ///    librqbit refuses `update_only_files` while it is initializing, and a
+    ///    magnet is always initializing right after it is added. The old code
+    ///    fired the selection and the URL request as independent tasks, so the
+    ///    selection silently failed and librqbit kept downloading the torrent
+    ///    in ITS order: a batch release filled its first file while the
+    ///    episode the reader was waiting on sat at zero, and the progress bar
+    ///    climbed past 20% with nothing to play.
+    /// 2. **Warm the head** -- one small ranged read, so the first pieces are
+    ///    the highest-priority ones.
+    /// 3. **Warm the tail** -- one small ranged read of the END of the file.
+    ///    A player resolves duration and the seek index (Matroska `Cues`, or a
+    ///    trailing MP4 `moov`) by reading the end of the stream. librqbit
+    ///    prioritises pieces around OPEN readers, so asking for the tail up
+    ///    front is what stops the player from blocking on a range the torrent
+    ///    has not downloaded yet -- the actual cause of "20% downloaded and
+    ///    still not playing".
+    ///
+    /// Every step is best-effort: a failure is logged and the URL is still
+    /// returned, because the buffering UI can show a slow swarm but cannot
+    /// recover from a hung command.
+    pub async fn prepare_stream(&self, torrent_id: usize, file_idx: usize) -> Result<String> {
+        // Stage timing, logged at `info`: this function is the whole reason a
+        // play can take a long time before mpv is even asked to open a URL, so
+        // its stages must be attributable. The sample below is what a report
+        // should quote:
+        //   prepare_stream: torrent=1 file=2 starting
+        //   set_only_files accepted in 1200ms (state became live)
+        //   warm head ok in 35ms
+        //   warm-up finished in 2100ms total
+        //   prepare_stream: torrent=1 file=2 ready in 3400ms -> http://...
+        let started = std::time::Instant::now();
+        tracing::info!("prepare_stream: torrent={torrent_id} file={file_idx} starting");
+
+        let session = match self.session().await {
+            Ok(session) => session,
+            Err(err) => {
+                tracing::error!(
+                    "prepare_stream: could not start the session after {}ms: {err:#}",
+                    started.elapsed().as_millis()
+                );
+                return Err(err);
+            }
+        };
+
+        // 1. File selection. A torrent that never accepts it is a warning, not
+        //    an error: playback still works, just with the engine's own order.
+        //    The engine logs its own retry transitions; this line records how
+        //    long the caller waited and whether the wait succeeded.
+        let select_at = std::time::Instant::now();
+        match session.engine.set_only_files(torrent_id, &[file_idx]).await {
+            Ok(()) => tracing::info!(
+                "prepare_stream: set_only_files({file_idx}) ACCEPTED after {}ms",
+                select_at.elapsed().as_millis()
+            ),
+            Err(err) => tracing::warn!(
+                "prepare_stream: set_only_files({file_idx}) NOT accepted after {}ms, \
+                 engine keeps its own file order: {err:#}",
+                select_at.elapsed().as_millis()
+            ),
+        }
+
+        // 2. Warm-up, DETACHED. Nothing below this point may delay the URL.
+        //
+        // Measured: awaiting a cold head cost the full 20s timeout and delayed
+        // playback by exactly that much --
+        //   warm head FAILED after 20000ms (... stopped after 1048576 bytes)
+        //   prepare_stream: ready in 20019ms
+        // A cold torrent has no pieces to serve, so the warm-up could only
+        // wait. mpv is perfectly capable of issuing its own first request; the
+        // warm-up is a PRIORITY HINT, and a hint must never be a gate.
+        let url = session.bridge.url_for(torrent_id, file_idx);
+
+        // The file length comes from the engine's metadata. It used to be
+        // probed over HTTP (`Range: bytes=0-0`), but that request needs piece
+        // 0, so on a cold torrent it blocks exactly like the head did. The
+        // metadata is already resolved by the time we get here.
+        let length = session
+            .engine
+            .torrent_files(torrent_id)
+            .into_iter()
+            .find(|(idx, _, _)| *idx == file_idx)
+            .map(|(_, _, len)| len);
+
+        // Only ONE warm-up per (torrent, file). Repeated `prepare_stream`
+        // calls for the same episode otherwise open a new pair of readers
+        // each time, and librqbit splits the piece queue EQUALLY between
+        // open readers -- so the tail, the range mpv actually blocks on,
+        // ends up with a fraction of the bandwidth it needs.
+        let already_warming = {
+            let mut warmups = self.inner.warmups.lock().expect("warmups mutex poisoned");
+            !warmups.insert((torrent_id, file_idx))
+        };
+
+        if already_warming {
+            tracing::info!(
+                "prepare_stream: torrent={torrent_id} file={file_idx} ready in {}ms -> {url} \
+                 (warm-up already running, not spawning another)",
+                started.elapsed().as_millis()
+            );
+            return Ok(url);
+        }
+
+        let warm_url = url.clone();
+        let state = self.clone();
+        tokio::spawn(async move {
+            warm_stream(&warm_url, length).await;
+            // Release the guard once the warm-up has finished, so a later
+            // replay of the same episode can warm again (the pieces may have
+            // been evicted, or the torrent re-added with a fresh id).
+            if let Ok(mut warmups) = state.inner.warmups.lock() {
+                warmups.remove(&(torrent_id, file_idx));
+            }
+        });
+
+        tracing::info!(
+            "prepare_stream: torrent={torrent_id} file={file_idx} ready in {}ms -> {url} \
+             (warm-up detached, len={length:?})",
+            started.elapsed().as_millis()
+        );
+
+        Ok(url)
     }
 
     /// A download-progress snapshot for `torrent_id`, for the watch page.
@@ -650,6 +848,185 @@ impl Default for PlayerState {
 /// A local `.torrent` resolves on the first poll. The loop exists for the
 /// case where it does not, so the command fails with a clear message instead
 /// of returning an empty file list the UI cannot use.
+/// Ask the bridge for the first and last chunk of a stream, then drop both.
+///
+/// librqbit prioritises pieces around each OPEN reader, so a ranged request
+/// makes the pieces it names high priority. Doing this for the head AND the
+/// tail is what lets a player start immediately: it needs the head to demux
+/// and the tail to know the duration and seek index, and without the tail
+/// request it can block on a range that only arrives once the rest of the
+/// torrent is nearly done -- the "20% downloaded and still black" symptom.
+///
+/// The body is never read, and every failure is swallowed: this is a
+/// performance hint, and a torrent with no peers yet must not fail playback
+/// because of it.
+async fn warm_stream(url: &str, length: Option<u64>) {
+    // The three stages below are timed individually and logged at `info`:
+    // they are the first thing that can block AFTER the file selection, and
+    // without numbers here a slow start cannot be attributed to the head
+    // request, the length probe, or the tail request.
+    let started = std::time::Instant::now();
+
+    let client = match reqwest::Client::builder().timeout(WARM_TIMEOUT).build() {
+        Ok(client) => client,
+        Err(err) => {
+            tracing::warn!("warm-up client unavailable, skipping warm-up: {err:#}");
+            return;
+        }
+    };
+
+    // Head. BOUNDED twice over: at WARM_HEAD_BYTES so it cannot become an
+    // "everything to EOF" download, and at its OWN short timeout so a cold
+    // torrent (nothing to serve yet) gives up quickly instead of waiting out
+    // the long tail budget. This is the caller's remaining latency, even
+    // though the whole warm-up is detached, because it competes for pieces
+    // with mpv's first read.
+    let head_at = std::time::Instant::now();
+    let head_range = format!("bytes=0-{}", WARM_HEAD_BYTES.saturating_sub(1));
+    let head_client = reqwest::Client::builder()
+        .timeout(WARM_HEAD_TIMEOUT)
+        .build()
+        .unwrap_or(client.clone());
+    match fetch_first_chunk(&head_client, url, &head_range).await {
+        Ok(bytes) => tracing::info!(
+            "warm head ok in {}ms, fetched {bytes} bytes (range={head_range})",
+            head_at.elapsed().as_millis()
+        ),
+        Err(err) => tracing::warn!(
+            "warm head FAILED after {}ms (range={head_range}, expected on a cold \
+             torrent -- mpv will request it itself): {err:#}",
+            head_at.elapsed().as_millis()
+        ),
+    }
+
+    // Length comes from the engine's METADATA, not from an HTTP probe.
+    //
+    // The probe was `Range: bytes=0-0`, which needs piece 0 -- so on a cold
+    // torrent it blocked exactly like the head did, and the whole warm-up sat
+    // there until the client timeout. The caller already knows the length from
+    // the resolved torrent info, so no request is needed.
+    match length {
+        Some(len) => tracing::info!("warm length from metadata: len={len} bytes"),
+        None => tracing::warn!(
+            "warm length unknown for file (index not found in metadata); \
+             head only, no tail warm-up"
+        ),
+    }
+
+    // Tail. This is the one that MATTERS -- mpv seeks to the end of the file
+    // for the Matroska `Cues` index before it will play past the first few
+    // seconds -- but it must NOT be awaited.
+    //
+    // Measured: awaiting a cold tail cost the full 20s timeout and delayed the
+    // URL by that much, because mpv then did its own tail seek anyway. So the
+    // fetch is spawned detached: it pulls the pieces in the background while
+    // mpv is starting, and the URL is returned immediately. Whatever arrives
+    // before mpv asks is free progress; whatever does not, mpv waits for on its
+    // own request, exactly as it would have without us.
+    match length {
+        Some(len) if len > WARM_TAIL_BYTES => {
+            let start = len - WARM_TAIL_BYTES;
+            let range = format!("bytes={start}-");
+            let url = url.to_string();
+            tokio::spawn(async move {
+                let tail_at = std::time::Instant::now();
+                let result = match reqwest::Client::builder().timeout(WARM_TIMEOUT).build() {
+                    Ok(client) => fetch_first_chunk(&client, &url, &range).await,
+                    Err(err) => Err(anyhow!("warm-up client unavailable: {err:#}")),
+                };
+                match result {
+                    Ok(0) => tracing::warn!(
+                        "warm tail delivered 0 bytes after {}ms (range={range}) -- \
+                         the seek index will not be ready",
+                        tail_at.elapsed().as_millis()
+                    ),
+                    Ok(bytes) => tracing::info!(
+                        "warm tail ok in {}ms, fetched {bytes} bytes (range={range})",
+                        tail_at.elapsed().as_millis()
+                    ),
+                    Err(err) => tracing::warn!(
+                        "warm tail FAILED after {}ms (range={range}): {err:#}",
+                        tail_at.elapsed().as_millis()
+                    ),
+                }
+            });
+        }
+        Some(len) => tracing::info!("warm tail skipped: file is only {len} bytes"),
+        None => {}
+    }
+
+    tracing::info!(
+        "warm-up finished in {}ms total ({url})",
+        started.elapsed().as_millis()
+    );
+}
+
+
+
+/// Issue one ranged request and READ the body, discarding it.
+///
+/// This used to await only `send()` (headers) and drop the response. That was
+/// a real bug, proven by the player log:
+///
+///   [mpv/ffmpeg] stream level seek from 9469952 to 1260895420
+///   (Buffering) AV: 00:00:07 / 00:23:20 (1%) Cache: 0.0s/1KB
+///
+/// mpv decodes a few seconds, then seeks to the very end of the file for the
+/// Matroska `Cues` index and blocks. The warm-up was supposed to have fetched
+/// that range first, but awaiting headers alone fetched NOTHING: librqbit
+/// answers headers immediately, the response was dropped, and the bytes were
+/// never requested from peers. mpv then asked for the same range and waited.
+///
+/// Draining the body is what actually pulls the pieces, and therefore what
+/// makes the tail index present before the player needs it. The drain is
+/// bounded by [`WARM_DRAIN_BYTES`] and by the client's timeout, so a torrent
+/// with no peers still cannot hang playback.
+async fn fetch_first_chunk(
+    client: &reqwest::Client,
+    url: &str,
+    range: &str,
+) -> Result<u64> {
+    let mut response = client
+        .get(url)
+        .header(reqwest::header::RANGE, range)
+        .send()
+        .await
+        .with_context(|| format!("warm-up request {range} failed"))?;
+
+    // A non-success status means the range was not served; draining would
+    // just read an error page.
+    let status = response.status();
+    if !status.is_success() {
+        return Err(anyhow!("warm-up request {range} returned HTTP {status}"));
+    }
+
+    // Read and discard, stopping at the cap. `chunk()` yields as bytes arrive,
+    // so this returns as soon as the requested span is in hand rather than
+    // waiting for the whole (possibly huge) remainder of the file.
+    let mut drained: u64 = 0;
+    loop {
+        if drained >= WARM_DRAIN_BYTES {
+            break;
+        }
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                drained += chunk.len() as u64;
+            }
+            // Clean end of body: the requested range was fully delivered.
+            Ok(None) => break,
+            Err(err) => {
+                // Partial data is still useful: the pieces already delivered
+                // stay on disk and keep their priority. Report what arrived.
+                return Err(anyhow!(
+                    "warm-up {range} stopped after {drained} bytes: {err:#}"
+                ));
+            }
+        }
+    }
+
+    Ok(drained)
+}
+
 async fn wait_for_files(engine: &TorrentEngine, id: usize) -> Result<Vec<TorrentFile>> {
     let deadline = tokio::time::Instant::now() + METADATA_TIMEOUT;
 

@@ -535,9 +535,12 @@ Popup {
         return ""
     }
 
+    // `bufferingDelayed`, not `buffering`: the raw flag flickers on
+    // sub-second demuxer hiccups and made the panel flash over healthy
+    // video. The delayed flag only reports a stall that persisted.
     function playerBuffering() {
         const p = playerLoader.item
-        return p !== null && p.buffering === true
+        return p !== null && p.bufferingDelayed === true
     }
 
     function loadStream() {
@@ -745,8 +748,9 @@ Popup {
     function play(idx) {
         if (torrentId < 0) return
         chosenIdx = idx
-        backend.setOnlyFiles(torrentId, idx)
-        backend.getStreamUrl(torrentId, idx)
+        // ONE call: select the file, wait for the engine to accept it, warm
+        // both ends, then resolve the URL. See Backend::prepareStream.
+        backend.prepareStream(torrentId, idx)
     }
 
     function togglePause() {
@@ -986,7 +990,6 @@ Popup {
     }
 
     property string downloadStatus: ""
-    function readyFraction() { return 0.05 }
 
     Timer {
         interval: 500

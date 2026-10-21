@@ -36,6 +36,30 @@ fn main() {
     // Pinning OpenGL removes that intermittent black-video-with-sound.
     force_opengl_rhi();
 
+    // Install the process-wide `tracing` sink BEFORE anything logs.
+    //
+    // This was missing: `kitsune-qt` emitted `tracing::warn!`/`debug!` from
+    // the torrent and player paths, but no subscriber was ever installed, so
+    // every one of those lines was silently discarded. That is why a stuck
+    // player produced no diagnostics at all.
+    //
+    // It writes to stdout (for `cargo run`) and to a rotating file under the
+    // OS data directory, exactly like the Tauri build, so the log survives a
+    // closed terminal and can be attached to a bug report.
+    //
+    // Verbosity knobs, both opt-in so a normal run stays quiet:
+    //   RUST_LOG=debug            -- our own code, including the 1 Hz player
+    //                                sampler
+    //   KITSUNE_MPV_LOG=1         -- mpv's own log messages + player events
+    //
+    // The guard MUST live for the whole of `main`: dropping it stops the
+    // logging thread and truncates buffered lines.
+    let _log_guard = kitsune_core::diagnostics::logging::init_logging();
+    eprintln!(
+        "kitsune-qt: logging to {}",
+        kitsune_core::diagnostics::logging::log_file_path().display()
+    );
+
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
 

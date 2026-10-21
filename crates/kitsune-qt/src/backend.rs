@@ -227,6 +227,19 @@ pub mod qobject {
         #[cxx_name = "getStreamUrl"]
         fn get_stream_url(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64);
 
+        /// Select `file_idx`, wait until the selection is in force, warm both
+        /// ends of the file, and return the URL to play.
+        ///
+        /// This is the play path: it exists because selecting the file and
+        /// resolving the URL have to happen IN ORDER. Fired as two commands
+        /// the selection lost its race with the torrent's initial hash and was
+        /// silently dropped, so the engine downloaded its own first file while
+        /// the reader watched a progress bar climb towards an episode that had
+        /// not been fetched at all.
+        #[qinvokable]
+        #[cxx_name = "prepareStream"]
+        fn prepare_stream(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64);
+
         /// Pause a torrent's transfer.
         #[qinvokable]
         #[cxx_name = "pauseTorrent"]
@@ -1455,6 +1468,48 @@ impl qobject::Backend {
         });
     }
 
+    fn prepare_stream(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64) {
+        let id = torrent_id as usize;
+        let file = file_idx as usize;
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            // Timed here as well as inside `prepare_stream`: the difference
+            // between the two numbers is scheduling/queueing overhead, and a
+            // large gap there would point at the runtime rather than the
+            // engine.
+            tracing::info!("backend: prepareStream requested torrent={id} file={file}");
+            let started = std::time::Instant::now();
+            // One call, not two: the selection must be in force before the
+            // URL is handed to the player, or the engine downloads a file
+            // nobody is watching. `prepare_stream` waits for the torrent to
+            // leave initializing, verifies the selection, then warms the head
+            // and tail so the player is not left blocking on a range.
+            match player.prepare_stream(id, file).await {
+                Ok(url) => {
+                    tracing::info!(
+                        "backend: prepareStream completed torrent={id} file={file} in {}ms",
+                        started.elapsed().as_millis()
+                    );
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.stream_url_ready(id as i64, file as i64, QString::from(&url))
+                    });
+                }
+                Err(err) => {
+                    tracing::error!(
+                        "backend: prepareStream FAILED torrent={id} file={file} after {}ms: {err:#}",
+                        started.elapsed().as_millis()
+                    );
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.stream_url_failed(QString::from(&message)));
+                }
+            }
+        });
+    }
+
     fn pause_torrent(self: Pin<&mut Self>, torrent_id: i64) {
         let id = torrent_id as usize;
         let runtime = Arc::clone(&self.rust().runtime);
@@ -1481,7 +1536,26 @@ impl qobject::Backend {
 
     fn get_torrent_stats(self: Pin<&mut Self>, torrent_id: i64) {
         // Synchronous: a snapshot read from the live session, no await.
-        let progress = self.rust().player.torrent_progress(torrent_id as usize);
+        let id = torrent_id as usize;
+        let progress = self.rust().player.torrent_progress(id);
+        // The Rust half of the 1 Hz diagnosis. `file_progress` is per-index
+        // bytes-on-disk, which is the number to compare against mpv's
+        // `cache-end` in the log: a large `file_progress[i]` next to a tiny
+        // `cache-end` means mpv is NOT reading index i. Logged at debug
+        // because QML polls this twice a second.
+        if let Some(p) = &progress {
+            tracing::debug!(
+                "torrent {id}: state={} peers={} dl={:.1}MiB/s total={}MB/{}MB \
+                 finished={} file_progress={:?}",
+                p.state,
+                p.peers_live,
+                p.download_mbps,
+                p.progress_bytes / 1_000_000,
+                p.total_bytes / 1_000_000,
+                p.finished,
+                p.file_progress
+            );
+        }
         let json = serde_json::to_string(&progress).unwrap_or_else(|_| "null".into());
         self.torrent_stats_ready(QString::from(&json));
     }

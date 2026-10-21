@@ -25,16 +25,6 @@ Popup {
     // broadcast would start an endless save/read loop.
     property bool loading: false
 
-    // Coalesces rapid writes from a dragged slider. Dragging emits `moved`
-    // on every pixel, and each save is a file write plus a `settings_ready`
-    // broadcast -- so the timer keeps that to one write per gesture.
-    Timer {
-        id: saveDebounce
-        interval: 250
-        repeat: false
-        onTriggered: popup.save()
-    }
-
     // Centred over the window.
     parent: Overlay.overlay
     anchors.centerIn: parent
@@ -74,7 +64,6 @@ Popup {
                 playerArgsField.text = (s.playerArgs || []).join(" ")
             }
             if (!downloadField.activeFocus) downloadField.text = s.downloadDir || ""
-            thresholdSlider.value = s.readyFraction !== undefined ? s.readyFraction : 0.05
             seedersBox.value = s.minSeeders !== undefined ? s.minSeeders : 0
             askSwitch.checked = s.askEveryTime !== false
             popup.themeValue = s.theme || "system"
@@ -193,7 +182,6 @@ Popup {
             ? playerArgsField.text.trim().split(/\s+/)
             : []
         s.downloadDir = downloadField.text.length > 0 ? downloadField.text : null
-        s.readyFraction = thresholdSlider.value
         s.minSeeders = Math.round(seedersBox.value)
         s.askEveryTime = askSwitch.checked
         s.theme = popup.themeValue
@@ -869,31 +857,6 @@ Popup {
                                     onClicked: downloadField.text = ""
                                 }
                             }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Layout.topMargin: 4
-                            Text {
-                                Layout.fillWidth: true
-                                text: "Playback Buffer Threshold"
-                                color: Theme.ink
-                                font.pixelSize: 12
-                            }
-                            Text {
-                                text: Math.round(thresholdSlider.value * 100) + "%"
-                                color: Theme.accent
-                                font.pixelSize: 12
-                                font.bold: true
-                            }
-                        }
-                        ThemedSlider {
-                            id: thresholdSlider
-                            Layout.fillWidth: true
-                            from: 0.01
-                            to: 1.0
-                            stepSize: 0.01
-                            onMoved: saveDebounce.restart()
                         }
 
                         Text {

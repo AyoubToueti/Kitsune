@@ -37,9 +37,6 @@ pub struct Settings {
     pub preferred_resolutions: Vec<Resolution>,
     /// Releases below this many seeders are dropped when better ones exist.
     pub min_seeders: u32,
-    /// The fraction of the chosen file that must be present before the player
-    /// is launched. Clamped to a sane range on read.
-    pub ready_fraction: f64,
     /// Whether to ask which player to use before launching.
     ///
     /// `true` (the default) shows the picker at the threshold. `false` launches
@@ -92,7 +89,6 @@ impl Default for Settings {
             // Matches `ReleasePreference::default`: 1080p then 720p, no floor.
             preferred_resolutions: vec![Resolution::R1080p, Resolution::R720p],
             min_seeders: 0,
-            ready_fraction: 0.05,
             // Ask by default: the picker is opt-out, so an existing reader sees
             // no change and a new one gets the choice.
             ask_every_time: true,
@@ -116,24 +112,12 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The auto-launch threshold, clamped to a usable range.
-    ///
-    /// A value outside `(0, 1]` would either launch nothing or launch before a
-    /// byte arrived, so it is clamped rather than trusted. A non-finite value
-    /// (NaN, inf) falls back to the default.
-    pub fn ready_fraction(&self) -> f64 {
-        if !self.ready_fraction.is_finite() || self.ready_fraction <= 0.0 {
-            return Settings::default().ready_fraction;
-        }
-        self.ready_fraction.min(1.0)
-    }
-
     /// The title form to display, validated.
     ///
     /// Only `"romaji"` and `"english"` are meaningful; anything else -- a value
     /// written by a newer build, a typo, or a hand-edited file -- falls back to
     /// `"english"` rather than propagating garbage into the UI. Same
-    /// clamp-don't-trust stance as [`Settings::ready_fraction`].
+    /// clamp-don't-trust stance.
     pub fn title_language(&self) -> &str {
         match self.title_language.as_str() {
             "romaji" => "romaji",
@@ -256,7 +240,6 @@ mod tests {
             download_dir: Some("/data/anime".into()),
             preferred_resolutions: vec![Resolution::R2160p],
             min_seeders: 5,
-            ready_fraction: 0.1,
             ask_every_time: false,
             theme: "dark".into(),
             shortcuts: [("playPause".to_string(), "K".to_string())]
@@ -310,17 +293,24 @@ mod tests {
         assert_eq!(settings.theme, "system");
     }
 
+    /// A file written by an older build still carrying `readyFraction` must
+    /// parse cleanly. The field is gone from `Settings`, and serde ignores
+    /// unknown keys by default -- this pins that, because making the struct
+    /// `deny_unknown_fields` would otherwise break every existing settings
+    /// file on upgrade.
     #[test]
-    fn ready_fraction_is_clamped() {
-        let mut settings = Settings::default();
-        settings.ready_fraction = 5.0;
-        assert_eq!(settings.ready_fraction(), 1.0);
+    fn legacy_file_with_ready_fraction_still_reads() {
+        let (_dir, store) = store();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        std::fs::write(
+            store.path(),
+            r#"{"player":"mpv","theme":"dark","readyFraction":0.2}"#,
+        )
+        .unwrap();
 
-        settings.ready_fraction = 0.0;
-        assert_eq!(settings.ready_fraction(), 0.05);
-
-        settings.ready_fraction = f64::NAN;
-        assert_eq!(settings.ready_fraction(), 0.05);
+        let s = store.read();
+        assert_eq!(s.player, "mpv");
+        assert_eq!(s.theme, "dark");
     }
 
     #[test]

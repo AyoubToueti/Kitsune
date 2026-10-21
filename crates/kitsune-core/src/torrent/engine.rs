@@ -12,6 +12,16 @@ use anyhow::{anyhow, Context, Result};
 use librqbit::{AddTorrent, AddTorrentOptions, AddTorrentResponse, Session};
 use serde::Serialize;
 
+/// How long [`TorrentEngine::set_only_files`] keeps retrying before giving up.
+///
+/// librqbit refuses a file selection while it is hashing existing data, and
+/// that hash can take a while on a large resumed release. The wait is bounded
+/// so a torrent that never leaves `Initializing` cannot hang the play path.
+const ONLY_FILES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often [`TorrentEngine::set_only_files`] re-checks the torrent state.
+const ONLY_FILES_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// A download-progress snapshot for one torrent, as the watch page polls it.
 ///
 /// Built from librqbit's own `TorrentStats` by [`summarize`], which is pure so
@@ -142,6 +152,28 @@ pub fn playback_options(output_folder: Option<String>) -> AddTorrentOptions {
         list_only: false,
         ..Default::default()
     }
+}
+
+/// Whether librqbit will accept a file selection in this state.
+///
+/// Only a RUNNING torrent has piece trackers to re-prioritise; during
+/// `Initializing` it is still hashing what is already on disk, and after an
+/// error there is nothing to prioritise. Pure, so the wait loop's exit
+/// conditions are asserted without starting a session.
+pub fn accepts_file_selection(state: &librqbit::TorrentStatsState) -> bool {
+    matches!(
+        state,
+        librqbit::TorrentStatsState::Live | librqbit::TorrentStatsState::Paused
+    )
+}
+
+/// Whether the engine's selection now matches what was asked for.
+///
+/// `only_files()` builds a `Vec` from a set, so the order is arbitrary; the
+/// comparison must be by membership. Also pure, so the verification step is
+/// tested rather than trusted.
+pub fn selection_matches(wanted: &std::collections::HashSet<usize>, applied: &[usize]) -> bool {
+    applied.len() == wanted.len() && applied.iter().all(|idx| wanted.contains(idx))
 }
 
 /// Ensure `dir` exists, creating parents as needed.
@@ -337,16 +369,124 @@ impl TorrentEngine {
     /// file's pieces are fetched.
     ///
     /// An unknown id is a no-op, like the other per-torrent calls.
+    ///
+    /// WAITS for the torrent to leave `Initializing` first, then RETRIES on
+    /// failure. librqbit rejects `update_only_files` while it is still hashing
+    /// existing data, and that window is open for the whole time metadata is
+    /// resolving -- which, for a magnet, is exactly when the watch page calls
+    /// this. Without the wait the call failed silently and librqbit kept
+    /// downloading files in ITS order, so the episode being watched might sit
+    /// at 0% while the torrent as a whole passed 20% (and every other file in
+    /// a batch release) -- the reader saw progress and no playback.
+    ///
+    /// The selection is READ BACK before returning, so a caller that awaits
+    /// this knows the restriction is really in force rather than assuming the
+    /// engine honoured it.
     pub async fn set_only_files(&self, id: usize, only: &[usize]) -> Result<()> {
-        let Some(handle) = self.session.get(id.into()) else {
-            return Ok(());
-        };
+        // Transitions are logged as they happen (not once at the end) because
+        // the interesting case is a torrent that sits in `initializing` for
+        // seconds: the timestamp of the FIRST attempt and of the state change
+        // is what says whether the wait is the cost or the call itself.
+        let started = tokio::time::Instant::now();
+        let deadline = started + ONLY_FILES_TIMEOUT;
+        let wanted: std::collections::HashSet<usize> = only.iter().copied().collect();
 
-        let set: std::collections::HashSet<usize> = only.iter().copied().collect();
-        self.session
-            .update_only_files(&handle, &set)
-            .await
-            .with_context(|| format!("failed to restrict torrent {id} to {only:?}"))
+        // The last state name logged, so a 30s wait prints one line per
+        // transition instead of ~300 identical ones at a 100ms poll.
+        let mut last_state = String::new();
+        let mut attempts: u32 = 0;
+
+        loop {
+            let Some(handle) = self.session.get(id.into()) else {
+                // The torrent was removed while we waited; nothing to restrict
+                // and nothing to report. Matches the other no-op cases.
+                tracing::info!(
+                    "set_only_files: torrent {id} vanished after {}ms, nothing to restrict",
+                    started.elapsed().as_millis()
+                );
+                return Ok(());
+            };
+
+            let state = handle.stats().state;
+            let state_name = match &state {
+                librqbit::TorrentStatsState::Initializing { .. } => "initializing",
+                librqbit::TorrentStatsState::Live => "live",
+                librqbit::TorrentStatsState::Paused => "paused",
+                librqbit::TorrentStatsState::Error => "error",
+            };
+            if state_name != last_state {
+                tracing::info!(
+                    "set_only_files: torrent {id} is {state_name} after {}ms",
+                    started.elapsed().as_millis()
+                );
+                last_state = state_name.to_string();
+            }
+
+            // Only try while the engine will accept it. An errored torrent is
+            // left alone too: retrying against a dead handle cannot succeed
+            // and the caller reports the error through the stats.
+            let ready = accepts_file_selection(&state);
+
+            if ready {
+                attempts += 1;
+                let attempt_at = tokio::time::Instant::now();
+                let result = self
+                    .session
+                    .update_only_files(&handle, &wanted)
+                    .await
+                    .with_context(|| format!("failed to restrict torrent {id} to {only:?}"));
+
+                match result {
+                    Ok(()) => {
+                        // Verify: a re-added torrent keeps its ORIGINAL
+                        // options, so a silently-ignored call would otherwise
+                        // look like success. `only_files()` reports faithfully
+                        // (asserted by `probe_session_conflict`), and it
+                        // returns a `Vec` built from a set, so the comparison
+                        // is by membership.
+                        let applied = handle.only_files();
+                        if applied
+                            .as_ref()
+                            .is_some_and(|applied| selection_matches(&wanted, applied))
+                        {
+                            tracing::info!(
+                                "set_only_files: torrent {id} VERIFIED only_files={:?} \
+                                 on attempt {attempts} after {}ms",
+                                applied,
+                                started.elapsed().as_millis()
+                            );
+                            return Ok(());
+                        }
+                        tracing::warn!(
+                            "set_only_files: torrent {id} call succeeded but the selection \
+                             did not stick (reads back {applied:?}), retrying"
+                        );
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            "set_only_files: torrent {id} attempt {attempts} failed after \
+                             {}ms: {err:#}",
+                            attempt_at.elapsed().as_millis()
+                        );
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                // Out of time: report it rather than pretending the selection
+                // took effect. Playback still works, just with the engine's
+                // own file order, so the caller treats this as a warning.
+                return Err(anyhow!(
+                    "torrent {id} did not accept a file selection within {}s",
+                    ONLY_FILES_TIMEOUT.as_secs()
+                ));
+            }
+
+            tokio::time::sleep(ONLY_FILES_POLL).await;
+        }
     }
 
     /// Stop the session and all managed tasks.
@@ -380,6 +520,43 @@ mod tests {
             finished: false,
             live: None,
         }
+    }
+
+    /// A running torrent accepts a file selection; that is what the wait loop
+    /// is waiting FOR. Getting this wrong in the permissive direction would
+    /// make the loop fire the call during `Initializing`, where librqbit
+    /// rejects it -- the bug this whole path exists to fix.
+    #[test]
+    fn only_a_live_or_paused_torrent_accepts_a_file_selection() {
+        use librqbit::TorrentStatsState;
+
+        assert!(accepts_file_selection(&TorrentStatsState::Live));
+        assert!(accepts_file_selection(&TorrentStatsState::Paused));
+        assert!(!accepts_file_selection(&TorrentStatsState::Initializing {
+            paused: false
+        }));
+        assert!(!accepts_file_selection(&TorrentStatsState::Initializing {
+            paused: true
+        }));
+        assert!(!accepts_file_selection(&TorrentStatsState::Error));
+    }
+
+    /// `only_files()` is built from a set, so its ORDER is arbitrary. The
+    /// verification must not depend on it, or a correct selection would look
+    /// wrong and be retried until the deadline.
+    #[test]
+    fn selection_matches_ignores_order() {
+        let wanted: std::collections::HashSet<usize> = [3, 7].into_iter().collect();
+
+        assert!(selection_matches(&wanted, &[3, 7]));
+        assert!(selection_matches(&wanted, &[7, 3]));
+        assert!(!selection_matches(&wanted, &[3]));
+        assert!(!selection_matches(&wanted, &[3, 7, 9]));
+        assert!(!selection_matches(&wanted, &[3, 8]));
+        assert!(selection_matches(
+            &std::collections::HashSet::new(),
+            &[]
+        ));
     }
 
     #[test]
