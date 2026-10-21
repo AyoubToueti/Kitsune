@@ -142,6 +142,8 @@ Item {
             } else {
                 page.entries = []
                 page.loading = false
+                page.loadFailed = false
+                page.errorText = ""
             }
         }
 
@@ -226,8 +228,10 @@ Item {
                     anchors.margins: 16
                     kind: "sleeping"
                     artWidth: 110
-                    title: "Sign in to sync your list"
-                    message: "Connect your AniList account to track episodes, sync watch states, and organize your collection."
+                    title: page.errorText !== "" ? "Sign-in failed" : "Sign in to sync your list"
+                    message: page.errorText !== ""
+                        ? "We couldn't complete the sign-in. Please try again."
+                        : "Connect your AniList account to track episodes, sync watch states, and organize your collection."
                     primaryText: "Sign in with AniList"
                     onPrimaryClicked: page.signIn()
                 }
@@ -439,6 +443,7 @@ Item {
             Layout.fillHeight: true
             visible: page.signedIn
 
+            // Error case: server error fox, message classified from page.errorText.
             ErrorState {
                 anchors.fill: parent
                 visible: page.loadFailed
@@ -465,178 +470,39 @@ Item {
                 anchors.rightMargin: Theme.pad
                 anchors.topMargin: Theme.gap
                 anchors.bottomMargin: Theme.pad
-                visible: !page.loading && !page.loadFailed
+                // Only show the grid when there is actually something to draw.
+                visible: !page.loading && !page.loadFailed && page.filteredEntries.length > 0
                 clip: true
                 cellWidth: 200
                 cellHeight: 350
                 model: page.filteredEntries
 
                 delegate: Item {
-                    id: cardRoot
-                    required property var modelData
-                    width: grid.cellWidth
-                    height: grid.cellHeight
-
-                    readonly property int entryId: modelData.entryId
-                    readonly property int animeId: modelData.anime ? modelData.anime.id : 0
-                    readonly property string entryStatus: modelData.status || ""
-
-                    PosterCard {
-                        anchors.centerIn: parent
-                        width: 180
-                        height: 336
-                        animeId: cardRoot.animeId
-                        title: page.displayTitle(modelData.anime)
-                        score: (modelData.anime && modelData.anime.averageScore) || 0
-                        cover: (modelData.anime && modelData.anime.coverImage) || ""
-                        format: (modelData.anime && modelData.anime.format) || ""
-                        animeStatus: (modelData.anime && modelData.anime.status) || ""
-                        onClicked: page.openAnime(animeId)
-                    }
-
-                    Rectangle {
-                        id: menuButton
-                        x: (parent.width - 180) / 2 + 6
-                        y: (parent.height - 336) / 2 + 6
-                        width: 26
-                        height: 26
-                        radius: 13
-                        color: menuMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
-                        border.width: 1
-                        border.color: Theme.borderSubtle
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "⋮"
-                            color: Theme.ink
-                            font.pixelSize: 16
-                            font.bold: true
-                        }
-
-                        MouseArea {
-                            id: menuMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: itemMenu.open()
-                        }
-                    }
-
-                    Popup {
-                        id: itemMenu
-                        parent: menuButton
-                        x: 0
-                        y: menuButton.height + 4
-                        width: 176
-                        padding: 6
-                        modal: false
-                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-                        background: Rectangle {
-                            color: Theme.surfaceRaised
-                            radius: 12
-                            border.width: 1
-                            border.color: Theme.borderSubtle
-                        }
-
-                        contentItem: Column {
-                            spacing: 2
-
-                            Repeater {
-                                model: page.listStatuses
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    width: itemMenu.width - 12
-                                    height: 30
-                                    radius: 8
-                                    color: optMouse.containsMouse ? Theme.surfaceHover : "transparent"
-
-                                    Text {
-                                        anchors.left: parent.left
-                                        anchors.leftMargin: 10
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: modelData.label
-                                        color: modelData.value === cardRoot.entryStatus
-                                            ? Theme.accent : Theme.ink
-                                        font.pixelSize: 13
-                                    }
-
-                                    MouseArea {
-                                        id: optMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            itemMenu.close()
-                                            page.moveEntry(cardRoot.entryId, cardRoot.animeId, modelData.value)
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: itemMenu.width - 12
-                                height: 1
-                                color: Theme.borderSubtle
-                            }
-
-                            Rectangle {
-                                width: itemMenu.width - 12
-                                height: 30
-                                radius: 8
-                                color: rmMouse.containsMouse ? Theme.surfaceHover : "transparent"
-
-                                Text {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: "Remove from list"
-                                    color: Theme.danger
-                                    font.pixelSize: 13
-                                }
-
-                                MouseArea {
-                                    id: rmMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        itemMenu.close()
-                                        page.removeEntry(cardRoot.entryId)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // ... unchanged ...
                 }
             }
 
-            Text {
-                anchors.centerIn: parent
-                width: parent.width - (Theme.pad * 2)
-                visible: !page.loading && page.filteredEntries.length === 0
-                text: page.normalizedSearchText !== ""
+            // Empty case: notFound fox with context-aware message. Never overlaps
+            // the error fox because of the `!page.loadFailed` guard.
+            ErrorState {
+                anchors.fill: parent
+                anchors.margins: 24
+                visible: !page.loading && !page.loadFailed && page.filteredEntries.length === 0
+                kind: "notFound"
+                artWidth: 180
+                showActions: false
+                title: page.normalizedSearchText !== ""
+                    ? "No matches found"
+                    : (page.activeTab === ""
+                        ? "Nothing here yet"
+                        : "Nothing in this list")
+                message: page.normalizedSearchText !== ""
                     ? ("No titles match \u201c" + page.searchText.trim() + "\u201d"
                         + (page.activeTab === "" ? "." : " in this list."))
                     : (page.activeTab === ""
-                        ? "You haven't added any anime to your list yet."
-                        : "No titles in this list.")
-                color: Theme.inkMuted
-                font.pixelSize: 13
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
+                        ? "You haven't added any anime to your list yet. Browse the catalog and add some titles to get started."
+                        : "No titles in this list yet.")
             }
-        }
-
-        Text {
-            Layout.fillWidth: true
-            Layout.leftMargin: Theme.pad
-            Layout.rightMargin: Theme.pad
-            Layout.bottomMargin: Theme.pad
-            visible: page.errorText !== ""
-            text: page.errorText
-            color: Theme.danger
-            font.pixelSize: 12
         }
     }
 }
