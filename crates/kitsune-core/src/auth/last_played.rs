@@ -26,6 +26,14 @@ use serde::{Deserialize, Serialize};
 struct Stored {
     #[serde(skip_serializing_if = "Option::is_none")]
     anime_id: Option<i64>,
+    /// The id's NAMESPACE ("anilist" / "kitsu").
+    ///
+    /// Stored alongside the id because ids are per-source: without it, a record
+    /// written while Kitsu served the page would be re-fetched from AniList on
+    /// the next launch and open a different work. Defaulted on read so a file
+    /// written before this field existed still parses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     episode: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -33,10 +41,19 @@ struct Stored {
 }
 
 /// The work the reader most recently opened.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+// NOT `Copy`: `provider` is a `String`. `Clone` is enough -- the store hands
+// out an owned record and nothing relies on implicit copies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LastPlayed {
     pub anime_id: i64,
+    /// The id's namespace ("anilist" / "kitsu"), so a resume asks the source
+    /// that issued the id.
+    ///
+    /// A record written before this field existed carries `None`, and the
+    /// caller treats that as AniList -- the only source that could have issued
+    /// it at the time.
+    pub provider: Option<String>,
     /// The episode number, when one was known. `None` for a film or a work
     /// played without a selected episode.
     pub episode: Option<u32>,
@@ -83,17 +100,26 @@ impl LastPlayedStore {
             // `anime_id` is the one required field: without it there is no work
             // to resume, so the record is treated as absent.
             anime_id: stored.anime_id?,
+            provider: stored.provider,
             episode: stored.episode,
             at: stored.at.unwrap_or(0),
         })
     }
 
     /// Record that `anime_id` was opened, at `episode` when one is known.
-    ///
     /// Overwrites whatever was there: only the most recent work matters.
-    pub fn write(&self, anime_id: i64, episode: Option<u32>) -> Result<()> {
+    ///
+    /// `provider` is the id's namespace, stored alongside it so a resume asks
+    /// the source that issued the id rather than assuming AniList.
+    pub fn write(
+        &self,
+        anime_id: i64,
+        provider: Option<&str>,
+        episode: Option<u32>,
+    ) -> Result<()> {
         self.write_bytes(&Stored {
             anime_id: Some(anime_id),
+            provider: provider.map(str::to_string),
             episode,
             at: Some(now_seconds()),
         })
@@ -184,7 +210,7 @@ mod tests {
     fn a_record_round_trips() {
         let (_dir, store) = store();
 
-        store.write(21, Some(3)).expect("write");
+        store.write(21, Some("anilist"), Some(3)).expect("write");
 
         let read = store.read().expect("a record");
         assert_eq!(read.anime_id, 21);
@@ -197,7 +223,7 @@ mod tests {
     fn an_episode_is_optional() {
         let (_dir, store) = store();
 
-        store.write(21, None).expect("write");
+        store.write(21, Some("anilist"), None).expect("write");
 
         let read = store.read().expect("a record");
         assert_eq!(read.anime_id, 21);
@@ -208,7 +234,7 @@ mod tests {
     fn writing_creates_missing_directories() {
         let (_dir, store) = store();
 
-        store.write(21, Some(1)).expect("write should create parents");
+        store.write(21, Some("anilist"), Some(1)).expect("write should create parents");
 
         assert!(store.path().exists());
     }
@@ -218,8 +244,8 @@ mod tests {
     fn writing_replaces_the_previous_record() {
         let (_dir, store) = store();
 
-        store.write(21, Some(3)).expect("first");
-        store.write(99, Some(1)).expect("second");
+        store.write(21, Some("anilist"), Some(3)).expect("first");
+        store.write(99, Some("anilist"), Some(1)).expect("second");
 
         assert_eq!(store.read().expect("a record").anime_id, 99);
     }
@@ -230,7 +256,7 @@ mod tests {
     fn a_record_carries_a_timestamp() {
         let (_dir, store) = store();
 
-        store.write(21, Some(3)).expect("write");
+        store.write(21, Some("anilist"), Some(3)).expect("write");
 
         assert!(store.read().expect("a record").at > 0);
     }
@@ -239,7 +265,7 @@ mod tests {
     fn clearing_removes_the_record() {
         let (_dir, store) = store();
 
-        store.write(21, Some(3)).expect("write");
+        store.write(21, Some("anilist"), Some(3)).expect("write");
         store.clear().expect("clear");
 
         assert_eq!(store.read(), None);

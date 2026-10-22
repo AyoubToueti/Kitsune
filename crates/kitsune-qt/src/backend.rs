@@ -86,9 +86,15 @@ pub mod qobject {
         );
 
         /// Look up a single title. Emits JSON `null` when the id is unknown.
+        /// One work's full detail.
+        ///
+        /// `provider` is the id's NAMESPACE ("anilist" / "kitsu"), taken from
+        /// the card the reader clicked. Ids are per-source, so a bare number is
+        /// ambiguous and the detail MUST be fetched from the source that
+        /// issued it -- asking AniList for a Kitsu id returns the wrong work.
         #[qinvokable]
         #[cxx_name = "getAnime"]
-        fn get_anime(self: Pin<&mut Self>, id: i64);
+        fn get_anime(self: Pin<&mut Self>, id: i64, provider: QString);
 
         /// A page of recommendations for one work.
         #[qinvokable]
@@ -138,10 +144,15 @@ pub mod qobject {
             limit: i32,
         );
 
-        /// Full episode metadata for a work, by its MyAnimeList id.
+        /// Full episode metadata for a work.
+        ///
+        /// `provider` is the `Anime.provider` string ("anilist", "kitsu"):
+        /// ids live in per-provider namespaces, so an id alone is ambiguous.
+        /// Passing "kitsu" uses it directly; anything else is treated as an
+        /// AniList id and bridged through Kitsu's mapping table.
         #[qinvokable]
         #[cxx_name = "getEpisodes"]
-        fn get_episodes(self: Pin<&mut Self>, mal_id: i64);
+        fn get_episodes(self: Pin<&mut Self>, id: i64, provider: QString);
 
         /// Build the episode list to display for a work from its scalar facts
         /// plus the (possibly empty) Jikan catalogue JSON. `status` is the
@@ -341,10 +352,18 @@ pub mod qobject {
 
         // --- Local resume state ----------------------------------------------
 
-        /// Record that `anime_id` was opened, at `episode` when known.
+        /// Record that `anime_id` was opened, with the namespace it came from.
+        ///
+        /// `provider` is stored alongside the id: a resume must ask the source
+        /// that issued it, and a bare id cannot say which that is.
         #[qinvokable]
         #[cxx_name = "recordLastPlayed"]
-        fn record_last_played(self: Pin<&mut Self>, anime_id: i64, episode: i32);
+        fn record_last_played(
+            self: Pin<&mut Self>,
+            anime_id: i64,
+            episode: i32,
+            provider: QString,
+        );
 
         /// The most recently opened work as JSON, or `null`.
         #[qinvokable]
@@ -651,6 +670,7 @@ pub mod qobject {
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use cxx_qt::{CxxQtType, Threading};
@@ -664,14 +684,16 @@ use kitsune_core::indexer::{
 };
 use kitsune_core::providers::cache::ttl;
 use kitsune_core::auth::LastPlayedStore;
+use kitsune_core::list::{ListSync, MediaListStore};
 use kitsune_core::player::state::PlayerState;
 use kitsune_core::player::{LastReleaseStore, WatchPositionStore};
 use kitsune_core::providers::{
-    AniListProvider, AnimeProvider, CachedAccount, CachedProvider, JikanProvider,
+    AniListProvider, AnimeProvider, CachedProvider, FailoverProvider,
+    KitsuProvider,
 };
-use kitsune_core::settings::{Settings, SettingsStore};
+use kitsune_core::settings::{MetadataSource, Settings, SettingsStore};
 use kitsune_core::types::{
-    BrowseQuery, EpisodeInfo, ListFilter, ListStatus, RecommendationRating, Release,
+    BrowseQuery, EpisodeInfo, ListFilter, ListStatus, ProviderId, RecommendationRating, Release,
     ReleasePreference, Title,
 };
 
@@ -690,12 +712,15 @@ pub struct BackendRust {
     /// `AnimeProvider` trait (token, list writes). Points at the SAME instance
     /// as `provider`, so a token set here is used by every metadata call.
     anilist: Arc<AniListProvider>,
-    /// A cache in front of `user_list`, the reader's own list. Held apart from
-    /// `provider` because `user_list` is AniList-only; the list is dropped from
-    /// the cache whenever the reader writes to it, so a change shows at once
-    /// while repeat reads stay free.
-    account: Arc<CachedAccount>,
-    episodes: Arc<JikanProvider>,
+
+    /// The metadata fallback, held concretely because its episode catalogue is
+    /// not on the `AnimeProvider` trait.
+    ///
+    /// Jikan used to fill this role; it is gone, and Kitsu's
+    /// `/anime/{id}/episodes` is now the only source that carries per-episode
+    /// stills. Pointing at the SAME instance the failover decorator wraps keeps
+    /// one connection pool.
+    kitsu: Arc<KitsuProvider>,
     /// The AniList token, read from disk at startup so a signed-in reader
     /// stays signed in across restarts.
     tokens: Arc<TokenStore>,
@@ -718,6 +743,20 @@ pub struct BackendRust {
     watch_positions: Arc<WatchPositionStore>,
     /// The release last played per work, so a resume can reselect it.
     last_releases: Arc<LastReleaseStore>,
+    /// The reader's media list, kept locally.
+    ///
+    /// Every list read is answered from here, so the pages work while AniList is
+    /// down and for a reader who has never signed in.
+    media_list: Arc<MediaListStore>,
+    /// Pushes local list changes to AniList and pulls the server's view back.
+    ///
+    /// Held as one unit so the store and the engine cannot disagree about which
+    /// directory they are reconciling.
+    list_sync: Arc<ListSync>,
+    /// Whether a sync pass is already running, so overlapping triggers collapse
+    /// into one. Three pages call `authStatus()` on startup; without this each
+    /// started its own pull of the same list.
+    sync_in_flight: Arc<AtomicBool>,
     /// The internet speed tester. Owns its pooled client and a "one run at a
     /// time" guard, so a second click cannot split the bandwidth and
     /// under-report both runs.
@@ -748,28 +787,57 @@ impl Default for BackendRust {
             anilist.set_token(Some(token));
         }
 
+        let settings = Arc::new(SettingsStore::new());
+
+        // The second metadata source. Reads fall back to it when AniList is
+        // rate limited or down; writes never go near it, because it has no
+        // AniList token and its ids live in a namespace of their own.
+        let kitsu = Arc::new(KitsuProvider::new());
+
+        // Which source is asked FIRST. Both are always available -- the
+        // difference is only whether a reader who has given up on AniList
+        // waits for its timeout before Kitsu answers.
+        let source = settings.read().metadata_source();
+        let primary: Arc<dyn AnimeProvider> = match source {
+            MetadataSource::AniList => anilist.clone(),
+            MetadataSource::Kitsu => kitsu.clone(),
+        };
+        let secondary: Arc<dyn AnimeProvider> = match source {
+            MetadataSource::AniList => kitsu.clone(),
+            MetadataSource::Kitsu => anilist.clone(),
+        };
+
         // The metadata path goes through the cache, so repeated reads (back to
         // a title already opened, the home rail re-rendering) do not hit
         // AniList again. The concrete `anilist` handle stays UNWRAPPED for
         // account writes -- a saved list entry or vote must never be served
         // from cache.
-        let provider: Arc<dyn AnimeProvider> = Arc::new(CachedProvider::new(anilist.clone()));
+        let provider: Arc<dyn AnimeProvider> = Arc::new(CachedProvider::new(Arc::new(
+            FailoverProvider::new(primary, secondary),
+        )));
 
-        // The reader's list is cached separately (it is AniList-only), and the
-        // cache drops it the moment a write bumps the provider's revision.
-        let account = Arc::new(CachedAccount::new(anilist.clone()));
-
-        let settings = Arc::new(SettingsStore::new());
+        // The local list is the source of truth for every READ. `ListSync`
+        // pulls AniList's view directly, so no list cache sits in between -- a
+        // cache here would only risk serving a stale copy of the reader's own
+        // edits back to them.
+        let media_list = Arc::new(MediaListStore::new());
+        let list_sync = Arc::new(ListSync::new(
+            anilist.clone(),
+            Some(kitsu.clone()),
+            media_list.clone(),
+        ));
 
         Self {
             runtime: Arc::new(runtime),
             provider,
             anilist,
-            account,
             last_played: Arc::new(LastPlayedStore::new()),
             watch_positions: Arc::new(WatchPositionStore::new()),
             last_releases: Arc::new(LastReleaseStore::new()),
-            episodes: Arc::new(JikanProvider::new()),
+            media_list,
+            list_sync,
+            sync_in_flight: Arc::new(AtomicBool::new(false)),
+            kitsu,
             tokens,
             player: Arc::new(PlayerState::with_settings(settings.clone())),
             settings,
@@ -828,6 +896,11 @@ impl qobject::Backend {
                     let _ = qt_thread.queue(move |qobject| ok(qobject, QString::from(&json)));
                 }
                 Err(message) => {
+                    // Logged as well as handed to QML. A page that fails to load
+                    // shows an error block the reader may not report, and before
+                    // this a metadata failure left NO trace in the log at all --
+                    // which is exactly why "nothing renders" was undiagnosable.
+                    tracing::error!("metadata request failed: {message}");
                     let _ =
                         qt_thread.queue(move |qobject| err(qobject, QString::from(&message)));
                 }
@@ -974,11 +1047,28 @@ impl qobject::Backend {
         );
     }
 
-    fn get_anime(mut self: Pin<&mut Self>, id: i64) {
+    fn get_anime(mut self: Pin<&mut Self>, id: i64, provider: QString) {
+        // The namespace travels WITH the id, from the card the reader clicked.
+        //
+        // It is deliberately NOT inferred from the partial cache: a cold cache
+        // (a fresh launch, the resume disc, `KITSUNE_OPEN_ID`) would fall back
+        // to AniList and fetch whatever work happens to own that number. The
+        // caller always knows which source issued the id, so it says so.
+        let namespace = provider_id_from(&provider.to_string());
+
         // Paint from what a list response already gave us, before any request.
-        // Synchronous on purpose: the answer is in memory, and emitting it
-        // here guarantees QML sees it before the async reply can arrive.
-        if let Some(partial) = self.rust().provider.cached_partial(id) {
+        // Synchronous on purpose: the answer is in memory, and emitting it here
+        // guarantees QML sees it before the async reply can arrive.
+        //
+        // The provider is CHECKED: the partial cache is keyed on the bare id,
+        // so a cached partial from a different namespace must not be painted --
+        // it would flash another work's poster before the real one arrives.
+        if let Some(partial) = self
+            .rust()
+            .provider
+            .cached_partial(id)
+            .filter(|partial| partial.provider == namespace)
+        {
             let json = serde_json::to_string(&partial).unwrap_or_else(|_| "null".into());
             // `as_mut` reborrows: the signal takes `Pin<&mut Self>`, and `self`
             // is still needed for `spawn_metadata` below.
@@ -994,7 +1084,23 @@ impl qobject::Backend {
         let provider = Arc::clone(&self.rust().provider);
 
         runtime.spawn(async move {
-            match provider.by_id_with_entry(id).await {
+            // The reader's list entry is an AniList concept, so only the
+            // AniList-id path can carry one. A work opened by a Kitsu id was
+            // never on the reader's AniList list under that id, so there is
+            // nothing to fetch and "not on list" is the honest answer.
+            let fetched = if namespace == ProviderId::AniList {
+                // Both sources can address an AniList id: the primary natively,
+                // the fallback through its mapping table. That is what keeps
+                // the detail page working during an outage.
+                provider.by_id_with_entry(id).await
+            } else {
+                provider
+                    .by_id_in(namespace, id)
+                    .await
+                    .map(|anime| (anime, None))
+            };
+
+            match fetched {
                 Ok((anime, entry)) => {
                     let json =
                         serde_json::to_string(&anime).unwrap_or_else(|_| "null".into());
@@ -1177,17 +1283,53 @@ impl qobject::Backend {
         });
     }
 
-    fn get_episodes(self: Pin<&mut Self>, mal_id: i64) {
-        // Episodes come from Jikan, not the AnimeProvider, so this does not go
+    fn get_episodes(self: Pin<&mut Self>, id: i64, provider: QString) {
+        // Episodes come from Kitsu, not the AnimeProvider, so this does not go
         // through `spawn_metadata`; the plumbing is otherwise identical.
+        //
+        // The id alone is NOT enough: "12" is One Piece on Kitsu and an
+        // unrelated work on AniList. The caller passes the namespace it got the
+        // id from, which is the difference between the right episode list and
+        // an empty one.
+        let provider = provider.to_string();
         let qt_thread = self.qt_thread();
         let runtime = Arc::clone(&self.rust().runtime);
-        let provider = Arc::clone(&self.rust().episodes);
+        let kitsu = Arc::clone(&self.rust().kitsu);
 
         runtime.spawn(async move {
-            match provider.episodes(mal_id).await {
-                Ok(items) => {
-                    let json = json_or_empty(&items);
+            // A Kitsu id addresses episodes directly; an AniList id has to be
+            // bridged through Kitsu's mapping table first.
+            let resolved = if provider == "kitsu" {
+                Ok(Some(id))
+            } else {
+                kitsu.kitsu_id_for_anilist(id).await
+            };
+
+            let result = match resolved {
+                Ok(Some(kitsu_id)) => kitsu
+                    .episodes(kitsu_id)
+                    .await
+                    .map(|catalogue| {
+                        // An empty `aired` with a non-empty list means the
+                        // provider withheld the count; the list length is then
+                        // the honest floor rather than zero.
+                        let aired = if catalogue.aired == 0 {
+                            catalogue.info.len() as u32
+                        } else {
+                            catalogue.aired
+                        };
+                        serde_json::json!({ "info": catalogue.info, "aired": aired })
+                    }),
+                // No mapping means no episode data. Reported as an empty
+                // catalogue rather than an error, so the page falls back to
+                // synthesising from what the provider already told us.
+                Ok(None) => Ok(serde_json::json!({ "info": [], "aired": 0 })),
+                Err(err) => Err(err),
+            };
+
+            match result {
+                Ok(payload) => {
+                    let json = payload.to_string();
                     let _ = qt_thread
                         .queue(move |qobject| qobject.episodes_ready(QString::from(&json)));
                 }
@@ -1201,7 +1343,7 @@ impl qobject::Backend {
     }
 
     /// Build the display episode list from a work's scalars and its (optional)
-    /// Jikan catalogue. Pure: the shared `kitsune_core::episodes` rules do the
+    /// episode catalogue. Pure: the shared `kitsune_core::episodes` rules do the
     /// work, so the Qt app and the web app cannot disagree.
     fn build_episodes(
         self: Pin<&mut Self>,
@@ -1211,7 +1353,12 @@ impl qobject::Backend {
         info_json: QString,
     ) -> QString {
         let info_json = info_json.to_string();
-        let info: Vec<EpisodeInfo> = serde_json::from_str(&info_json).unwrap_or_default();
+        // The catalogue arrives as `{ info, aired }`: the episodes themselves
+        // plus how many have aired, which is what stops an airing show from
+        // offering episodes the reader cannot watch yet.
+        let catalogue: EpisodeCatalogueWire =
+            serde_json::from_str(&info_json).unwrap_or_default();
+        let info = catalogue.info;
 
         let cover = cover_image.to_string();
         let status = status.to_string();
@@ -1220,6 +1367,7 @@ impl qobject::Backend {
             (!status.is_empty()).then_some(status.as_str()),
             (!cover.is_empty()).then_some(cover.as_str()),
             &info,
+            (catalogue.aired > 0).then_some(catalogue.aired),
             kitsune_core::episodes::now_unix(),
         );
         let json = serde_json::to_string(&episodes).unwrap_or_else(|_| "[]".into());
@@ -1714,9 +1862,19 @@ impl qobject::Backend {
         QString::from(flow::authorize_url())
     }
 
-    fn auth_status(self: Pin<&mut Self>) {
+    fn auth_status(mut self: Pin<&mut Self>) {
         let signed_in = self.rust().tokens.has_token();
-        self.auth_status_ready(signed_in);
+        self.as_mut().auth_status_ready(signed_in);
+
+        // The natural moment to reconcile: the app has just started and the
+        // token state is known. A signed-out reader is skipped entirely -- the
+        // pull needs a token, and the push has nothing to send.
+        //
+        // Runs in the background, so the home page is not held up by it, and a
+        // failure is silent: the local list is already on screen and correct.
+        if signed_in {
+            self.spawn_sync();
+        }
     }
 
     fn logout(self: Pin<&mut Self>) {
@@ -1762,103 +1920,251 @@ impl qobject::Backend {
 
     fn continue_watching(self: Pin<&mut Self>, limit: i32) {
         let limit = limit_or_default(limit);
-        self.spawn_anilist(
-            move |anilist| async move {
-                anilist
-                    .continue_watching(limit)
-                    .await
-                    .map(|items| json_or_empty(&items))
-                    .map_err(|err| err.to_string())
-            },
-            Self::continue_watching_ready,
-            Self::continue_watching_failed,
-        );
+        // Served from the LOCAL list, not from AniList.
+        //
+        // Two reasons: it works while AniList is down (which it is, as often as
+        // not), and it costs no request on a screen that is opened constantly.
+        // The shelf is derived, not stored: `progress > 0` and newest first.
+        let store = Arc::clone(&self.rust().media_list);
+        // Local watch times, so the ORDER is right before the row is truncated.
+        //
+        // This matters because the truncation happens HERE, before the UI can
+        // re-sort: AniList does not bump `updatedAt` for a same-progress
+        // re-watch, so a work the reader just played could sort outside the
+        // limit and never reach the row at all. Merging the local stamp into
+        // the sort key keeps the two signals consistent with what the reader
+        // expects ("the thing I just watched is first").
+        let watched = self.rust().watch_positions.read_all();
+        let items: Vec<kitsune_core::providers::anilist::ContinueWatchingItem> = {
+            let mut rows: Vec<_> = store
+                .visible()
+                .into_iter()
+                .filter(|entry| entry.progress > 0)
+                .map(|entry| {
+                    // `max` of the two: whichever source saw it more recently.
+                    let local_at = watched
+                        .get(&entry.media_id.to_string())
+                        .map(|position| position.at)
+                        .unwrap_or(0);
+                    (entry.updated_at.max(local_at), entry)
+                })
+                .collect();
+            // Most recently watched first, by EITHER signal.
+            rows.sort_by(|a, b| b.0.cmp(&a.0));
+            rows.into_iter()
+                .take(limit as usize)
+                .map(|(_, entry)| {
+                    kitsune_core::providers::anilist::ContinueWatchingItem {
+                        anime: entry.anime,
+                        progress: entry.progress,
+                    }
+                })
+                .collect()
+        };
+
+        self.continue_watching_ready(QString::from(&json_or_empty(&items)));
     }
 
     fn user_list(self: Pin<&mut Self>) {
-        // Goes through the account cache, not the concrete provider: repeat
-        // reads (the page re-opening, the status store refreshing) are served
-        // from memory until a write bumps the revision or the TTL lapses.
-        let qt_thread = self.qt_thread();
-        let runtime = Arc::clone(&self.rust().runtime);
-        let account = Arc::clone(&self.rust().account);
+        // Read straight from the local store: no network, no cache, no wait.
+        //
+        // This is the change that makes My List work at all while AniList is
+        // unreachable. The sync engine fills the store in the background; this
+        // path only ever reads it.
+        let store = Arc::clone(&self.rust().media_list);
+        let entries: Vec<kitsune_core::providers::anilist::UserListEntry> = store
+            .visible()
+            .into_iter()
+            .map(|entry| kitsune_core::providers::anilist::UserListEntry {
+                anime: entry.anime,
+                status: entry.status,
+                progress: entry.progress,
+                // AniList's entry id, or 0 for one that has never been pushed.
+                // The UI only uses it to call back into delete, which now takes
+                // the media id instead.
+                entry_id: entry.anilist_entry_id.unwrap_or(0),
+                added_at: Some(entry.added_at),
+                // Carried through so a surface can order by "last changed"
+                // without a second lookup.
+                updated_at: Some(entry.updated_at),
+            })
+            .collect();
 
-        runtime.spawn(async move {
-            let result = account
-                .user_list()
-                .await
-                .map(|entries| json_or_empty(&entries))
-                .map_err(|err| err.to_string());
-
-            let _ = qt_thread.queue(move |qobject| match result {
-                Ok(json) => qobject.user_list_ready(QString::from(&json)),
-                Err(message) => qobject.user_list_failed(QString::from(&message)),
-            });
-        });
+        self.user_list_ready(QString::from(&json_or_empty(&entries)));
     }
 
-    fn set_list_entry(self: Pin<&mut Self>, media_id: i64, status: QString, progress: i32) {
+    fn set_list_entry(
+        mut self: Pin<&mut Self>,
+        media_id: i64,
+        status: QString,
+        progress: i32,
+    ) {
         let status = status.to_string();
-        // `progress <= 0` means "leave progress alone" (the Tauri command's
-        // `Option<u32>` None); sending 0 would reset a tracked position.
+        // `progress <= 0` means "leave progress alone"; sending 0 would reset a
+        // tracked position. This is the status-change case (Watching ->
+        // Completed), which must not wipe how far the reader got.
         let progress = if progress > 0 { Some(progress as u32) } else { None };
 
-        let qt_thread = self.qt_thread();
-        let runtime = Arc::clone(&self.rust().runtime);
-        let anilist = Arc::clone(&self.rust().anilist);
-
-        runtime.spawn(async move {
-            let parsed: ListStatus = match serde_json::from_value(serde_json::Value::String(
-                status,
-            )) {
-                Ok(s) => s,
-                Err(err) => {
-                    let message = format!("unknown list status: {err}");
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.auth_error(QString::from(&message)));
-                    return;
-                }
-            };
-
-            match anilist.save_list_entry(media_id, parsed, progress).await {
-                Ok(()) => {
-                    // Only after the write succeeded: a failed save did not
-                    // change the list, so telling the UI to re-read would lie.
-                    let _ = qt_thread.queue(move |qobject| qobject.list_changed());
-                }
-                Err(err) => {
-                    let message = err.to_string();
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.auth_error(QString::from(&message)));
-                }
+        let parsed: ListStatus = match serde_json::from_value(serde_json::Value::String(
+            status,
+        )) {
+            Ok(s) => s,
+            Err(err) => {
+                let message = format!("unknown list status: {err}");
+                self.auth_error(QString::from(&message));
+                return;
             }
-        });
+        };
+
+        // The card the reader is looking at, so the new record carries a usable
+        // snapshot. Absent for a write from a surface that has only the id, in
+        // which case an existing record keeps its own snapshot.
+        let anime = self.rust().provider.cached_partial(media_id);
+        let store = Arc::clone(&self.rust().media_list);
+
+        let existing = anime
+            .as_ref()
+            .and_then(|a| store.get(a.provider, media_id));
+
+        let Some(anime) = anime.or_else(|| existing.as_ref().map(|e| e.anime.clone())) else {
+            // No snapshot anywhere: there is nothing to render a row from, and
+            // fetching one would be a network round trip the UI is waiting on.
+            self.auth_error(QString::from(
+                "could not add to the list: the work is not loaded yet",
+            ));
+            return;
+        };
+
+        let record = kitsune_core::list::local_change(anime, parsed, progress, existing);
+        if let Err(err) = store.upsert(record) {
+            let message = format!("could not save to your list: {err}");
+            self.auth_error(QString::from(&message));
+            return;
+        }
+
+        // Tell the UI immediately: the write is already durable on disk, so
+        // waiting for the network would only make the menu feel broken.
+        self.as_mut().list_changed();
+        self.as_mut().spawn_sync();
     }
 
-    fn delete_list_entry(self: Pin<&mut Self>, entry_id: i64) {
+    fn delete_list_entry(mut self: Pin<&mut Self>, media_id: i64) {
+        // `media_id`, not AniList's list-entry id: the store keys on
+        // `(provider, media_id)`, and an entry that has never been pushed has
+        // no list-entry id at all. It is marked deleted (a tombstone) rather
+        // than removed, so the delete can be retried and a pull cannot
+        // resurrect the work.
+        let store = Arc::clone(&self.rust().media_list);
+
+        let provider = self
+            .rust()
+            .provider
+            .cached_partial(media_id)
+            .map(|a| a.provider)
+            .or_else(|| {
+                store
+                    .get(ProviderId::AniList, media_id)
+                    .map(|e| e.provider)
+            })
+            .or_else(|| {
+                store
+                    .get(ProviderId::Kitsu, media_id)
+                    .map(|e| e.provider)
+            })
+            .unwrap_or(ProviderId::AniList);
+
+        if let Err(err) = store.mark_deleted(provider, media_id) {
+            let message = format!("could not remove from your list: {err}");
+            self.auth_error(QString::from(&message));
+            return;
+        }
+
+        self.as_mut().list_changed();
+        self.as_mut().spawn_sync();
+    }
+
+    /// Run one sync pass in the background.
+    ///
+    /// Never blocks the caller and never surfaces an error: a sync failure
+    /// leaves the dirty entries queued for the next attempt, which is the
+    /// intended behaviour offline.
+    fn spawn_sync(self: Pin<&mut Self>) {
+        // Collapse overlapping requests into one pass.
+        //
+        // `authStatus()` is called by the home page, My List and the detail
+        // page, and each of those used to start a FULL sync -- three pulls of
+        // the same 269-entry list at startup, which is exactly the rate-limit
+        // pressure the local store exists to relieve.
+        //
+        // `compare_exchange` rather than a flag check: two Qt-thread callers
+        // cannot interleave here, but a later refactor that spawns this from
+        // an async context would otherwise race.
+        if self
+            .rust()
+            .sync_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
         let qt_thread = self.qt_thread();
         let runtime = Arc::clone(&self.rust().runtime);
-        let anilist = Arc::clone(&self.rust().anilist);
-
+        let sync = Arc::clone(&self.rust().list_sync);
+        let in_flight = Arc::clone(&self.rust().sync_in_flight);
         runtime.spawn(async move {
-            match anilist.delete_list_entry(entry_id).await {
-                Ok(()) => {
-                    let _ = qt_thread.queue(move |qobject| qobject.list_changed());
-                }
-                Err(err) => {
-                    let message = err.to_string();
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.auth_error(QString::from(&message)));
-                }
+            let report = sync.run().await;
+            // One line per pass rather than per entry: a long outage would
+            // otherwise fill the log with the same failure.
+            tracing::info!("list sync: {}", report.summary());
+
+            // THE FIRST-RUN RACE: the page asks for the list as soon as it
+            // opens, which on a fresh install is BEFORE this pull has landed.
+            // It read an empty store and had no reason to ask again, so the
+            // list stayed blank until the app was restarted.
+            //
+            // Re-notifying after a pull that actually succeeded closes that
+            // gap. A failed pull changes nothing, so there is nothing to
+            // re-read and no signal is sent.
+            // Cleared BEFORE notifying: a page that reacts to
+            // `listChanged` by starting another sync must not be refused
+            // merely because this one has not returned yet.
+            in_flight.store(false, Ordering::Release);
+
+            if report.pulled_ok {
+                let _ = qt_thread.queue(|qobject| qobject.list_changed());
             }
         });
     }
 
     fn get_list_entry(self: Pin<&mut Self>, media_id: i64) {
-        // The detail lookup already fetched this entry in its own request, so
-        // answer from that copy when it is known. `Some(None)` is a real
-        // answer (the work is NOT on the list), which is why the outer option
-        // is checked rather than the inner one.
+        // The STORE answers first: it is the reader's own list, and it is
+        // current even when AniList has not heard about the latest change.
+        let store = Arc::clone(&self.rust().media_list);
+        let provider = self
+            .rust()
+            .provider
+            .cached_partial(media_id)
+            .map(|a| a.provider)
+            .unwrap_or(ProviderId::AniList);
+
+        if let Some(entry) = store.get(provider, media_id) {
+            let payload = if entry.deleted {
+                None
+            } else {
+                Some(kitsune_core::providers::anilist::ListEntry {
+                    id: entry.anilist_entry_id.unwrap_or(0),
+                    status: entry.status,
+                    progress: entry.progress,
+                })
+            };
+            let json = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
+            self.list_entry_ready(QString::from(&json));
+            return;
+        }
+
+        // Not in the store. The detail lookup may already have fetched it, so
+        // answer from that copy rather than making a request.
         if let Some(known) = self.rust().provider.cached_entry(media_id) {
             let json = serde_json::to_string(&known).unwrap_or_else(|_| "null".into());
             self.list_entry_ready(QString::from(&json));
@@ -1933,12 +2239,24 @@ impl qobject::Backend {
 
     /// Record that `anime_id` was opened. Synchronous file write, so it runs on
     /// the Qt thread directly -- no runtime hop for a few bytes to disk.
-    fn record_last_played(self: Pin<&mut Self>, anime_id: i64, episode: i32) {
+    fn record_last_played(
+        self: Pin<&mut Self>,
+        anime_id: i64,
+        episode: i32,
+        provider: QString,
+    ) {
         // `episode <= 0` means "no episode" (a film, or a play with none picked).
         let episode = if episode > 0 { Some(episode as u32) } else { None };
+        let provider = provider.to_string();
         // A failure here is not worth surfacing: the record is a hint, and a
         // missed write only means the row keeps its previous order.
-        let _ = self.rust().last_played.write(anime_id, episode);
+        //
+        // The namespace is stored WITH the id so the disc can resume from the
+        // source that issued it rather than assuming AniList.
+        let _ = self
+            .rust()
+            .last_played
+            .write(anime_id, Some(&provider), episode);
         // Nudge the disc and the Continue Watching row to re-read, so a just
         // started (or just finished) play updates the resume time live.
         self.library_changed();
@@ -2015,6 +2333,35 @@ impl qobject::Backend {
 
 /// Serialise to a JSON array, falling back to `[]` so a serialisation failure
 /// never drops the whole response (the UI already handles an empty list).
+/// The episode catalogue as it crosses from the backend to QML.
+///
+/// `{ info, aired }` rather than a bare array: the aired count is what stops an
+/// airing show from offering episodes the reader cannot watch yet, and it has to
+/// survive the trip because only the provider knows it.
+///
+/// At module scope because cxx-qt parses the `#[qobject]` block and rejects a
+/// `struct` declared inside a method body.
+#[derive(serde::Deserialize, Default)]
+struct EpisodeCatalogueWire {
+    #[serde(default)]
+    info: Vec<EpisodeInfo>,
+    #[serde(default)]
+    aired: u32,
+}
+
+/// Parse an `Anime.provider` spelling into a [`ProviderId`].
+///
+/// Unknown values fall back to AniList rather than failing: every caller that
+/// predates this parameter meant AniList, and an unparseable value should not
+/// blank the detail page.
+fn provider_id_from(raw: &str) -> ProviderId {
+    match raw.trim() {
+        "kitsu" => ProviderId::Kitsu,
+        "tmdb" => ProviderId::Tmdb,
+        _ => ProviderId::AniList,
+    }
+}
+
 fn json_or_empty<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[]".to_string())
 }

@@ -25,7 +25,9 @@ Item {
     property string initialSort: "popularity"
     property bool initialReversed: false
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded so the detail page fetches
+    // from the source that issued the id.
+    signal openAnime(int id, string provider)
 
     // --- Filter state --------------------------------------------------------
     property string searchText: initialSearch
@@ -690,7 +692,7 @@ Item {
                 cover: model.cover
                 format: model.format
                 animeStatus: model.status
-                onClicked: page.openAnime(model.id)
+                onClicked: page.openAnime(model.id, model.provider || "anilist")
             }
         }
 

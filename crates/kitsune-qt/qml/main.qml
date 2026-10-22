@@ -119,8 +119,15 @@ Window {
         }
     }
 
-    function openDetail(id) {
-        root.navigate(detailComponent, { "animeId": id, "backend": root.backend })
+    // `provider` is the id's namespace ("anilist" / "kitsu"). It is REQUIRED
+    // rather than inferred: the detail must come from the source that issued
+    // the id, and a cold partial cache would otherwise default to AniList.
+    function openDetail(id, provider) {
+        root.navigate(detailComponent, {
+            "animeId": id,
+            "animeProvider": provider || "anilist",
+            "backend": root.backend
+        })
     }
 
     // --- Global navigation input ------------------------------------------
@@ -352,7 +359,7 @@ Window {
         id: home
         visible: false
         backend: root.backend
-        onOpenAnime: (id) => root.openDetail(id)
+        onOpenAnime: (id, provider) => root.openDetail(id, provider)
         onOpenBrowse: () => root.goTo(browseComponent, "filter", { "backend": root.backend })
         onOpenBrowseFiltered: (status, sort, reversed) => root.openFilter(
             {
@@ -386,9 +393,9 @@ Window {
         backend: root.backend
         allowed: !watchModal.opened
         currentDetailId: root.currentDetailId
-        onOpenRequested: (animeId, episode) => {
-            root.openDetail(animeId)
-            watchModal.openFor(animeId, 0, episode, episode, "episodes", true)
+        onOpenRequested: (animeId, episode, provider) => {
+            root.openDetail(animeId, provider)
+            watchModal.openFor(animeId, 0, episode, episode, "episodes", true, provider)
         }
     }
 
@@ -428,17 +435,19 @@ Window {
         id: detailComponent
         DetailPage {
             onBack: root.goBack()
-            onOpenAnime: (id) => root.openDetail(id)
+            onOpenAnime: (id, provider) => root.openDetail(id, provider)
             // An episode click always searches afresh: `openFor` clears the
             // previous list and, critically, leaves `resumeLast` false so this
             // cannot replay the last release from another work.
             onOpenWatch: (animeId, malId, episodeNumber, absoluteEpisode) => {
+                // `animeProvider` resolves to this DetailPage's own property,
+                // so the watch modal fetches from the same source as the page.
                 watchModal.openFor(animeId, malId, episodeNumber, absoluteEpisode,
-                    "episodes", false)
+                    "episodes", false, animeProvider)
             }
             // Season packs are a work-level search, so no episode travels.
             onOpenPacks: (animeId, malId) => {
-                watchModal.openFor(animeId, malId, 0, 0, "packs", false)
+                watchModal.openFor(animeId, malId, 0, 0, "packs", false, animeProvider)
             }
             onOpenGenre: (genre) => root.openFilter(
                 { "backend": root.backend, "initialGenre": genre },
@@ -454,7 +463,7 @@ Window {
     Component {
         id: browseComponent
         BrowsePage {
-            onOpenAnime: (id) => root.openDetail(id)
+            onOpenAnime: (id, provider) => root.openDetail(id, provider)
         }
     }
 
@@ -462,28 +471,28 @@ Window {
         id: recommendationsComponent
         RecommendationsPage {
             onBack: root.goBack()
-            onOpenAnime: (id) => root.openDetail(id)
+            onOpenAnime: (id, provider) => root.openDetail(id, provider)
         }
     }
 
     Component {
         id: scheduleComponent
         SchedulePage {
-            onOpenAnime: (id) => root.openDetail(id)
+            onOpenAnime: (id, provider) => root.openDetail(id, provider)
         }
     }
 
     Component {
         id: topComponent
         TopPage {
-            onOpenAnime: (id) => root.openDetail(id)
+            onOpenAnime: (id, provider) => root.openDetail(id, provider)
         }
     }
 
     Component {
         id: myListComponent
         MyListPage {
-            onOpenAnime: (id) => root.openDetail(id)
+            onOpenAnime: (id, provider) => root.openDetail(id, provider)
         }
     }
 
@@ -536,7 +545,7 @@ Window {
             // Dev aid only, but still goes through `openFor` so it cannot
             // inherit state from a previous open.
             watchModal.openFor(initialEpisodeAnime, 0, initialEpisodeNumber,
-                initialEpisodeNumber, "episodes", false)
+                initialEpisodeNumber, "episodes", false, "anilist")
         } else if (initialWatchUrl.length > 0) {
             root.navigate(watchComponent, { "streamUrl": initialWatchUrl })
         }

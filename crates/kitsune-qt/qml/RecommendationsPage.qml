@@ -15,7 +15,9 @@ Item {
     property string workTitle: ""
 
     signal back()
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded so the detail page fetches
+    // from the source that issued the id.
+    signal openAnime(int id, string provider)
 
     readonly property int perPage: 24
 
@@ -298,7 +300,7 @@ Item {
                 // back into the object the card expects.
                 recommendation: JSON.parse(recJson)
                 backend: page.backend
-                onOpenAnime: (id) => page.openAnime(id)
+                onOpenAnime: (id, provider) => page.openAnime(id, provider)
             }
 
             onAtYEndChanged: {

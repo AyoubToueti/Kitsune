@@ -75,13 +75,15 @@ Item {
     }
 
     // Remove a work from the reader's list.
+    //
+    // Keyed on the WORK, not the list entry: a work added while AniList was
+    // unreachable has no entry id, and gating on one would make it impossible
+    // to remove.
     function remove(animeId) {
-        const entryId = entryIdFor(animeId)
-        if (entryId === 0) return
         const next = Object.assign({}, statuses)
         delete next[String(animeId)]
         statuses = next
-        if (backend) backend.deleteListEntry(entryId)
+        if (backend) backend.deleteListEntry(animeId)
     }
 
     // The statuses a quick-add offers, in the order shown. Labels are the

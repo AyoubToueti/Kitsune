@@ -9,7 +9,9 @@ Item {
 
     property var backend: null
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded so the detail page fetches
+    // from the source that issued the id.
+    signal openAnime(int id, string provider)
 
     // Day strip: `PAST` days before today, `FUTURE` after. Only the selected
     // day is fetched (AniList caps perPage at 50, so a whole window cannot
@@ -292,7 +294,7 @@ Item {
                 HoverHandler { id: rowHover }
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: page.openAnime(model.id)
+                    onClicked: page.openAnime(model.id, model.provider || "anilist")
                 }
             }
         }

@@ -11,7 +11,8 @@ Item {
     // Where the reader stopped, from the local watch-position store, or null
     property var position: null
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded from the entry's own `Anime`.
+    signal openAnime(int id, string provider)
     signal openWatch(int animeId, int episode)
 
     readonly property var anime: entry ? entry.anime : null
@@ -144,7 +145,9 @@ Item {
                 anchors.fill: parent
                 acceptedButtons: Qt.LeftButton
                 cursorShape: Qt.PointingHandCursor
-                onClicked: card.openAnime(card.anime ? card.anime.id : 0)
+                onClicked: card.openAnime(
+                    card.anime ? card.anime.id : 0,
+                    (card.anime && card.anime.provider) ? card.anime.provider : "anilist")
             }
 
             // Prominent Floating Glass Pill Overlay (Resume Watching)

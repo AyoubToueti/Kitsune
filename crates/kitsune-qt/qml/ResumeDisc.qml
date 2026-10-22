@@ -22,7 +22,10 @@ Item {
     property var position: null
 
     // Emitted when the disc (or its card) is clicked: open the work's page.
-    signal openRequested(int animeId, int episode)
+    //
+    // `provider` is the id's namespace, read from the stored last-played record
+    // so the page fetches from the source that issued the id.
+    signal openRequested(int animeId, int episode, string provider)
 
     readonly property bool visible_: allowed
         && lastPlayed !== null && anime !== null
@@ -44,8 +47,14 @@ Item {
         function onLastPlayedReady(json) {
             const record = JSON.parse(json)
             disc.lastPlayed = record
-            if (record && record.animeId) disc.backend.getAnime(record.animeId)
-            else disc.anime = null
+            // A record written before `provider` existed has none; AniList is
+            // the only source that could have issued it at the time.
+            const provider = (record && record.provider) ? record.provider : "anilist"
+            if (record && record.animeId) {
+                disc.backend.getAnime(record.animeId, provider)
+            } else {
+                disc.anime = null
+            }
         }
         function onAnimeReady(json) {
             const parsed = JSON.parse(json)
@@ -251,7 +260,7 @@ Item {
         MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: disc.openRequested(disc.lastPlayed.animeId, disc.lastPlayed.episode || 1)
+            onClicked: disc.openRequested(disc.lastPlayed.animeId, disc.lastPlayed.episode || 1, disc.lastPlayed.provider || "anilist")
         }
     }
 
@@ -393,7 +402,7 @@ Item {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: disc.openRequested(disc.lastPlayed.animeId, disc.lastPlayed.episode || 1)
+            onClicked: disc.openRequested(disc.lastPlayed.animeId, disc.lastPlayed.episode || 1, disc.lastPlayed.provider || "anilist")
         }
     }
 }

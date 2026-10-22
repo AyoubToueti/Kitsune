@@ -12,6 +12,10 @@ Popup {
     property int malId: 0
     property int episodeNumber: 0
     property int absoluteEpisode: 0
+    /// The id's NAMESPACE ("anilist" / "kitsu"). Passed in by `openFor`, so a
+    /// detail lookup asks the source that issued this id rather than assuming
+    /// AniList.
+    property string animeProvider: "anilist"
     property var titles: []
     property var backend: null
     property string episodeThumbnail: ""
@@ -438,10 +442,14 @@ Popup {
     //
     // `mode` is "episodes" or "packs"; `resumeLast` asks the backend for the
     // remembered release of this work instead of searching.
-    function openFor(anime, mal, episode, absolute, mode, resumeLast) {
+    // `provider` is the id's namespace, defaulting to AniList for callers that
+    // predate the parameter. Without it the modal's own `getAnime` would ask
+    // AniList for a Kitsu id and fetch a different work.
+    function openFor(anime, mal, episode, absolute, mode, resumeLast, provider) {
         // Per-open search state. The generation bump orphans any reply still
         // in flight from the previous open.
         modal.searchGeneration += 1
+        modal.animeProvider = provider || "anilist"
         modal.loadedAnimeId = 0
         modal.loadedEpisode = 0
         modal.titles = []
@@ -482,7 +490,7 @@ Popup {
         if (modal.resumeLast) {
             modal.searching = true
             modal.stage = "releases"
-            modal.backend.getAnime(animeId)
+            modal.backend.getAnime(animeId, modal.animeProvider)
             modal.backend.getLastRelease(animeId)
             return
         }
@@ -497,14 +505,14 @@ Popup {
             badges = ({})
             error = ""
             searching = false
-            backend.getAnime(animeId)
+            backend.getAnime(animeId, modal.animeProvider)
         }
     }
 
     onClosed: {
         modal.savePositionNow()
         if (modal.backend && modal.animeId > 0) {
-            modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber)
+            modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber, modal.animeProvider)
         }
         modal.teardown()
     }
@@ -925,7 +933,7 @@ Popup {
                     titles = []
                     releases = []
                     badges = ({})
-                    modal.backend.getAnime(modal.animeId)
+                    modal.backend.getAnime(modal.animeId, modal.animeProvider)
                 }
             }
         }
@@ -941,7 +949,7 @@ Popup {
             modal.backend.holdTorrent(modal.torrentId)
             modal.loadStream()
             if (modal.backend && modal.animeId > 0) {
-                modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber)
+                modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber, modal.animeProvider)
                 modal.backend.setListEntry(modal.animeId, "current", modal.episodeNumber)
                 if (modal.releaseMagnet.length > 0) {
                     modal.backend.recordLastRelease(

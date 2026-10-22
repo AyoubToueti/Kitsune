@@ -12,6 +12,10 @@ Item {
 
     // The anime id to load. Setting it triggers the fetch.
     property int animeId: 0
+    /// The id's NAMESPACE ("anilist" / "kitsu"), from the card that was
+    /// clicked. Ids are per-source, so the page must ask the source that
+    /// issued this one -- a Kitsu id sent to AniList fetches a different work.
+    property string animeProvider: "anilist"
     property var anime: null
 
     // The work itself failed to load: the skeleton gives way to an error block
@@ -23,7 +27,9 @@ Item {
     property var backend: null
 
     signal back()
-    signal openAnime(int id)
+    /// `provider` is the id's namespace, so the next page fetches from the
+    /// source that issued it.
+    signal openAnime(int id, string provider)
     // Emitted when an episode is chosen: pushes the watch page with the
     // numbers it needs to search a release and match a torrent file.
     signal openWatch(int animeId, int malId, int episodeNumber, int absoluteEpisode)
@@ -40,7 +46,11 @@ Item {
     property var episodes: []
     property int episodeOffset: 0
     property bool episodesLoading: false
+    // The episode catalogue as `{ info: [...], aired: N }`. The aired count is
+    // separate from the announced `episodeCount` because a releasing show has
+    // more announced episodes than watchable ones.
     property var episodeInfo: []
+    property int airedEpisodes: 0
     property bool sortAscending: true
 
     // --- Jump-to-episode --------------------------------------------------
@@ -174,11 +184,22 @@ Item {
             RetryState.reportFailure(message)
         }
         function onEpisodesReady(json) {
-            page.episodeInfo = JSON.parse(json) || []
+            // `{ info, aired }`: the catalogue plus how many have actually
+            // aired. A bare array here would silently lose the aired count and
+            // re-introduce the "unaired episodes are playable" bug.
+            const payload = JSON.parse(json) || ({})
+            page.episodeInfo = payload.info || []
+            page.airedEpisodes = payload.aired || 0
+            page.episodesLoading = false
             page.rebuildEpisodes()
         }
         function onEpisodesFailed(message) {
+            // No catalogue: fall back to the previous behaviour, which
+            // synthesises from the announced count. Clearing the loading flag
+            // is what un-hides the grid in that case.
             page.episodeInfo = []
+            page.airedEpisodes = 0
+            page.episodesLoading = false
             page.rebuildEpisodes()
         }
 
@@ -223,7 +244,7 @@ Item {
             anime.episodeCount || 0,
             anime.status || "",
             anime.coverImage || "",
-            JSON.stringify(episodeInfo))
+            JSON.stringify({ info: page.episodeInfo, aired: page.airedEpisodes }))
         var list = JSON.parse(json) || []
         if (!page.sortAscending) {
             list.reverse()
@@ -234,12 +255,27 @@ Item {
 
     function loadEpisodes() {
         page.episodeInfo = []
-        page.rebuildEpisodes()
+        page.airedEpisodes = 0
 
-        if (!anime || !anime.idMal) return
+        // Deliberately NO `rebuildEpisodes()` here. Rebuilding now would
+        // synthesise a stand-in list from the announced count, paint it, and
+        // then replace it when the real catalogue lands -- the visible "flash"
+        // of placeholder cards. The grid stays empty (behind the loading fox)
+        // until `onEpisodesReady` fills it.
+        //
+        // The id AND its namespace: a Kitsu id sent as an AniList id resolves
+        // to no mapping and yields an empty grid. `anime.provider` says which
+        // source issued it, so the backend does not have to guess.
+        if (!anime || !anime.id) {
+            // Nothing to fetch, so nothing to wait for. Rebuild immediately so
+            // the synthesised path still works.
+            page.episodesLoading = false
+            page.rebuildEpisodes()
+            return
+        }
 
         page.episodesLoading = true
-        backend.getEpisodes(anime.idMal)
+        backend.getEpisodes(anime.id, anime.provider || "anilist")
     }
 
     function loadListEntry() {
@@ -289,7 +325,7 @@ Item {
             page.signedIn = false
             page.listStatus = ""
             page.listEntryId = 0
-            backend.getAnime(animeId)
+            backend.getAnime(animeId, page.animeProvider)
         }
     }
 
@@ -298,11 +334,12 @@ Item {
             page.anime = null
             page.loadFailed = false
             page.loadError = ""
-            backend.getAnime(animeId)
+            backend.getAnime(animeId, page.animeProvider)
         }
     }
 
     onAnimeIdChanged: maybeLoad()
+    onAnimeProviderChanged: maybeLoad()
     onBackendChanged: maybeLoad()
 
     Timer {
@@ -731,12 +768,18 @@ Item {
                             }
                         }
 
+                        // `page.episodes.length` is what is RENDERED, not what
+                        // has aired -- the list is capped and can be paged. The
+                        // aired count is the honest number, so it comes from
+                        // the provider rather than from the grid.
                         Text {
-                            visible: page.anime
-                                && page.anime.episodeCount != null
-                                && page.episodes.length > 0
-                                && page.anime.episodeCount > page.episodes.length
-                            text: page.episodes.length + " of " + (page.anime ? page.anime.episodeCount : 0) + " aired"
+                            readonly property int aired: page.airedEpisodes > 0
+                                ? page.airedEpisodes
+                                : (page.anime ? (page.anime.airedEpisodes || 0) : 0)
+                            readonly property int total: page.anime && page.anime.episodeCount != null
+                                ? page.anime.episodeCount : 0
+                            visible: total > 0 && aired > 0 && total > aired
+                            text: aired + " of " + total + " aired"
                             color: Theme.inkFaint
                             font.pixelSize: 12
                             Layout.alignment: Qt.AlignVCenter
@@ -811,6 +854,11 @@ Item {
                         cellWidth: 216
                         cellHeight: 150
                         clip: true
+
+                        // Hidden while the catalogue is in flight, so the
+                        // reader sees the loading fox instead of a grid that
+                        // fills with placeholders and then repaints.
+                        visible: !page.episodesLoading && page.episodes.length > 0
 
                         model: page.episodes
 
@@ -1008,9 +1056,20 @@ Item {
                         }
                     }
 
-                    // Empty Episode State
+                    // Loading / empty state for the grid.
+                    //
+                    // Three distinct states, because they mean different things
+                    // to the reader:
+                    //   - fetching the catalogue -> "loading" (thinking fox)
+                    //   - fetched, but nothing to show -> "sleeping"
+                    //   - no anime loaded at all -> not rendered
+                    //
+                    // Before this branch existed the page synthesised cards
+                    // first and repainted when the real data landed, so the
+                    // reader saw placeholder episodes flash past.
                     Rectangle {
-                        visible: page.episodes.length === 0 && page.anime !== null
+                        visible: page.anime !== null
+                            && (page.episodesLoading || page.episodes.length === 0)
                         width: parent.width
                         implicitHeight: 260
                         radius: 14
@@ -1021,8 +1080,15 @@ Item {
                         ErrorState {
                             anchors.fill: parent
                             anchors.margins: 16
-                            kind: "sleeping"
+                            kind: page.episodesLoading ? "loading" : "sleeping"
                             artWidth: 120
+                            showText: true
+                            title: page.episodesLoading
+                                ? "Fetching episodes…"
+                                : "Nothing here yet"
+                            message: page.episodesLoading
+                                ? "Looking up this show's episode list."
+                                : "There's nothing to show right now. Check back in a little while."
                         }
                     }
                 }
@@ -1205,7 +1271,10 @@ Item {
                                     anchors.fill: parent
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
-                                    onClicked: page.openAnime(modelData.id)
+                                    // A relation carries the SAME provider as
+                                    // the page it sits on: both sources keep
+                                    // their relations in their own namespace.
+                                    onClicked: page.openAnime(modelData.id, page.animeProvider)
                                 }
                             }
                         }
@@ -1266,7 +1335,7 @@ Item {
                         votable: true
                         recommendation: modelData
                         backend: page.backend
-                        onOpenAnime: (id) => page.openAnime(id)
+                        onOpenAnime: (id, provider) => page.openAnime(id, provider)
                     }
                 }
             }

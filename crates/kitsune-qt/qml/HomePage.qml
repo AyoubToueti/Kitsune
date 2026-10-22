@@ -10,7 +10,9 @@ Item {
 
     property var backend: null
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, carried from the card so the detail
+    // page fetches from the source that issued the id.
+    signal openAnime(int id, string provider)
     signal openTop()
     signal openSchedule()
     signal openBrowse()
@@ -279,7 +281,7 @@ Item {
                 width: parent.width
                 items: page.heroItems
                 visible: !page.trendingLoading
-                onOpenAnime: (id) => page.openAnime(id)
+                onOpenAnime: (id, provider) => page.openAnime(id, provider)
             }
 
             // --- Trending rail ------------------------------------------
@@ -320,7 +322,7 @@ Item {
                         // original. It used to continue the hero's numbering
                         // (`index + heroLimit + 1`), so the first card read 06.
                         rank: index + 1
-                        onClicked: page.openAnime(modelData.id)
+                        onClicked: page.openAnime(modelData.id, modelData.provider || "anilist")
                     }
                 }
             }
@@ -353,7 +355,7 @@ Item {
                         required property var modelData
                         entry: modelData
                         position: page.positionFor(modelData.anime.id)
-                        onOpenAnime: (id) => page.openAnime(id)
+                        onOpenAnime: (id, provider) => page.openAnime(id, provider)
                         onOpenWatch: (animeId, episode) => page.openWatch(animeId, episode)
                     }
                 }
@@ -391,7 +393,7 @@ Item {
                     width: (parent.width - 48) / 4
                     title: "Top airing"
                     items: page.topAiringItems
-                    onOpenAnime: (id) => page.openAnime(id)
+                    onOpenAnime: (id, provider) => page.openAnime(id, provider)
                     // Airing, most popular first -- the shelf's own filter.
                     onViewMore: page.openBrowseFiltered("releasing", "popularity", false)
                 }
@@ -399,21 +401,21 @@ Item {
                     width: (parent.width - 48) / 4
                     title: "Most popular"
                     items: page.mostPopularItems
-                    onOpenAnime: (id) => page.openAnime(id)
+                    onOpenAnime: (id, provider) => page.openAnime(id, provider)
                     onViewMore: page.openBrowseFiltered("", "popularity", false)
                 }
                 ListBlock {
                     width: (parent.width - 48) / 4
                     title: "Top rated"
                     items: page.topRatedItems
-                    onOpenAnime: (id) => page.openAnime(id)
+                    onOpenAnime: (id, provider) => page.openAnime(id, provider)
                     onViewMore: page.openBrowseFiltered("", "score", false)
                 }
                 ListBlock {
                     width: (parent.width - 48) / 4
                     title: "Latest completed"
                     items: page.latestCompletedItems
-                    onOpenAnime: (id) => page.openAnime(id)
+                    onOpenAnime: (id, provider) => page.openAnime(id, provider)
                     // Finished, most recently started first.
                     onViewMore: page.openBrowseFiltered("finished", "newest", false)
                 }
@@ -443,7 +445,7 @@ Item {
                     width: parent.width - Theme.pad * 2
                     visible: !page.trendingLoading
                     backend: page.backend
-                    onOpenAnime: (id) => page.openAnime(id)
+                    onOpenAnime: (id, provider) => page.openAnime(id, provider)
                 }
             }
 
@@ -528,7 +530,7 @@ Item {
                         y: 4
                         width: parent.width - 8
                         items: page.top100Items
-                        onOpenAnime: (id) => page.openAnime(id)
+                        onOpenAnime: (id, provider) => page.openAnime(id, provider)
                     }
                 }
             }

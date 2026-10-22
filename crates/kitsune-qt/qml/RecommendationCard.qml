@@ -17,7 +17,8 @@ Item {
     property bool votable: false
     property var backend: null
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded from the recommended `Anime`.
+    signal openAnime(int id, string provider)
 
     readonly property var anime: recommendation ? recommendation.anime : null
     readonly property int animeId: anime ? (anime.id || 0) : 0
@@ -267,7 +268,7 @@ Item {
                     }
                     if (mouse.button !== Qt.LeftButton) return
                     if ((mouse.modifiers & Qt.AltModifier) !== 0) return
-                    if (card.anime) card.openAnime(card.anime.id)
+                    if (card.anime) card.openAnime(card.anime.id, card.anime.provider || "anilist")
                 }
             }
 

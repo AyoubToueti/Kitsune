@@ -18,6 +18,9 @@ Item {
 
     // What to play. The numbers come from the detail page's episode grid.
     property int animeId: 0
+    /// The id's NAMESPACE ("anilist" / "kitsu"), so the title lookup asks the
+    /// source that issued `animeId` rather than assuming AniList.
+    property string animeProvider: "anilist"
     property int malId: 0
     property int episodeNumber: 0
     // The work-wide episode number, when it differs from `episodeNumber`.
@@ -225,7 +228,7 @@ Item {
             page.stage = "play"
             player.command(["loadfile", streamUrl, "replace"])
         } else if (animeId > 0) {
-            backend.getAnime(animeId)
+            backend.getAnime(animeId, page.animeProvider)
         }
     }
 

@@ -9,7 +9,9 @@ Item {
 
     property var backend: null
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded so the detail page fetches
+    // from the source that issued the id.
+    signal openAnime(int id, string provider)
 
     // The ranked list. Loaded 50 at a time, capped at 100: reaching the end
     // of the visible rows fetches the next page until the cap or AniList runs
@@ -287,7 +289,7 @@ Item {
                 HoverHandler { id: rowHover }
                 MouseArea {
                     anchors.fill: parent
-                    onClicked: page.openAnime(model.id)
+                    onClicked: page.openAnime(model.id, model.provider || "anilist")
                 }
             }
 

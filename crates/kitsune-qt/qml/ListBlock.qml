@@ -11,7 +11,9 @@ Rectangle {
     // The home-page section title, e.g. "Top airing".
     property var items: []
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded so the detail page fetches
+    // from the source that issued the id.
+    signal openAnime(int id, string provider)
     signal viewMore()
 
     Layout.fillWidth: true
@@ -42,7 +44,7 @@ Rectangle {
                 required property var modelData
                 Layout.fillWidth: true
                 anime: modelData
-                onClicked: block.openAnime(modelData.id)
+                onClicked: block.openAnime(modelData.id, modelData.provider || "anilist")
             }
         }
 

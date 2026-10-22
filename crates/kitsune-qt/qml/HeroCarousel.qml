@@ -10,7 +10,8 @@ Item {
 
     property var items: []
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, carried through from the model.
+    signal openAnime(int id, string provider)
 
     /** How long each slide is shown before advancing. */
     readonly property int advanceMs: 7000
@@ -263,7 +264,7 @@ Item {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: carousel.openAnime(modelData.id)
+                            onClicked: carousel.openAnime(modelData.id, modelData.provider || "anilist")
                         }
                     }
                 }

@@ -17,7 +17,9 @@ Item {
     // The caller's own label, so a reply can be matched to this widget.
     property string tag: "home-schedule"
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, forwarded so the detail page fetches
+    // from the source that issued the id.
+    signal openAnime(int id, string provider)
 
     readonly property int pastDays: 7
     readonly property int futureDays: 21
@@ -196,11 +198,13 @@ Item {
             }
         }
 
+        // --- Error states ------------------------------------------------
         ErrorState {
             visible: widget.errorText !== ""
             width: parent.width
             compact: true
-            showArt: false
+            showArt: true
+            artWidth: 100
             failureMessage: widget.errorText
             title: "Could not load that day"
             message: ""
@@ -213,7 +217,8 @@ Item {
                 && widget.airing.length === 0
             width: parent.width
             compact: true
-            showArt: false
+            showArt: true
+            artWidth: 100
             showActions: false
             kind: "sleeping"
             title: "Nothing airing this day"
@@ -280,7 +285,9 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: widget.openAnime(widget.airing[index].anime.id)
+                    onClicked: widget.openAnime(
+                        widget.airing[index].anime.id,
+                        widget.airing[index].anime.provider || "anilist")
                 }
             }
         }

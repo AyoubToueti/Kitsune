@@ -12,7 +12,8 @@ Column {
     // Rank of the first item, so a later page continues the numbering.
     property int startRank: 1
 
-    signal openAnime(int id)
+    // `provider` is the id's namespace, carried through from the model.
+    signal openAnime(int id, string provider)
 
     function displayTitle(item) {
         return TitlePreference.title(item)
@@ -206,7 +207,7 @@ Column {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: list.openAnime(modelData.id)
+                onClicked: list.openAnime(modelData.id, modelData.provider || "anilist")
             }
         }
     }
