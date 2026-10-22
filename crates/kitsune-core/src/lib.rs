@@ -13,6 +13,7 @@ pub mod auth;
 pub mod diagnostics;
 pub mod episodes;
 pub mod indexer;
+pub mod list;
 pub mod player;
 pub mod providers;
 pub mod settings;
