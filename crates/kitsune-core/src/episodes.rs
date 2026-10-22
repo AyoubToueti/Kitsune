@@ -81,12 +81,16 @@ pub fn synthesize_episodes(count: Option<u32>, cover_image: Option<&str>) -> Vec
         .collect()
 }
 
-/// Turn Jikan's per-episode catalogue into display entries.
+/// Turn a provider's per-episode catalogue into display entries.
 ///
 /// Every entry keeps its explicit `number`, so the torrent matcher never has to
-/// recover it from the title. `cover_image` is used as the card background
-/// because Jikan has no per-episode stills; the episode's own title is the real
-/// one, and the fallback only fires for a genuinely untitled entry.
+/// recover it from the title.
+///
+/// The card image prefers the EPISODE's own still and falls back to the work's
+/// poster. Kitsu supplies per-episode thumbnails; Jikan does not, so a Jikan
+/// catalogue still gets the poster and looks exactly as it did before. Cloning
+/// the still onto each entry is what makes the episode grid read as individual
+/// episodes rather than a wall of identical posters.
 pub fn episodes_from_info(info: &[EpisodeInfo], cover_image: Option<&str>) -> Vec<Episode> {
     info.iter()
         .map(|entry| Episode {
@@ -97,7 +101,10 @@ pub fn episodes_from_info(info: &[EpisodeInfo], cover_image: Option<&str>) -> Ve
                     .clone()
                     .unwrap_or_else(|| format!("Episode {}", entry.number)),
             ),
-            thumbnail: cover_image.map(str::to_string),
+            thumbnail: entry
+                .thumbnail
+                .clone()
+                .or_else(|| cover_image.map(str::to_string)),
             url: None,
             site: None,
             aired: entry.aired.clone(),
@@ -164,6 +171,7 @@ pub fn episodes_for(anime: &Anime, info: &[EpisodeInfo], now_unix: i64) -> Vec<E
         anime.status.as_deref(),
         anime.cover_image.as_deref(),
         info,
+        anime.aired_episodes,
         now_unix,
     )
 }
@@ -178,6 +186,7 @@ pub fn episodes_for_facts(
     status: Option<&str>,
     cover_image: Option<&str>,
     info: &[EpisodeInfo],
+    aired_through: Option<u32>,
     now_unix: i64,
 ) -> Vec<Episode> {
     if !info.is_empty() {
@@ -194,7 +203,30 @@ pub fn episodes_for_facts(
             known
         };
     }
-    synthesize_episodes(episode_count, cover_image)
+
+    // No catalogue to show, so the list has to be synthesised. The count to
+    // synthesise from is the crux of the "unaired episodes" bug:
+    //
+    // - `episode_count` is the ANNOUNCED total, which for a releasing work
+    //   includes episodes that have not aired yet.
+    // - `aired_through` is how many have ACTUALLY aired.
+    //
+    // A releasing work must be capped at the aired count, otherwise the grid
+    // offers episodes the reader cannot watch. A finished work ignores the cap
+    // (everything has aired), and a work with no announced total (One Piece)
+    // uses the aired count as its only source of length.
+    let ceiling = match (status, aired_through) {
+        (Some("RELEASING"), Some(aired)) => match episode_count {
+            Some(total) => Some(total.min(aired)),
+            None => Some(aired),
+        },
+        // No status, but an aired count and no announced total: the aired count
+        // is still better than nothing.
+        (_, Some(aired)) if episode_count.is_none() => Some(aired),
+        _ => episode_count,
+    };
+
+    synthesize_episodes(ceiling, cover_image)
 }
 
 /// Fill the gaps between a catalogue and the count the provider announced.
@@ -399,6 +431,7 @@ mod tests {
             number,
             title: None,
             aired: aired.map(str::to_string),
+            thumbnail: None,
             filler: false,
             recap: false,
         }
@@ -414,6 +447,7 @@ mod tests {
             banner_image: None,
             description: None,
             episode_count: count,
+            aired_episodes: None,
             duration_minutes: None,
             format: None,
             genres: Vec::new(),
