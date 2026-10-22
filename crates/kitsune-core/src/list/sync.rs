@@ -23,6 +23,16 @@ use crate::types::{Anime, ListStatus, ProviderId};
 
 use super::store::{now_seconds, MediaListRecord, MediaListStore};
 
+/// How long a successful pull is trusted when there is nothing to push.
+///
+/// A local change always pulls, because the server's view may have moved. A
+/// sync with no dirty entries only refreshes what the reader can already see,
+/// and doing that on every write was making a status change cost a full
+/// 285-entry request. Five minutes is short enough that a remote edit shows up
+/// while the reader is still using the app, and long enough that a burst of
+/// edits costs one pull.
+const PULL_TTL_SECONDS: i64 = 300;
+
 /// What one sync run did, for logging and for the UI.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncReport {
@@ -36,14 +46,23 @@ pub struct SyncReport {
     pub still_dirty: usize,
     /// Whether the pull ran at all. False when signed out or AniList failed.
     pub pulled_ok: bool,
+    /// Whether the pull was skipped because the last one is still fresh.
+    ///
+    /// Distinct from `pulled_ok`: nothing failed, the pull was simply not
+    /// needed. The UI treats it the same as a success.
+    pub pull_skipped: bool,
 }
 
 impl SyncReport {
     /// One line, for the log. Deliberately terse: a sync runs on every start.
     pub fn summary(&self) -> String {
         format!(
-            "media list sync: pushed {}, failed {}, pulled {}, still dirty {}",
-            self.pushed, self.failed, self.pulled, self.still_dirty
+            "media list sync: pushed {}, failed {}, pulled {}, still dirty {}{}",
+            self.pushed,
+            self.failed,
+            self.pulled,
+            self.still_dirty,
+            if self.pull_skipped { " (pull skipped)" } else { "" },
         )
     }
 }
@@ -88,6 +107,17 @@ impl ListSync {
             }
         }
 
+        // A pull is only worth a request when either the server might have
+        // moved (a push just happened) or the last one is stale. With nothing
+        // pushed and a fresh pull, the answer would be the state already on
+        // disk.
+        if report.pushed == 0 && self.pull_is_fresh() {
+            report.pull_skipped = true;
+            report.pulled_ok = true;
+            report.still_dirty = self.store.dirty().len();
+            return report;
+        }
+
         match self.pull().await {
             Ok(entries) => {
                 report.pulled = entries.len();
@@ -104,6 +134,19 @@ impl ListSync {
         }
 
         report
+    }
+
+    /// Whether the last successful pull is recent enough to trust.
+    ///
+    /// A clock that moved backwards (a timezone change, an NTP correction)
+    /// yields a negative age; treated as fresh, so the worst case is one
+    /// skipped pull rather than a loop of forced ones.
+    fn pull_is_fresh(&self) -> bool {
+        let Some(last) = self.store.last_pull_at() else {
+            return false;
+        };
+        let age = now_seconds() - last;
+        (0..PULL_TTL_SECONDS).contains(&age)
     }
 
     /// Push one entry, recording the server ids on success.
@@ -366,6 +409,7 @@ mod tests {
             pulled: 30,
             still_dirty: 1,
             pulled_ok: true,
+            pull_skipped: false,
         };
 
         let line = report.summary();
@@ -373,6 +417,20 @@ mod tests {
         assert!(line.contains("failed 1"));
         assert!(line.contains("pulled 30"));
         assert!(line.contains("still dirty 1"));
+        assert!(!line.contains("skipped"), "a real pull is not a skip");
+    }
+
+    #[test]
+    fn a_skipped_pull_says_so() {
+        let report = SyncReport {
+            pull_skipped: true,
+            pulled_ok: true,
+            ..SyncReport::default()
+        };
+
+        // The skip is visible in the log, otherwise "pulled 0" reads like a
+        // failure to anyone diagnosing a stale list.
+        assert!(report.summary().contains("pull skipped"));
     }
 }
 

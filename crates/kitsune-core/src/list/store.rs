@@ -144,6 +144,14 @@ struct Stored {
     /// before the pull filled it.
     #[serde(default)]
     synced: bool,
+    /// Unix seconds at which the last pull completed, if any.
+    ///
+    /// Lets a sync with nothing to push skip the network for a few minutes.
+    /// Without it, every write (a status change, a progress tick, a delete)
+    /// was followed by a full pull of the whole list -- so changing five
+    /// statuses in a row made five 285-entry pulls.
+    #[serde(default)]
+    last_pull_at: Option<i64>,
 }
 
 /// Reads and writes the local media list.
@@ -200,6 +208,11 @@ impl MediaListStore {
     /// Whether a successful pull has ever completed.
     pub fn has_synced(&self) -> bool {
         self.load().synced
+    }
+
+    /// Unix seconds at which the last pull completed, if any.
+    pub fn last_pull_at(&self) -> Option<i64> {
+        self.load().last_pull_at
     }
 
     /// Mark a pull as completed.
@@ -331,9 +344,14 @@ impl MediaListStore {
             }
         }
 
+        // Reconcile IS the completion of a pull -- the caller only calls it
+        // with data the server just sent -- so the timestamp is stamped here
+        // rather than in the engine. That keeps the two from disagreeing about
+        // whether the pull that produced this data counts.
         self.save(&Stored {
             entries: merged,
             synced: true,
+            last_pull_at: Some(now_seconds()),
         })?;
 
         Ok(kept_dirty)
@@ -759,6 +777,21 @@ mod tests {
         store.reconcile(Vec::new()).expect("reconcile");
 
         assert!(store.has_synced());
+    }
+
+    #[test]
+    fn reconcile_stamps_the_pull_time() {
+        let (_dir, store) = store();
+        assert_eq!(store.last_pull_at(), None, "no pull has run yet");
+
+        let before = now_seconds();
+        store.reconcile(Vec::new()).expect("reconcile");
+
+        let stamped = store.last_pull_at().expect("a completed pull is stamped");
+        assert!(
+            stamped >= before,
+            "the stamp is the pull's own clock, not a stale one"
+        );
     }
 
     #[test]
