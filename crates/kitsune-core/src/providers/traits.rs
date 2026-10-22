@@ -102,6 +102,39 @@ pub trait AnimeProvider: Send + Sync {
     /// an error — callers may legitimately probe for ids that do not exist.
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError>;
 
+    /// Look up a title by an id whose NAMESPACE the caller already knows.
+    ///
+    /// Ids are per-provider, so a bare `i64` is ambiguous once more than one
+    /// source is in play: Attack on Titan is `16498` on AniList and `7442` on
+    /// Kitsu. A caller that just rendered a card knows which namespace it came
+    /// from, and passing that through is the difference between opening the
+    /// right work and opening whatever happens to share the number.
+    ///
+    /// Defaults to [`Self::by_id`], which is correct for a single-source
+    /// provider: it has only one namespace, so the hint cannot disagree with
+    /// it.
+    async fn by_id_in(
+        &self,
+        _provider: ProviderId,
+        id: i64,
+    ) -> Result<Option<Anime>, ProviderError> {
+        self.by_id(id).await
+    }
+
+    /// Look up a title by its **AniList** id, from a provider that speaks a
+    /// different namespace.
+    ///
+    /// This is what lets the fallback answer a detail request during an
+    /// AniList outage: it resolves the AniList id to its own id through its
+    /// own mapping table, then fetches. No AniList request is involved, so it
+    /// works while AniList is down.
+    ///
+    /// Defaults to `Ok(None)` — "I cannot address AniList ids" — which is the
+    /// truth for a provider with no mapping table.
+    async fn by_anilist_id(&self, _anilist_id: i64) -> Result<Option<Anime>, ProviderError> {
+        Ok(None)
+    }
+
     /// Look up a single title AND the reader's own list entry for it.
     ///
     /// The entry is a field ON the media node, so a provider that supports it

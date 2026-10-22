@@ -19,6 +19,13 @@ use serde::{Deserialize, Serialize};
 pub enum ProviderId {
     /// <https://anilist.co>
     AniList,
+    /// <https://kitsu.io> — a metadata source whose ids are NOT AniList ids.
+    ///
+    /// Kitsu numbers works in its own namespace (Attack on Titan is `7442` on
+    /// Kitsu and `16498` on AniList), so an id from one is meaningless to the
+    /// other. Anything keyed on an id -- watch positions, list entries -- must
+    /// carry this alongside it.
+    Kitsu,
     /// <https://www.themoviedb.org>
     Tmdb,
     /// <https://nyaa.si> — torrent index, not a metadata source.
@@ -411,8 +418,23 @@ pub struct Anime {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Total episodes, when known. Absent for films and ongoing shows.
+    ///
+    /// For a RELEASING work this is the ANNOUNCED total, which includes
+    /// episodes that have not aired. Use [`Anime::aired_episodes`] for how many
+    /// are actually watchable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_count: Option<u32>,
+    /// How many episodes have ACTUALLY aired, when the provider knows.
+    ///
+    /// Distinct from `episode_count` on purpose: a 12-episode cour three weeks
+    /// in has `episode_count: 12` but `aired_episodes: 3`. Without this the UI
+    /// cannot tell the two apart and offers unaired episodes as watchable.
+    ///
+    /// `None` means "unknown", which is not the same as zero -- a work with no
+    /// aired count keeps the previous behaviour rather than showing an empty
+    /// grid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aired_episodes: Option<u32>,
     /// Episode length in minutes, when the provider reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
@@ -632,6 +654,14 @@ pub struct EpisodeInfo {
     /// is not there. The frontend formats it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aired: Option<String>,
+    /// A still from the episode itself, when the provider has one.
+    ///
+    /// Kitsu supplies these; Jikan does not (hence the episode card falling
+    /// back to the work's poster). Kept on the catalogue entry rather than
+    /// filled in by the caller so the per-episode image survives the trip
+    /// through the frontend unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thumbnail: Option<String>,
     /// Anime-original filler, which a viewer may want to skip.
     pub filler: bool,
     /// A recap of earlier events.
@@ -910,6 +940,7 @@ mod tests {
             banner_image: Some("https://example.test/banner.jpg".into()),
             description: Some("A pirate adventure.".into()),
             episode_count: Some(1100),
+            aired_episodes: Some(1100),
             duration_minutes: Some(24),
             format: Some("TV".into()),
             genres: vec!["Action".into(), "Adventure".into()],

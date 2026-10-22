@@ -193,6 +193,9 @@ fn map_episode(wire: EpisodeWire) -> Option<EpisodeInfo> {
         number,
         title: non_empty(wire.title),
         aired: non_empty(wire.aired),
+        // Jikan publishes no per-episode still, so the card falls back to the
+        // work's poster exactly as it did before this field existed.
+        thumbnail: None,
         filler: wire.filler,
         recap: wire.recap,
     })

@@ -58,6 +58,7 @@ const MEDIA_FIELDS: &str = r#"
     status
     season
     seasonYear
+    nextAiringEpisode { episode airingAt }
     trailer { id site thumbnail }
 "#;
 
@@ -701,6 +702,30 @@ impl AnimeProvider for AniListProvider {
         Ok(self.by_id_with_entry(id).await?.0)
     }
 
+    async fn by_id_in(
+        &self,
+        provider: ProviderId,
+        id: i64,
+    ) -> Result<Option<Anime>, ProviderError> {
+        // AniList can only address its OWN ids. A Kitsu id sent here would be
+        // read as an AniList id and return whichever work happens to hold that
+        // number, which is worse than returning nothing.
+        match provider {
+            ProviderId::AniList => self.by_id(id).await,
+            _ => Ok(None),
+        }
+    }
+
+    async fn by_anilist_id(&self, anilist_id: i64) -> Result<Option<Anime>, ProviderError> {
+        // An AniList id IS this provider's native id, so no mapping is needed.
+        //
+        // Without this override the trait default (`Ok(None)`) would answer,
+        // and the failover decorator would skip AniList entirely for every
+        // detail lookup -- silently degrading to the fallback even when the
+        // primary was perfectly healthy.
+        self.by_id(anilist_id).await
+    }
+
     /// The detail lookup, carrying the reader's list entry in the SAME request.
     ///
     /// `mediaListEntry` is a field on `Media`, so asking for it costs nothing:
@@ -842,6 +867,25 @@ impl AniListProvider {
         status: ListStatus,
         progress: Option<u32>,
     ) -> Result<(), ProviderError> {
+        // Delegates so the request shape lives in exactly one place. The entry
+        // id is discarded here; a caller that needs it (the sync engine, to
+        // remember what to delete later) uses the returning form.
+        self.save_list_entry_returning(media_id, status, progress)
+            .await
+            .map(|_| ())
+    }
+
+    /// The same write, returning the entry AniList stored.
+    ///
+    /// The sync engine needs `id` (the LIST ENTRY id) so a later delete can
+    /// name it. Re-fetching it with `list_entry` would be a second request for
+    /// a value this mutation already returns.
+    pub async fn save_list_entry_returning(
+        &self,
+        media_id: i64,
+        status: ListStatus,
+        progress: Option<u32>,
+    ) -> Result<ListEntry, ProviderError> {
         let mutation = r#"
             mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int) {
               SaveMediaListEntry(mediaId: $mediaId, status: $status, progress: $progress) {
@@ -875,14 +919,27 @@ impl AniListProvider {
         // GraphQL returns `null` for a mutation field when the write was
         // refused without an `errors` entry, so a null here is a failure the
         // status check above would not have caught.
-        if data.save.is_none() {
+        let Some(saved) = data.save else {
             return Err(ProviderError::Remote("the list entry was not saved".into()));
-        }
+        };
 
         // The reader's list just changed, so any cached copy is stale. Bumping
         // here (not before the call) means a refused write does not invalidate.
         self.bump_list_revision();
-        Ok(())
+
+        // Rebuilt from what the server echoed rather than from the arguments:
+        // AniList may normalise the status, and the id only exists server-side.
+        let entry = ListEntry {
+            id: saved.id.unwrap_or(0),
+            status: saved
+                .status
+                .as_deref()
+                .and_then(ListStatus::from_literal)
+                .unwrap_or(status),
+            progress: saved.progress.unwrap_or_else(|| progress.unwrap_or(0)),
+        };
+
+        Ok(entry)
     }
 
     /// Where a work sits on the reader's list, if it is on it at all.
@@ -1042,6 +1099,7 @@ impl AniListProvider {
                     status
                     progress
                     createdAt
+                    updatedAt
                     media {{ {MEDIA_FIELDS} }}
                   }}
                 }}
@@ -1086,6 +1144,7 @@ impl AniListProvider {
                     progress: entry.progress.unwrap_or(0),
                     entry_id,
                     added_at: entry.created_at,
+                    updated_at: entry.updated_at,
                 });
             }
         }
@@ -1194,6 +1253,13 @@ pub struct UserListEntry {
     /// when the reader asks for "recently added". It is stable: a progress
     /// update does not move it.
     pub added_at: Option<i64>,
+    /// When the entry last CHANGED, as unix seconds; `None` when AniList did
+    /// not report it.
+    ///
+    /// This is the only recency signal the Continue Watching row can order by
+    /// without a second lookup, so it MUST be carried through rather than
+    /// re-stamped locally -- see `record_from_server`.
+    pub updated_at: Option<i64>,
 }
 
 /// One entry in the reader's "Continue Watching" row.
@@ -1225,7 +1291,22 @@ pub struct ListEntry {
 #[derive(Deserialize, Default)]
 struct SaveEntryData {
     #[serde(rename = "SaveMediaListEntry", default)]
-    save: Option<serde_json::Value>,
+    save: Option<SaveEntryWire>,
+}
+
+/// What `SaveMediaListEntry` echoes back.
+///
+/// Typed rather than a raw `Value` because the sync engine needs the entry id,
+/// and reading it out of an untyped blob would move the field names into the
+/// caller.
+#[derive(Deserialize, Default)]
+struct SaveEntryWire {
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    progress: Option<u32>,
 }
 
 /// The envelope around the `SaveRecommendation` mutation.
@@ -1712,6 +1793,13 @@ struct Media {
     season: Option<String>,
     #[serde(rename = "seasonYear", default)]
     season_year: Option<u32>,
+    /// The episode about to air. Its `episode` is one MORE than the number of
+    /// episodes that have aired, which is where the aired count comes from.
+    ///
+    /// A field on `Media`, so asking for it costs no extra request -- AniList
+    /// rate-limits per request, not per field.
+    #[serde(rename = "nextAiringEpisode", default)]
+    next_airing_episode: Option<NextAiringWire>,
     #[serde(default)]
     relations: Option<RelationConnection>,
     #[serde(default)]
@@ -1723,6 +1811,13 @@ struct Media {
     /// AniList does not distinguish.
     #[serde(rename = "mediaListEntry", default)]
     list_entry: Option<ListEntryWire>,
+}
+
+/// The next broadcast, as AniList reports it.
+#[derive(Deserialize, Default)]
+struct NextAiringWire {
+    #[serde(default)]
+    episode: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1854,6 +1949,15 @@ fn map_media(media: Media) -> Anime {
         id: media.id,
         provider: ProviderId::AniList,
         id_mal: media.id_mal,
+        // `nextAiringEpisode.episode` is the episode ABOUT to air, so one less
+        // is how many have aired. A finished work reports no next episode,
+        // which correctly yields `None` -- its `episode_count` already says
+        // everything there is to say.
+        aired_episodes: media
+            .next_airing_episode
+            .as_ref()
+            .and_then(|next| next.episode)
+            .map(|episode| episode.saturating_sub(1)),
         title: Title {
             romaji: non_empty(title.romaji),
             english: non_empty(title.english),

@@ -28,7 +28,7 @@ use super::anilist::{AniListProvider, ListEntry, UserListEntry};
 use super::traits::{AnimeProvider, ProviderError};
 use crate::types::{
     Anime, AnimePage, BrowseQuery, HomeShelves, ListFilter, MediaTag, ProviderId,
-    RecommendationsPage, ScheduledEpisode,
+    RecommendationsPage, RelatedAnime, ScheduledEpisode,
 };
 
 /// How long each kind of result stays fresh, matching `API_TTL` in the Svelte
@@ -261,6 +261,55 @@ impl<P: AnimeProvider> CachedProvider<P> {
                 .store(&format!("seen:{}", anime.id), anime.clone(), ttl::LIST);
         }
     }
+
+    /// Record a detail page's RELATIONS as partials.
+    ///
+    /// A related work is a sidebar row, not a full [`Anime`], but clicking it
+    /// navigates by id -- and the namespace has to travel with that id. Storing
+    /// a minimal `Anime` under `seen:{id}` is what lets `cached_partial` answer
+    /// with the right `provider`, so a Kitsu relation opens through Kitsu
+    /// instead of being sent to AniList as an unrelated id.
+    ///
+    /// Only the fields a navigation needs are filled: the target page fetches
+    /// the rest.
+    fn remember_relations(&self, provider: ProviderId, relations: &[RelatedAnime]) {
+        for relation in relations {
+            // A relation that is already known in full is left alone: the fuller
+            // copy has the same provider and more fields.
+            if self.seen.get(&format!("seen:{}", relation.id)).is_some() {
+                continue;
+            }
+
+            let partial = Anime {
+                id: relation.id,
+                provider,
+                title: relation.title.clone(),
+                cover_image: relation.cover_image.clone(),
+                format: relation.format.clone(),
+                status: relation.status.clone(),
+                episode_count: relation.episode_count,
+                id_mal: None,
+                aired_episodes: None,
+                banner_image: None,
+                description: None,
+                duration_minutes: None,
+                genres: Vec::new(),
+                average_score: None,
+                popularity: None,
+                season: None,
+                season_year: None,
+                streaming_episodes: Vec::new(),
+                // NOT copied: a relation's own relations are a different
+                // question, and the detail fetch answers it.
+                relations: Vec::new(),
+                recommendations: Vec::new(),
+                trailer: None,
+            };
+
+            self.seen
+                .store(&format!("seen:{}", relation.id), partial, ttl::LIST);
+        }
+    }
 }
 
 /// A cache for the reader's own list (`user_list`).
@@ -305,6 +354,15 @@ impl CachedAccount {
             .get_or_load(&key, ttl::LIST, || self.inner.user_list())
             .await
     }
+}
+
+/// The cache key fragment for a provider id.
+///
+/// Derived from `Debug` for the same reason [`filter_key`] is: the spelling is
+/// stable, and pulling `Serialize` into the hot path for a key fragment is not
+/// worth it.
+fn provider_key(provider: ProviderId) -> String {
+    format!("{provider:?}")
 }
 
 /// The cache key for a `ListFilter`, via its `Debug` spelling.
@@ -427,9 +485,53 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
         if let Some(found) = &anime {
             self.seen
                 .store(&format!("seen:{}", found.id), found.clone(), ttl::LIST);
+            // Record the sidebar rows too, so clicking one navigates in the
+            // right id namespace.
+            self.remember_relations(found.provider, &found.relations);
         }
 
         Ok((anime, entry))
+    }
+
+    async fn by_id_in(
+        &self,
+        provider: ProviderId,
+        id: i64,
+    ) -> Result<Option<Anime>, ProviderError> {
+        // The namespace is part of the key: the same number means different
+        // works in different sources, so `anime:7442` must not answer for both.
+        let key = format!("anime:{}:{id}", provider_key(provider));
+        let found = self
+            .by_id
+            .get_or_load(&key, ttl::DETAIL, || self.inner.by_id_in(provider, id))
+            .await?;
+        if let Some(anime) = &found {
+            self.seen
+                .store(&format!("seen:{}", anime.id), anime.clone(), ttl::LIST);
+            // Same reason as `by_id_with_entry`: a relation clicked from this
+            // page must resolve in THIS page's namespace.
+            self.remember_relations(anime.provider, &anime.relations);
+        }
+        Ok(found)
+    }
+
+    async fn by_anilist_id(&self, anilist_id: i64) -> Result<Option<Anime>, ProviderError> {
+        // Keyed on the AniList id, not on whatever the inner provider resolves
+        // it to: the caller asked by AniList id, so that is the question to
+        // cache the answer to.
+        let key = format!("anime:anilist:{anilist_id}");
+        let found = self
+            .by_id
+            .get_or_load(&key, ttl::DETAIL, || self.inner.by_anilist_id(anilist_id))
+            .await?;
+        if let Some(anime) = &found {
+            self.seen
+                .store(&format!("seen:{}", anime.id), anime.clone(), ttl::LIST);
+            // The detail page opened by AniList id still renders sidebar rows
+            // whose ids belong to whichever source answered.
+            self.remember_relations(anime.provider, &anime.relations);
+        }
+        Ok(found)
     }
 
     async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError> {
