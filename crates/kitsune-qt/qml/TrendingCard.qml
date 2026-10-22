@@ -54,12 +54,12 @@ Item {
             path = "M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"
         else if (name === "edit")
             path = "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+        else if (name === "close" || name === "x")
+            path = "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
         else // "plus"
             path = "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
 
         var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
-        // URL-encoded, NOT base64: `Qt.btoa` is deprecated in Qt 6 (its
-        // output differs from the standard Web API).
         return "data:image/svg+xml," + encodeURIComponent(xml)
     }
 
@@ -179,11 +179,6 @@ Item {
                     }
                 }
 
-                // One handler for both gestures: a plain click opens the
-                // work, and a middle-click (or Alt + left-drag) starts a drag
-                // into a list. They must share one MouseArea -- two would race
-                // for the grab, and a drag handler that accepts the left
-                // button also swallows the card's normal click.
                 MouseArea {
                     id: cardMouse
                     anchors.fill: parent
@@ -208,7 +203,6 @@ Item {
                                 || (mouse.button === Qt.LeftButton
                                     && (mouse.modifiers & Qt.AltModifier) !== 0))
 
-                        // Prevents parent Flickable/ListView from stealing the grab during Alt+Left drag
                         preventStealing = dragCandidate
                     }
 
@@ -282,7 +276,6 @@ Item {
 
                     property bool expanded: false
 
-                    // Collapse when mouse leaves the stack bounds completely
                     HoverHandler {
                         id: stackHover
                         onHoveredChanged: {
@@ -292,7 +285,6 @@ Item {
                         }
                     }
 
-                    // Continuous backing area to eliminate hit-box gaps
                     Rectangle {
                         anchors.fill: parent
                         color: "transparent"
@@ -313,18 +305,13 @@ Item {
                         Behavior on opacity { NumberAnimation { duration: 150 } }
                         Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
 
-                        // 1. Watching (Highlights & glows if currentStatus === "current")
                         ActionButton {
                             iconName: "play"
                             tipText: "Watching"
                             isActive: card.currentStatus === "current"
-                            // Through the store so the glow updates at once,
-                            // not only after the AniList round-trip.
                             onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "current")
                         }
 
-                        // 2. Completed (Highlights & glows if currentStatus === "completed").
-                        // Hidden while the work is still airing.
                         ActionButton {
                             visible: card.canComplete
                             iconName: "check"
@@ -333,7 +320,6 @@ Item {
                             onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "completed")
                         }
 
-                        // 3. Plan to Watch (Highlights & glows if currentStatus === "planning")
                         ActionButton {
                             iconName: "calendar"
                             tipText: "Plan to Watch"
@@ -342,7 +328,7 @@ Item {
                         }
                     }
 
-                    // Main Bottom-Right Trigger Button (+ / Edit)
+                    // Main Bottom-Right Trigger Button (+ / Edit Pencil / Red X)
                     Rectangle {
                         id: mainBtn
                         anchors.bottom: parent.bottom
@@ -350,18 +336,35 @@ Item {
                         width: 36
                         height: 36
                         radius: 18
-                        color: quickStack.expanded 
-                            ? Theme.accent 
-                            : (card.isOnList ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.85) : Qt.rgba(0.12, 0.14, 0.20, 0.92))
-                        border.width: 1
-                        border.color: Theme.glassBorder
 
-                        // Opens menu only when hovering directly on the button
+                        property bool isHovered: mainHover.hovered
+                        property bool showRemoveX: card.isOnList && isHovered
+
+                        color: showRemoveX
+                            ? "#ef4444"
+                            : (quickStack.expanded || card.isOnList
+                                ? Theme.accent
+                                : Qt.rgba(0.12, 0.14, 0.20, 0.92))
+                        border.width: 1
+                        border.color: showRemoveX ? "#f87171" : Theme.glassBorder
+
                         HoverHandler {
                             id: mainHover
                             onHoveredChanged: {
                                 if (hovered) {
                                     quickStack.expanded = true
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            id: mainClickArea
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (mainBtn.showRemoveX && card.animeId > 0) {
+                                    ListStatusStore.remove(card.animeId)
+                                    quickStack.expanded = false
                                 }
                             }
                         }
@@ -372,18 +375,21 @@ Item {
                             anchors.centerIn: parent
                             width: 14
                             height: 14
-                            source: card.getSvgIcon(card.isOnList ? "edit" : "plus")
+                            source: card.getSvgIcon(mainBtn.showRemoveX ? "close" : (card.isOnList ? "edit" : "plus"))
                             sourceSize.width: 28
                             sourceSize.height: 28
                             smooth: true
                         }
+
+                        ToolTip.visible: mainClickArea.containsMouse && mainBtn.showRemoveX
+                        ToolTip.text: "Remove from list"
+                        ToolTip.delay: 200
                     }
                 }
             }
         }
     }
 
-    // --- Reusable SVG Action Button Component with Active Halo Glow ---
     component ActionButton: Item {
         id: actBtn
         property string iconName: ""
@@ -394,7 +400,6 @@ Item {
         width: 34
         height: 34
 
-        // Outer Glowing Halo Ring (Visible when isActive === true)
         Rectangle {
             anchors.fill: parent
             anchors.margins: -3
@@ -407,7 +412,6 @@ Item {
             Behavior on opacity { NumberAnimation { duration: 180 } }
         }
 
-        // Inner Action Button Body
         Rectangle {
             id: btnBody
             anchors.fill: parent

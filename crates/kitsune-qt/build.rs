@@ -30,6 +30,7 @@ fn main() {
             .qml_file("qml/Chip.qml")
             .qml_file("qml/NavButton.qml")
             .qml_file("qml/PosterCard.qml")
+            .qml_file("qml/QuickStatusMenu.qml")
             .qml_file("qml/QuickAddButton.qml")
             .qml_file("qml/RecommendationCard.qml")
             .qml_file("qml/RecommendationsPage.qml")

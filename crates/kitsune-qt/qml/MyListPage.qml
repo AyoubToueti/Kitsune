@@ -477,7 +477,6 @@ Item {
                 anchors.rightMargin: Theme.pad
                 anchors.topMargin: Theme.gap
                 anchors.bottomMargin: Theme.pad
-                // Only show the grid when there is actually something to draw.
                 visible: !page.loading && !page.loadFailed && page.filteredEntries.length > 0
                 clip: true
                 cellWidth: 200
@@ -505,121 +504,6 @@ Item {
                         format: (modelData.anime && modelData.anime.format) || ""
                         animeStatus: (modelData.anime && modelData.anime.status) || ""
                         onClicked: page.openAnime(animeId, modelData.anime && modelData.anime.provider ? modelData.anime.provider : "anilist")
-                    }
-
-                    Rectangle {
-                        id: menuButton
-                        x: (parent.width - 180) / 2 + 6
-                        y: (parent.height - 336) / 2 + 6
-                        width: 26
-                        height: 26
-                        radius: 13
-                        color: menuMouse.containsMouse ? Theme.surfaceHover : "#cc0b0d12"
-                        border.width: 1
-                        border.color: Theme.borderSubtle
-
-                        Text {
-                            anchors.centerIn: parent
-                            text: "⋮"
-                            color: Theme.ink
-                            font.pixelSize: 16
-                            font.bold: true
-                        }
-
-                        MouseArea {
-                            id: menuMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: itemMenu.open()
-                        }
-                    }
-
-                    Popup {
-                        id: itemMenu
-                        parent: menuButton
-                        x: 0
-                        y: menuButton.height + 4
-                        width: 176
-                        padding: 6
-                        modal: false
-                        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-                        background: Rectangle {
-                            color: Theme.surfaceRaised
-                            radius: 12
-                            border.width: 1
-                            border.color: Theme.borderSubtle
-                        }
-
-                        contentItem: Column {
-                            spacing: 2
-
-                            Repeater {
-                                model: page.listStatuses
-                                delegate: Rectangle {
-                                    required property var modelData
-                                    width: itemMenu.width - 12
-                                    height: 30
-                                    radius: 8
-                                    color: optMouse.containsMouse ? Theme.surfaceHover : "transparent"
-
-                                    Text {
-                                        anchors.left: parent.left
-                                        anchors.leftMargin: 10
-                                        anchors.verticalCenter: parent.verticalCenter
-                                        text: modelData.label
-                                        color: modelData.value === cardRoot.entryStatus
-                                            ? Theme.accent : Theme.ink
-                                        font.pixelSize: 13
-                                    }
-
-                                    MouseArea {
-                                        id: optMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: {
-                                            itemMenu.close()
-                                            page.moveEntry(cardRoot.entryId, cardRoot.animeId, modelData.value)
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                width: itemMenu.width - 12
-                                height: 1
-                                color: Theme.borderSubtle
-                            }
-
-                            Rectangle {
-                                width: itemMenu.width - 12
-                                height: 30
-                                radius: 8
-                                color: rmMouse.containsMouse ? Theme.surfaceHover : "transparent"
-
-                                Text {
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: 10
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: "Remove from list"
-                                    color: Theme.danger
-                                    font.pixelSize: 13
-                                }
-
-                                MouseArea {
-                                    id: rmMouse
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    onClicked: {
-                                        itemMenu.close()
-                                        page.removeEntry(cardRoot.animeId)
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             }
