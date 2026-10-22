@@ -10,4 +10,4 @@
 
 pub mod store;
 
-pub use store::{Settings, SettingsStore};
+pub use store::{MetadataSource, Settings, SettingsStore};

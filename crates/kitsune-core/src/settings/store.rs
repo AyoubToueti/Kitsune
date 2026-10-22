@@ -78,6 +78,20 @@ pub struct Settings {
     /// degrade to a usable default rather than fail the whole file's decode.
     /// Read through [`Settings::title_language`], which validates it.
     pub title_language: String,
+    /// Which metadata source reads should prefer.
+    ///
+    /// `"anilist"` (the default) uses AniList and falls back to Kitsu when it
+    /// is rate limited or down. `"kitsu"` uses Kitsu directly, which is what a
+    /// reader wants when AniList is having a bad day and they would rather not
+    /// pay a timeout first.
+    ///
+    /// A `String` like `theme`, and read through
+    /// [`Settings::metadata_source`], for the same reason: an unrecognised
+    /// value must degrade rather than fail the whole file.
+    ///
+    /// Writes are unaffected either way -- the reader's list is AniList's, and
+    /// Kitsu has no token to write with.
+    pub metadata_source: String,
 }
 
 impl Default for Settings {
@@ -107,6 +121,9 @@ impl Default for Settings {
             // English first: that is what every surface showed before this
             // setting existed, so an existing reader sees no change.
             title_language: "english".to_string(),
+            // AniList preferred, with Kitsu as the safety net. That is the
+            // behaviour before this setting existed, plus a fallback.
+            metadata_source: "anilist".to_string(),
         }
     }
 }
@@ -124,6 +141,31 @@ impl Settings {
             _ => "english",
         }
     }
+
+    /// The metadata source to read from, validated.
+    ///
+    /// Anything that is not exactly `"kitsu"` means AniList-preferred. That
+    /// direction of defaulting is deliberate: an unrecognised value should
+    /// leave the reader on the source that has the full feature set, not
+    /// silently move them to the one missing tags and recommendations.
+    pub fn metadata_source(&self) -> MetadataSource {
+        match self.metadata_source.as_str() {
+            "kitsu" => MetadataSource::Kitsu,
+            _ => MetadataSource::AniList,
+        }
+    }
+}
+
+/// Which metadata source the reader asked for.
+///
+/// Read through [`Settings::metadata_source`]; this type exists so call sites
+/// match on a variant rather than comparing strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataSource {
+    /// Prefer AniList, falling back to Kitsu when it is unavailable.
+    AniList,
+    /// Use Kitsu directly, without paying an AniList timeout first.
+    Kitsu,
 }
 
 /// Reads and writes the settings file.
@@ -249,10 +291,37 @@ mod tests {
             resume_rewind_seconds: 35,
             use_binary_units: true,
             title_language: "romaji".to_string(),
+            metadata_source: "kitsu".to_string(),
         };
 
         store.write(&settings).expect("write");
         assert_eq!(store.read(), settings);
+    }
+
+    #[test]
+    fn metadata_source_defaults_to_anilist() {
+        let (_dir, store) = store();
+        assert_eq!(store.read().metadata_source(), MetadataSource::AniList);
+    }
+
+    #[test]
+    fn metadata_source_reads_kitsu_exactly() {
+        let (_dir, store) = store();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        std::fs::write(store.path(), r#"{"metadataSource":"kitsu"}"#).unwrap();
+
+        assert_eq!(store.read().metadata_source(), MetadataSource::Kitsu);
+    }
+
+    /// An unrecognised value must leave the reader on the FULLER source, not
+    /// silently move them to the one missing tags and recommendations.
+    #[test]
+    fn an_unknown_metadata_source_degrades_to_anilist() {
+        let (_dir, store) = store();
+        std::fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        std::fs::write(store.path(), r#"{"metadataSource":"shikimori"}"#).unwrap();
+
+        assert_eq!(store.read().metadata_source(), MetadataSource::AniList);
     }
 
     /// A settings file written before `shortcuts` existed must still parse:
