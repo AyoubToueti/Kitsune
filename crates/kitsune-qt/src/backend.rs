@@ -310,9 +310,21 @@ pub mod qobject {
         fn begin_login(self: Pin<&mut Self>) -> QString;
 
         /// Whether a token is stored.
+        ///
+        /// Deliberately does NOT start a sync. Three pages call this on
+        /// startup and the detail page calls it on every `listChanged`, so a
+        /// sync here turned one pull into an unbounded chain of them.
         #[qinvokable]
         #[cxx_name = "authStatus"]
         fn auth_status(self: Pin<&mut Self>);
+
+        /// Reconcile the local list with AniList, once, in the background.
+        ///
+        /// Called at startup and after the reader signs in. Every list WRITE
+        /// already spawns its own sync, so this is not needed per edit.
+        #[qinvokable]
+        #[cxx_name = "syncMediaList"]
+        fn sync_media_list(self: Pin<&mut Self>);
 
         /// Forget the stored token.
         #[qinvokable]
@@ -1862,19 +1874,26 @@ impl qobject::Backend {
         QString::from(flow::authorize_url())
     }
 
-    fn auth_status(mut self: Pin<&mut Self>) {
+    fn auth_status(self: Pin<&mut Self>) {
         let signed_in = self.rust().tokens.has_token();
-        self.as_mut().auth_status_ready(signed_in);
+        self.auth_status_ready(signed_in);
 
-        // The natural moment to reconcile: the app has just started and the
-        // token state is known. A signed-out reader is skipped entirely -- the
-        // pull needs a token, and the push has nothing to send.
+        // No sync here. This is a READ -- it answers "is a token stored" -- and
+        // a read that starts a network pull cannot be called from a handler
+        // that a pull itself fires. That is exactly the loop it used to form:
+        // authStatus -> sync -> listChanged -> authStatus -> sync.
         //
-        // Runs in the background, so the home page is not held up by it, and a
-        // failure is silent: the local list is already on screen and correct.
-        if signed_in {
-            self.spawn_sync();
+        // Syncing is an explicit command now (`syncMediaList`), issued at
+        // startup and after a sign-in.
+    }
+
+    fn sync_media_list(self: Pin<&mut Self>) {
+        // A signed-out reader is skipped entirely: the pull needs a token, and
+        // the push has nothing to send it with.
+        if !self.rust().tokens.has_token() {
+            return;
         }
+        self.spawn_sync();
     }
 
     fn logout(self: Pin<&mut Self>) {

@@ -218,7 +218,12 @@ Item {
             page.aniProgress = entry ? (entry.progress || 0) : 0
         }
         function onListChanged() {
-            page.loadListEntry()
+            // The STORE, not `authStatus()`. Calling `authStatus()` here made
+            // the loop: authStatus started a sync, the sync's pull emitted
+            // `listChanged`, this handler asked for authStatus again -- one
+            // full 285-entry pull every couple of seconds until AniList
+            // answered 429. `fetchListEntry()` only reads the local list.
+            page.fetchListEntry()
         }
         function onWatchPositionsReady(json) {
             const all = JSON.parse(json) || ({})
@@ -280,6 +285,7 @@ Item {
 
     function loadListEntry() {
         if (!backend) return
+        // Only to LEARN the sign-in state; this no longer starts a sync.
         backend.authStatus()
     }
 

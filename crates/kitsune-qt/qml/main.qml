@@ -529,6 +529,14 @@ Window {
         // also fires after every save, so the handler below keeps it current.
         root.backend.getSettings()
 
+        // Reconcile the local list with AniList exactly once per launch.
+        //
+        // This replaced a sync inside `authStatus()`, which three pages call
+        // on startup and the detail page calls on every list change -- one
+        // pull each, chained, until the rate limit tripped. A signed-out
+        // reader is a no-op inside the backend.
+        root.backend.syncMediaList()
+
         if (initialOpenId > 0) {
             root.navigate(detailComponent, { "animeId": initialOpenId, "backend": root.backend })
         } else if (initialBrowse) {
