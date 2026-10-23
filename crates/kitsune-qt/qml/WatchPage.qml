@@ -291,6 +291,86 @@ Item {
                 anchors.fill: parent
             }
 
+            // Wheel over the video adjusts the volume, same gesture as the
+            // modal player. A plain MouseArea (not a HoverHandler) because the
+            // wheel event must be accepted to stop it scrolling anything
+            // underneath.
+            MouseArea {
+                anchors.fill: parent
+                // No `z`: left at the default so the controls bar (declared
+                // later) sits above and keeps the wheel over its own sliders.
+                // Only the wheel is handled here; clicks belong to the chrome.
+                acceptedButtons: Qt.NoButton
+                onWheel: function (wheel) {
+                    if (page.stage !== "play") return
+                    const notches = wheel.angleDelta.y / 120
+                    if (notches === 0) return
+
+                    const next = Math.max(0, Math.min(200, player.volume + notches * 5))
+                    player.setProperty("volume", String(Math.round(next)))
+                    // Wheeling up a muted player should give sound back.
+                    if (next > 0 && player.muted)
+                        player.setProperty("mute", false)
+                    watchOsd.trigger("volume", Math.round(next) + "%")
+                    wheel.accepted = true
+                }
+            }
+
+            // Brief centred readout for the wheel gestures. The modal has its
+            // own; this page had no OSD at all, and a silent 5% volume step is
+            // indistinguishable from a broken wheel.
+            Rectangle {
+                id: watchOsd
+                anchors.centerIn: parent
+                z: 20
+                height: 56
+                radius: 28
+                implicitWidth: Math.max(56, watchOsdRow.implicitWidth + 28)
+                color: Qt.rgba(0.07, 0.07, 0.11, 0.82)
+                border.width: 1.5
+                border.color: Theme.accent
+                opacity: 0.0
+                visible: opacity > 0.0
+
+                property string iconKind: "volume"
+                property string labelText: ""
+
+                function trigger(kind, label) {
+                    iconKind = kind
+                    labelText = label || ""
+                    watchOsdAnim.restart()
+                }
+
+                Row {
+                    id: watchOsdRow
+                    anchors.centerIn: parent
+                    spacing: 8
+
+                    PlayerIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        kind: watchOsd.iconKind
+                        color: Theme.accent
+                        width: 22
+                        height: 22
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: watchOsd.labelText.length > 0
+                        text: watchOsd.labelText
+                        color: Theme.ink
+                        font.pixelSize: 13
+                        font.bold: true
+                    }
+                }
+
+                ParallelAnimation {
+                    id: watchOsdAnim
+                    NumberAnimation { target: watchOsd; property: "opacity"; from: 1.0; to: 0.0; duration: 650; easing.type: Easing.OutQuad }
+                    NumberAnimation { target: watchOsd; property: "scale"; from: 0.9; to: 1.08; duration: 650; easing.type: Easing.OutQuad }
+                }
+            }
+
             // Buffering wears the same thinking fox as every other wait. It
             // sits over the video, so it carries its own scrim.
             Item {

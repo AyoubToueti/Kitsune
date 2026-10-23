@@ -277,6 +277,11 @@ MpvObject::MpvObject(QQuickItem* parent)
   //   normal seek window without growing with the file.
   // - `demuxer-readahead-secs=30` matches the forward cap so the two limits
   //   agree; whichever is hit first applies.
+  // mpv clamps `volume` to `volume-max`, which defaults to 130. Raise it so
+  // the UI's 0..200 range is actually reachable -- without this the slider
+  // and the wheel both stop dead at 130 no matter what they clamp to.
+  mpv_set_option_string(mpv, "volume-max", "200");
+
   mpv_set_option_string(mpv, "cache", "yes");
   mpv_set_option_string(mpv, "cache-pause", "yes");
   mpv_set_option_string(mpv, "cache-pause-initial", "no");

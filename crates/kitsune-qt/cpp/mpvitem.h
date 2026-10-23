@@ -41,7 +41,8 @@ class MpvObject : public QQuickFramebufferObject
   Q_PROPERTY(bool paused READ isPaused NOTIFY stateChanged)
   /// Playback rate, 1.0 = normal.
   Q_PROPERTY(double speed READ speed NOTIFY stateChanged)
-  /// Volume, 0..130 (above 100 boosts).
+  /// Volume, 0..200 (above 100 boosts). The ceiling is mpv's `volume-max`,
+  /// raised from its 130 default in mpvitem.cpp.
   Q_PROPERTY(double volume READ volume NOTIFY stateChanged)
   Q_PROPERTY(bool muted READ isMuted NOTIFY stateChanged)
   /// True while mpv is starved for data or has not produced a frame yet.

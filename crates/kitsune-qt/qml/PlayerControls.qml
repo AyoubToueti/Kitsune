@@ -733,7 +733,10 @@ Item {
                             Layout.preferredWidth: 52
                             implicitHeight: 18
                             from: 0
-                            to: 130
+                            // Matches mpv's `volume-max`, raised to 200 in
+                            // mpvitem.cpp. Keep the two in step or the slider
+                            // offers a range mpv silently clamps away.
+                            to: 200
                             value: bar.vol()
                             onMoved: {
                                 if (bar.player) {

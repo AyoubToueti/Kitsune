@@ -333,7 +333,7 @@ Popup {
         sequence: modal.sc("volumeUp", "Up")
         onActivated: {
             if (playerLoader.item) {
-                const vol = Math.min(130, Math.round((playerLoader.item.volume || 100) + 5))
+                const vol = Math.min(200, Math.round((playerLoader.item.volume || 100) + 5))
                 playerLoader.item.setProperty("volume", vol)
                 osdToast.trigger("volume", vol + "%")
             }
@@ -1494,6 +1494,28 @@ Popup {
                                 modal.wakeChrome()
                                 bottomControls.closeChapterMenu()
                                 if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
+                            }
+
+                            // Wheel over the video adjusts the volume. It is a
+                            // plain mpv property, so it survives track and file
+                            // changes and stays in step with the slider in
+                            // PlayerControls.
+                            onWheel: function (wheel) {
+                                if (!playerLoader.item || modal.stage !== "play") return
+                                const notches = wheel.angleDelta.y / 120
+                                if (notches === 0) return
+                                modal.wakeChrome()
+
+                                const cur = playerLoader.item.volume
+                                const next = Math.max(0, Math.min(200, cur + notches * 5))
+                                playerLoader.item.setProperty("volume", String(Math.round(next)))
+                                // Wheeling up a muted player should give sound
+                                // back, not silently stay muted.
+                                if (next > 0 && playerLoader.item.muted)
+                                    playerLoader.item.setProperty("mute", false)
+                                osdToast.trigger("volume", Math.round(next) + "%")
+
+                                wheel.accepted = true
                             }
                         }
 
