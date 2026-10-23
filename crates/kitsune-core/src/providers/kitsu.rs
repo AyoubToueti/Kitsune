@@ -242,6 +242,23 @@ impl KitsuProvider {
         Ok(Some(anime))
     }
 
+    /// Just the banner image, or `None` when the work has none.
+    ///
+    /// The counterpart of [`AniListProvider::banner_for`]: called only when a
+    /// work came from another source and its banner is missing. Kitsu calls
+    /// this field `coverImage` and a work without one has no banner at all, so
+    /// an absent value is reported as `None` rather than substituted.
+    pub async fn banner_for(&self, kitsu_id: i64) -> Result<Option<String>, ProviderError> {
+        let url = format!("{}/anime/{kitsu_id}", self.endpoint);
+
+        let envelope: SingleEnvelope = self.get(&url).await?;
+
+        Ok(envelope
+            .data
+            .and_then(|resource| resource.attributes.cover_image)
+            .and_then(|image| pick_image(&image)))
+    }
+
     /// The ANILIST id for a Kitsu work, when Kitsu has a mapping for it.
     ///
     /// The mirror of [`Self::kitsu_id_for_anilist`], and needed by the sync
@@ -1307,6 +1324,46 @@ mod tests {
         assert_eq!(anime.trailer.as_ref().map(|t| t.site.as_str()), Some("youtube"));
         assert!(anime.cover_image.as_deref().unwrap().ends_with("large.jpg"));
         assert!(anime.banner_image.as_deref().unwrap().ends_with("large.jpg"));
+    }
+
+    #[tokio::test]
+    async fn banner_for_returns_the_cover_image() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/anime/7442"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": anime_json("7442", false)
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = KitsuProvider::with_endpoint(server.uri());
+        let banner = provider.banner_for(7442).await.unwrap();
+
+        assert!(
+            banner.as_deref().unwrap().ends_with("large.jpg"),
+            "Kitsu's banner is its coverImage"
+        );
+    }
+
+    #[tokio::test]
+    async fn banner_for_is_none_when_the_work_has_no_cover() {
+        // A work with no `coverImage` has no banner at all. Reporting None is
+        // what lets the caller fall back to the cover image.
+        let mut json = anime_json("7442", false);
+        json["attributes"].as_object_mut().unwrap().remove("coverImage");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/anime/7442"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": json })),
+            )
+            .mount(&server)
+            .await;
+
+        let provider = KitsuProvider::with_endpoint(server.uri());
+        assert_eq!(provider.banner_for(7442).await.unwrap(), None);
     }
 
     #[tokio::test]

@@ -71,14 +71,13 @@ Item {
                 width: swipe.width
                 height: swipe.height
 
-                // Center-aligned full-bleed artwork
-                Image {
+                // Full-bleed artwork. A real banner is shown as-is; a work
+                // with no wide art gets its portrait blurred into a wash
+                // rather than cropped across the strip. See `HeroBackdrop`.
+                HeroBackdrop {
                     anchors.fill: parent
-                    horizontalAlignment: Image.AlignHCenter
-                    verticalAlignment: Image.AlignVCenter
-                    source: modelData.bannerImage || modelData.coverImage || ""
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
+                    banner: modelData.bannerImage || ""
+                    cover: modelData.coverImage || ""
                 }
 
                 // 1. Horizontal vignette overlay:

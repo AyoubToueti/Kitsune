@@ -37,6 +37,7 @@ fn main() {
             .qml_file("qml/ContinueWatchingCard.qml")
             .qml_file("qml/ResumeDisc.qml")
             .qml_file("qml/HeroCarousel.qml")
+            .qml_file("qml/HeroBackdrop.qml")
             .qml_file("qml/TrendingCard.qml")
             .qml_file("qml/AnimeListRow.qml")
             .qml_file("qml/ListBlock.qml")

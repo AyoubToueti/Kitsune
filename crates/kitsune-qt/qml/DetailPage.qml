@@ -388,12 +388,19 @@ Item {
                 color: Theme.surface
                 clip: true
 
-                Image {
+                // Same rule as the home hero: a missing banner becomes a
+                // blurred wash instead of a cropped portrait. Kept at 0.25
+                // opacity, which is what the scrim below was tuned against.
+                //
+                // The clear area starts further left here: this hero puts a
+                // poster AND a text column on the left, so there is less room
+                // the artwork has to fill.
+                HeroBackdrop {
                     anchors.fill: parent
-                    source: page.anime ? (page.anime.bannerImage || page.anime.coverImage || "") : ""
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
-                    opacity: 0.25
+                    banner: page.anime ? (page.anime.bannerImage || "") : ""
+                    cover: page.anime ? (page.anime.coverImage || "") : ""
+                    clearStart: 0.28
+                    opacity: 0.8
                 }
 
                 Rectangle {

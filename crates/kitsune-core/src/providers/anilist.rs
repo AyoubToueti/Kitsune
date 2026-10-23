@@ -364,6 +364,39 @@ impl AniListProvider {
             "#
         )
     }
+
+    /// Just the banner image, or `None` when the work has none.
+    ///
+    /// Its own method because the field is cheap to ask for and expensive to
+    /// be missing: the detail lookup already returns a banner, so this is only
+    /// called when ANOTHER source supplied the work and its banner is absent.
+    /// AniList counts requests rather than fields, so asking for one field
+    /// costs the same as the whole media node -- the saving is in not fetching
+    /// relations and recommendations along with it.
+    pub async fn banner_for(&self, anilist_id: i64) -> Result<Option<String>, ProviderError> {
+        #[derive(Deserialize)]
+        struct BannerData {
+            #[serde(rename = "Media")]
+            media: Option<BannerMedia>,
+        }
+        #[derive(Deserialize)]
+        struct BannerMedia {
+            #[serde(rename = "bannerImage", default)]
+            banner_image: Option<String>,
+        }
+
+        let query = r#"
+            query ($id: Int) {
+              Media(id: $id, type: ANIME) { bannerImage }
+            }
+        "#;
+
+        let data: BannerData = self
+            .query(query, serde_json::json!({ "id": anilist_id }))
+            .await?;
+
+        Ok(data.media.and_then(|media| non_empty(media.banner_image)))
+    }
 }
 
 impl Default for AniListProvider {
@@ -4055,6 +4088,72 @@ mod tests {
             result.is_err(),
             "a GraphQL error must not be reported as a successful write"
         );
+    }
+
+    /// Live smoke test, not part of the normal run.
+    ///
+    /// The mocked tests prove the parsing; this proves the QUERY is one the
+    /// real API accepts, which a mock cannot. Run with:
+    /// `cargo test -p kitsune-core live_banner -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn live_banner_cross_fill_works_in_both_directions() {
+        use crate::providers::KitsuProvider;
+
+        let anilist = AniListProvider::new();
+        let kitsu = KitsuProvider::new();
+
+        // One Piece: AniList id 21.
+        let anilist_banner = anilist.banner_for(21).await.expect("anilist reachable");
+        println!("anilist banner: {anilist_banner:?}");
+
+        let kitsu_id = kitsu
+            .kitsu_id_for_anilist(21)
+            .await
+            .expect("kitsu reachable");
+        println!("kitsu id for anilist 21: {kitsu_id:?}");
+
+        if let Some(kitsu_id) = kitsu_id {
+            let kitsu_banner = kitsu.banner_for(kitsu_id).await.expect("kitsu reachable");
+            println!("kitsu banner: {kitsu_banner:?}");
+        }
+
+        // An id no source knows must report None rather than guessing.
+        let unmapped = kitsu.kitsu_id_for_anilist(999_999_999).await;
+        println!("unmapped: {unmapped:?}");
+        assert_eq!(unmapped.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn banner_for_returns_the_banner_image() {
+        let response = serde_json::json!({
+            "data": { "Media": { "bannerImage": "https://example.test/banner.jpg" } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        let banner = provider.banner_for(21).await.unwrap();
+        assert_eq!(banner.as_deref(), Some("https://example.test/banner.jpg"));
+    }
+
+    #[tokio::test]
+    async fn banner_for_is_none_when_the_work_has_none() {
+        // AniList answers `null` for a work with no banner. That is what makes
+        // the caller fall back to the cover image, so it must not become an
+        // error.
+        let response = serde_json::json!({
+            "data": { "Media": { "bannerImage": null } }
+        });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        assert_eq!(provider.banner_for(21).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn banner_for_is_none_when_the_work_is_missing() {
+        let response = serde_json::json!({ "data": { "Media": null } });
+        let (_server, provider) = provider_with(response, 200).await;
+
+        assert_eq!(provider.banner_for(21).await.unwrap(), None);
     }
 
     #[tokio::test]

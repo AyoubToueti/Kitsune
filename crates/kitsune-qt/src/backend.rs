@@ -1026,18 +1026,54 @@ impl qobject::Backend {
 
     /// Every home shelf in one provider call, so the home screen costs a
     /// single AniList request instead of six.
+    ///
+    /// Not `spawn_metadata`: the HERO slides need a banner cross-fill first,
+    /// which `spawn_metadata` has no way to express (it only sees the trait
+    /// object, not the two concrete clients).
     fn get_home(self: Pin<&mut Self>) {
-        self.spawn_metadata(
-            move |provider| async move {
-                provider
-                    .home_shelves()
-                    .await
-                    .map(|shelves| json_or_empty(&shelves))
-                    .map_err(|err| err.to_string())
-            },
-            Self::home_ready,
-            Self::home_failed,
-        );
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let provider = Arc::clone(&self.rust().provider);
+        let anilist = Arc::clone(&self.rust().anilist);
+        let kitsu = Arc::clone(&self.rust().kitsu);
+
+        runtime.spawn(async move {
+            let result = match provider.home_shelves().await {
+                Ok(mut shelves) => {
+                    // Only the HERO slides need this. They are the first few
+                    // trending titles, painted full-bleed behind the headline,
+                    // where a missing banner means a portrait poster stretched
+                    // across a wide strip.
+                    //
+                    // Capped and SEQUENTIAL on purpose: a cross-fill is two
+                    // requests per work (map the id, then ask), and running
+                    // them concurrently for a whole shelf is exactly the burst
+                    // that trips AniList's rate limit. `HERO_BANNER_FILLS`
+                    // bounds the worst case to a handful of requests.
+                    for anime in shelves.trending.iter_mut().take(HERO_BANNER_FILLS) {
+                        if anime.banner_image.is_none() {
+                            anime.banner_image = borrow_banner(&anilist, &kitsu, anime).await;
+                        }
+                    }
+                    Ok(json_or_empty(&shelves))
+                }
+                Err(err) => Err(err.to_string()),
+            };
+
+            match result {
+                Ok(json) => {
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.home_ready(QString::from(&json))
+                    });
+                }
+                Err(message) => {
+                    tracing::error!("metadata request failed: {message}");
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.home_failed(QString::from(&message))
+                    });
+                }
+            }
+        });
     }
 
     fn get_browse(self: Pin<&mut Self>, query: QString, page: i32, per_page: i32) {
@@ -1094,6 +1130,11 @@ impl qobject::Backend {
         let qt_thread = self.qt_thread();
         let runtime = Arc::clone(&self.rust().runtime);
         let provider = Arc::clone(&self.rust().provider);
+        // Both concrete clients are needed for the banner cross-fill below.
+        // `provider` is the decorator stack and cannot answer "what does the
+        // OTHER source have for this work".
+        let anilist = Arc::clone(&self.rust().anilist);
+        let kitsu = Arc::clone(&self.rust().kitsu);
 
         runtime.spawn(async move {
             // The reader's list entry is an AniList concept, so only the
@@ -1113,7 +1154,20 @@ impl qobject::Backend {
             };
 
             match fetched {
-                Ok((anime, entry)) => {
+                Ok((mut anime, entry)) => {
+                    // A banner is the one field worth borrowing from the other
+                    // source: it is a wide image the detail page paints behind
+                    // the title, and a work often has one on AniList and not on
+                    // Kitsu (or the reverse). Falling back to the COVER -- what
+                    // QML already does -- crops a portrait poster across a wide
+                    // strip, so it is worth one extra request to avoid.
+                    if let Some(found) = anime.as_mut() {
+                        if found.banner_image.is_none() {
+                            found.banner_image =
+                                borrow_banner(&anilist, &kitsu, found).await;
+                        }
+                    }
+
                     let json =
                         serde_json::to_string(&anime).unwrap_or_else(|_| "null".into());
                     // `None` -> JSON `null`, which QML reads as "not on list".
@@ -2383,6 +2437,50 @@ fn provider_id_from(raw: &str) -> ProviderId {
 
 fn json_or_empty<T: serde::Serialize>(value: &T) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// How many trending titles may have a banner cross-filled on the home screen.
+///
+/// The hero shows five. Each fill is up to two requests, so this caps the home
+/// load at ten extra calls in the worst case -- and only for works that are
+/// actually missing a banner.
+const HERO_BANNER_FILLS: usize = 5;
+
+/// Try to fill a missing banner image from the OTHER metadata source.
+///
+/// A work is fetched from whichever source issued its id, and that source may
+/// simply not have a banner: Kitsu's equivalent field is absent on plenty of
+/// titles, and AniList does not cover everything Kitsu does. The detail page
+/// falls back to the cover when no banner exists, which crops a portrait poster
+/// across a wide strip -- worth one request to avoid.
+///
+/// Returns `None` when the other source has nothing, or cannot be reached. A
+/// failure here is deliberately SILENT and swallowed: the banner is decoration,
+/// and the page renders correctly without it, so there is nothing to report.
+async fn borrow_banner(
+    anilist: &kitsune_core::providers::AniListProvider,
+    kitsu: &kitsune_core::providers::KitsuProvider,
+    anime: &kitsune_core::types::Anime,
+) -> Option<String> {
+    use kitsune_core::types::ProviderId;
+
+    match anime.provider {
+        // Came from AniList, so ask Kitsu -- but only if the mapping exists.
+        // A Kitsu lookup by a bare AniList id would fetch whatever work holds
+        // that number, and paint a stranger's banner.
+        ProviderId::AniList => {
+            let kitsu_id = kitsu.kitsu_id_for_anilist(anime.id).await.ok().flatten()?;
+            kitsu.banner_for(kitsu_id).await.ok().flatten()
+        }
+        // Came from Kitsu, so ask AniList. `id_mal` is useless here (that is
+        // MyAnimeList's namespace); the bridge is Kitsu's own AniList mapping.
+        ProviderId::Kitsu => {
+            let anilist_id = kitsu.anilist_id_for_kitsu(anime.id).await.ok().flatten()?;
+            anilist.banner_for(anilist_id).await.ok().flatten()
+        }
+        // A source with no counterpart to borrow from.
+        _ => None,
+    }
 }
 
 /// A non-blank `QString` as an `Option<String>`, so an empty FFI string reads
