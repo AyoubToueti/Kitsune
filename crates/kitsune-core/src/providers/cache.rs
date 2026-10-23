@@ -28,7 +28,7 @@ use super::anilist::{AniListProvider, ListEntry, UserListEntry};
 use super::traits::{AnimeProvider, ProviderError};
 use crate::types::{
     Anime, AnimePage, BrowseQuery, HomeShelves, ListFilter, MediaTag, ProviderId,
-    RecommendationsPage, RelatedAnime, ScheduledEpisode,
+    RecommendationsPage, RecommendedAnime, RelatedAnime, ScheduledEpisode,
 };
 
 /// How long each kind of result stays fresh, matching `API_TTL` in the Svelte
@@ -262,6 +262,23 @@ impl<P: AnimeProvider> CachedProvider<P> {
         }
     }
 
+    /// Record the works behind a page of recommendations as partials.
+    ///
+    /// A recommendation carries its work whole, but it arrives through
+    /// `recommendations`, not through a list/browse/detail call -- so without
+    /// this the work never enters `seen`. The list write path resolves a work
+    /// through `cached_partial` and refuses when it finds nothing, which is
+    /// exactly what made "add to list" from a recommendation card do nothing.
+    fn remember_recommendations(&self, items: &[RecommendedAnime]) {
+        for item in items {
+            self.seen.store(
+                &format!("seen:{}", item.anime.id),
+                item.anime.clone(),
+                ttl::LIST,
+            );
+        }
+    }
+
     /// Record a detail page's RELATIONS as partials.
     ///
     /// A related work is a sidebar row, not a full [`Anime`], but clicking it
@@ -489,6 +506,9 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
             // Record the sidebar rows too, so clicking one navigates in the
             // right id namespace.
             self.remember_relations(found.provider, &found.relations);
+            // And the inline recommendation row's works, so "add to list" from
+            // one of those cards can resolve the work it is adding.
+            self.remember_recommendations(&found.recommendations);
         }
 
         Ok((anime, entry))
@@ -512,6 +532,9 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
             // Same reason as `by_id_with_entry`: a relation clicked from this
             // page must resolve in THIS page's namespace.
             self.remember_relations(anime.provider, &anime.relations);
+            // And the inline recommendation row's works must be resolvable for
+            // a list write, which looks them up through `cached_partial`.
+            self.remember_recommendations(&anime.recommendations);
         }
         Ok(found)
     }
@@ -531,6 +554,9 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
             // The detail page opened by AniList id still renders sidebar rows
             // whose ids belong to whichever source answered.
             self.remember_relations(anime.provider, &anime.relations);
+            // Its inline recommendation row needs the same treatment, or a list
+            // write from one of those cards fails to resolve the work.
+            self.remember_recommendations(&anime.recommendations);
         }
         Ok(found)
     }
@@ -549,6 +575,10 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
                 anime.clone(),
                 ttl::LIST,
             );
+            // The detail page's inline recommendation row draws from this very
+            // response, so its works have to become resolvable for a list
+            // write, which looks them up through `cached_partial`.
+            self.remember_recommendations(&anime.recommendations);
         }
         Ok(found)
     }
@@ -560,11 +590,21 @@ impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
         per_page: u32,
     ) -> Result<RecommendationsPage, ProviderError> {
         let key = format!("recs:{id}:{page}:{per_page}");
-        self.recommendations
+        let result = self
+            .recommendations
             .get_or_load(&key, ttl::DETAIL, || {
                 self.inner.recommendations(id, page, per_page)
             })
-            .await
+            .await?;
+        // Record the recommended works as partials, exactly as the list and
+        // browse paths do for their items.
+        //
+        // Without this, "add to list" from a recommendation card failed: the
+        // write path resolves the work through `cached_partial`, finds nothing,
+        // and bails out with "the work is not loaded yet" -- so the card kept
+        // showing "+" no matter how often it was clicked.
+        self.remember_recommendations(&result.items);
+        Ok(result)
     }
 
     async fn genres(&self) -> Result<Vec<String>, ProviderError> {
@@ -710,7 +750,29 @@ mod tests {
             _per_page: u32,
         ) -> Result<RecommendationsPage, ProviderError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            unreachable!("not exercised")
+            // A recommended work with an id no list response mentions, so a
+            // test can tell "made resolvable by the recommendation" from "was
+            // already known".
+            let anime = serde_json::from_value(serde_json::json!({
+                "id": 42,
+                "provider": "anilist",
+                "title": {},
+            }))
+            .expect("valid anime");
+            Ok(RecommendationsPage {
+                items: vec![RecommendedAnime {
+                    anime,
+                    rating: 1,
+                    user: None,
+                    user_rating: None,
+                }],
+                page_info: crate::types::PageInfo {
+                    total: 1,
+                    current_page: 1,
+                    last_page: 1,
+                    has_next_page: false,
+                },
+            })
         }
 
         async fn genres(&self) -> Result<Vec<String>, ProviderError> {
@@ -808,6 +870,27 @@ mod tests {
             partial.recommendations.is_empty(),
             "recommendations are detail-only"
         );
+    }
+
+    /// A recommended work must become answerable as a partial, or "add to
+    /// list" from a recommendation card fails: the write path resolves the
+    /// work through `cached_partial` and gives up when it finds nothing.
+    #[tokio::test]
+    async fn a_recommendation_warms_its_works_partial() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        assert!(
+            cached.cached_partial(42).is_none(),
+            "nothing has mentioned the recommended work yet"
+        );
+
+        cached.recommendations(1, 1, 10).await.unwrap();
+
+        let partial = cached
+            .cached_partial(42)
+            .expect("a recommended work should be answerable");
+        assert_eq!(partial.id, 42, "and carry its own id");
     }
 
     #[tokio::test]
