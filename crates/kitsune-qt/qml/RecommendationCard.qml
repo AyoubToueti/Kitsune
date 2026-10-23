@@ -68,6 +68,12 @@ Item {
             path = "M12 8l-6 6h12z"
         else if (name === "arrowDown")
             path = "M12 16l6-6H6z"
+        else if (name === "pause")
+            path = "M6 19h4V5H6v14zm8-14v14h4V5h-4z"
+        else if (name === "minus")
+            path = "M19 13H5v-2h14v2z"
+        else if (name === "close" || name === "x")
+            path = "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
         else // "plus"
             path = "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
 
@@ -75,6 +81,18 @@ Item {
         // URL-encoded, NOT base64: `Qt.btoa` is deprecated in Qt 6 (its
         // output differs from the standard Web API).
         return "data:image/svg+xml," + encodeURIComponent(xml)
+    }
+
+    // The glyph for a list status, so the listed-state button shows *where*
+    // the work is saved (play / check / calendar / pause / minus) instead of
+    // a generic pencil. Unlisted works fall back to "+".
+    function statusIconName(status) {
+        if (status === "current") return "play"
+        if (status === "completed") return "check"
+        if (status === "planning") return "calendar"
+        if (status === "paused") return "pause"
+        if (status === "dropped") return "minus"
+        return "plus"
     }
 
     Connections {
@@ -272,114 +290,18 @@ Item {
                 }
             }
 
-            // --- Expandable Quick Action Stack (Bottom-Right) -------------
-            Item {
-                id: quickStack
+            // --- Quick Status Menu (Bottom-Right) -------------------------
+            // The same control the poster cards use: one circular button that
+            // expands into the list choices and, when the work is listed, shows
+            // WHERE it is saved. It reads and writes `ListStatusStore` itself,
+            // so the card needs no add/remove plumbing of its own.
+            QuickStatusMenu {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.margins: 8
-                width: 40
-                height: stackCol.implicitHeight + mainBtn.height + 12
+                animeId: card.animeId
+                animeStatus: card.anime ? (card.anime.status || "") : ""
                 z: 30
-
-                property bool expanded: false
-
-                // Collapse when mouse leaves stack bounds completely
-                HoverHandler {
-                    id: stackHover
-                    onHoveredChanged: {
-                        if (!hovered) {
-                            quickStack.expanded = false
-                        }
-                    }
-                }
-
-                // Continuous hit-box backing area
-                Rectangle {
-                    anchors.fill: parent
-                    color: "transparent"
-                }
-
-                // Expanded Action Buttons
-                Column {
-                    id: stackCol
-                    anchors.bottom: mainBtn.top
-                    anchors.bottomMargin: 6
-                    anchors.horizontalCenter: mainBtn.horizontalCenter
-                    spacing: 6
-                    opacity: quickStack.expanded ? 1.0 : 0.0
-                    scale: quickStack.expanded ? 1.0 : 0.75
-                    visible: opacity > 0
-                    transformOrigin: Item.Bottom
-
-                    Behavior on opacity { NumberAnimation { duration: 150 } }
-                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
-
-                    // 1. Watching (Highlights & glows if currentStatus === "current")
-                    ActionButton {
-                        iconName: "play"
-                        tipText: "Watching"
-                        isActive: card.currentStatus === "current"
-                        // Through the store so the glow updates at once, not
-                        // only after the AniList round-trip.
-                        onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "current")
-                    }
-
-                    // 2. Completed (Highlights & glows if currentStatus === "completed").
-                    // Hidden while the work is still airing.
-                    ActionButton {
-                        visible: card.canComplete
-                        iconName: "check"
-                        tipText: "Completed"
-                        isActive: card.currentStatus === "completed"
-                        onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "completed")
-                    }
-
-                    // 3. Plan to Watch (Highlights & glows if currentStatus === "planning")
-                    ActionButton {
-                        iconName: "calendar"
-                        tipText: "Plan to Watch"
-                        isActive: card.currentStatus === "planning"
-                        onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "planning")
-                    }
-                }
-
-                // Main Bottom-Right Trigger Button (+ / Edit)
-                Rectangle {
-                    id: mainBtn
-                    anchors.bottom: parent.bottom
-                    anchors.right: parent.right
-                    width: 36
-                    height: 36
-                    radius: 18
-                    color: quickStack.expanded 
-                        ? Theme.accent 
-                        : (card.isOnList ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.85) : Qt.rgba(0.12, 0.14, 0.20, 0.92))
-                    border.width: 1
-                    border.color: Theme.glassBorder
-
-                    // Opens menu only when hovering directly on the button
-                    HoverHandler {
-                        id: mainHover
-                        onHoveredChanged: {
-                            if (hovered) {
-                                quickStack.expanded = true
-                            }
-                        }
-                    }
-
-                    Behavior on color { ColorAnimation { duration: 150 } }
-
-                    Image {
-                        anchors.centerIn: parent
-                        width: 14
-                        height: 14
-                        source: card.getSvgIcon(card.isOnList ? "edit" : "plus")
-                        sourceSize.width: 28
-                        sourceSize.height: 28
-                        smooth: true
-                    }
-                }
             }
         }
 
@@ -504,64 +426,4 @@ Item {
         }
     }
 
-    // --- Action Button Component with Active Halo Glow --------------------
-    component ActionButton: Item {
-        id: actBtn
-        property string iconName: ""
-        property string tipText: ""
-        property bool isActive: false
-        signal clicked()
-
-        width: 34
-        height: 34
-
-        // Outer Glowing Halo Ring (Visible when isActive === true)
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: -3
-            radius: (parent.width / 2) + 3
-            color: "transparent"
-            border.width: 2
-            border.color: Theme.accent
-            opacity: actBtn.isActive ? 0.95 : 0.0
-
-            Behavior on opacity { NumberAnimation { duration: 180 } }
-        }
-
-        // Inner Action Button Body
-        Rectangle {
-            id: btnBody
-            anchors.fill: parent
-            radius: width / 2
-            color: actBtn.isActive 
-                ? Theme.accent 
-                : (actMouse.containsMouse ? Theme.accentHover : Qt.rgba(0.12, 0.14, 0.20, 0.92))
-            border.width: 1
-            border.color: actBtn.isActive ? "#ffffff" : Theme.glassBorder
-
-            Behavior on color { ColorAnimation { duration: 120 } }
-
-            Image {
-                anchors.centerIn: parent
-                width: 14
-                height: 14
-                source: card.getSvgIcon(actBtn.iconName)
-                sourceSize.width: 28
-                sourceSize.height: 28
-                smooth: true
-            }
-
-            MouseArea {
-                id: actMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: actBtn.clicked()
-            }
-
-            ToolTip.visible: actMouse.containsMouse && tipText.length > 0
-            ToolTip.text: tipText
-            ToolTip.delay: 200
-        }
-    }
 }

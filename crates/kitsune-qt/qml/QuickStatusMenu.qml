@@ -45,6 +45,17 @@ Item {
         return "data:image/svg+xml," + encodeURIComponent(xml)
     }
 
+    // The glyph for a list status, so a listed work shows *where* it is saved
+    // (play / check / calendar / pause / minus) instead of a generic pencil.
+    function statusIconName(value) {
+        if (value === "current") return "play"
+        if (value === "completed") return "check"
+        if (value === "planning") return "calendar"
+        if (value === "paused") return "pause"
+        if (value === "dropped") return "minus"
+        return "plus"
+    }
+
     HoverHandler {
         id: stackHover
         onHoveredChanged: {
@@ -156,7 +167,12 @@ Item {
             anchors.centerIn: parent
             width: 14
             height: 14
-            source: menu.getSvgIcon(mainBtn.showRemoveX ? "close" : (menu.isOnList ? "edit" : "plus"))
+            // Listed: the glyph of the list the work is saved to, so the
+            // button says WHERE it is rather than merely that it is somewhere.
+            // Unlisted: "+". Hovering/expanded on a listed work: red "x".
+            source: menu.getSvgIcon(mainBtn.showRemoveX
+                ? "close"
+                : (menu.isOnList ? menu.statusIconName(menu.currentStatus) : "plus"))
             sourceSize.width: 28
             sourceSize.height: 28
             smooth: true
