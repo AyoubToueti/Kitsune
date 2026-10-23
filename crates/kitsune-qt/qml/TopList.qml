@@ -164,10 +164,15 @@ Column {
                         font.pixelSize: 13
                     }
                     Text {
+                        // Unreleased works say "0 episodes"; see the note in
+                        // `AnimeListRow` for why the badge is not hidden.
+                        readonly property bool unreleased: modelData.status === "NOT_YET_RELEASED"
                         Layout.alignment: Qt.AlignRight
-                        visible: modelData.episodeCount != null
-                        text: modelData.episodeCount != null
-                            ? modelData.episodeCount + " episodes" : ""
+                        visible: modelData.episodeCount != null || unreleased
+                        text: unreleased
+                            ? "0 episodes"
+                            : (modelData.episodeCount != null
+                                ? modelData.episodeCount + " episodes" : "")
                         color: Theme.inkFaint
                         font.pixelSize: 10
                     }

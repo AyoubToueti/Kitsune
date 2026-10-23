@@ -79,7 +79,13 @@ Item {
                     }
 
                     Rectangle {
-                        visible: row.anime && row.anime.episodeCount != null
+                        // An unreleased work shows "0" rather than hiding the
+                        // badge: the mapping zeroes its count, and a missing
+                        // badge would read as "unknown" instead of "none yet".
+                        readonly property bool unreleased: row.anime
+                            && row.anime.status === "NOT_YET_RELEASED"
+                        visible: row.anime
+                            && (row.anime.episodeCount != null || unreleased)
                         radius: 4
                         color: Theme.surfaceHover
                         implicitWidth: rowEps.implicitWidth + 12
@@ -87,8 +93,10 @@ Item {
                         Text {
                             id: rowEps
                             anchors.centerIn: parent
-                            text: row.anime && row.anime.episodeCount != null
-                                ? String(row.anime.episodeCount) : ""
+                            text: parent.unreleased
+                                ? "0"
+                                : (row.anime && row.anime.episodeCount != null
+                                    ? String(row.anime.episodeCount) : "")
                             color: Theme.inkMuted
                             font.pixelSize: 10
                         }

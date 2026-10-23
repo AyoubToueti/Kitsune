@@ -393,6 +393,24 @@ pub struct MediaTag {
     pub description: Option<String>,
 }
 
+/// The next broadcast of a work that is still airing.
+///
+/// Only a RELEASING work has one: a finished work has nothing left to air, and
+/// an unreleased work has no scheduled slot yet. So `None` means "nothing
+/// scheduled", which the UI renders as the absence of an upcoming entry rather
+/// than as a blank one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NextAiringEpisode {
+    /// 1-based number of the episode about to air.
+    pub episode: u32,
+    /// When it airs, as unix seconds (UTC).
+    ///
+    /// A timestamp rather than a formatted date: the frontend decides the
+    /// spelling, so the reader's locale and timezone apply.
+    pub airing_at: i64,
+}
+
 /// A work (anime now; movies and series later) as presented in the UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -435,6 +453,13 @@ pub struct Anime {
     /// grid.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aired_episodes: Option<u32>,
+    /// The episode about to air, when the provider reports one.
+    ///
+    /// Populated only for a work that is still airing. Lets the episode grid
+    /// show when the next one lands, which the announced `episode_count`
+    /// cannot say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_airing: Option<NextAiringEpisode>,
     /// Episode length in minutes, when the provider reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
@@ -941,6 +966,7 @@ mod tests {
             description: Some("A pirate adventure.".into()),
             episode_count: Some(1100),
             aired_episodes: Some(1100),
+            next_airing: None,
             duration_minutes: Some(24),
             format: Some("TV".into()),
             genres: vec!["Action".into(), "Adventure".into()],

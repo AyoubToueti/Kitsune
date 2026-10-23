@@ -20,7 +20,7 @@ use once_cell::sync::Lazy;
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Anime, EpisodeInfo};
+use crate::types::{Anime, EpisodeInfo, NextAiringEpisode};
 
 /// An episode as the UI renders it.
 ///
@@ -46,6 +46,14 @@ pub struct Episode {
     /// Air date as the provider spells it, filled in by enrichment.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aired: Option<String>,
+    /// Unix seconds at which this episode airs, set ONLY on the trailing entry
+    /// that represents an episode which has not aired yet.
+    ///
+    /// Its presence is what marks the entry as upcoming: a real episode carries
+    /// its `aired` date instead, never a future timestamp. The frontend formats
+    /// this, so the reader's locale and timezone decide the spelling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub airing_at: Option<i64>,
     /// Anime-original filler, which a viewer may want to skip.
     #[serde(default)]
     pub filler: bool,
@@ -75,6 +83,7 @@ pub fn synthesize_episodes(count: Option<u32>, cover_image: Option<&str>) -> Vec
             url: None,
             site: None,
             aired: None,
+            airing_at: None,
             filler: false,
             recap: false,
         })
@@ -108,6 +117,7 @@ pub fn episodes_from_info(info: &[EpisodeInfo], cover_image: Option<&str>) -> Ve
             url: None,
             site: None,
             aired: entry.aired.clone(),
+            airing_at: None,
             filler: entry.filler,
             recap: entry.recap,
         })
@@ -124,11 +134,26 @@ pub fn episodes_from_info(info: &[EpisodeInfo], cover_image: Option<&str>) -> Ve
 ///
 /// `now_unix` is unix seconds and is injectable so a test can pin the clock.
 pub fn is_aired(aired: Option<&str>, now_unix: i64) -> bool {
+    is_aired_on(aired, now_unix, false)
+}
+
+/// [`is_aired`], with the releasing case made explicit.
+///
+/// `releasing` changes what an ABSENT date means. For a finished work a missing
+/// date is just a gap in the provider's data, and the episode has aired. For a
+/// work that is still airing it means the opposite: Kitsu creates a record for
+/// every episode of the cour up front and fills `airdate` in only as each one
+/// airs, so a record with no date is an episode that has NOT aired yet.
+///
+/// Getting this wrong is what drew a full 12-card grid for a show four weeks
+/// into its run -- Kitsu reported twelve records, all undated, and every one of
+/// them counted as watchable.
+pub fn is_aired_on(aired: Option<&str>, now_unix: i64, releasing: bool) -> bool {
     let Some(aired) = aired else {
-        return true;
+        return !releasing;
     };
     if aired.trim().is_empty() {
-        return true;
+        return !releasing;
     }
 
     match parse_date_unix(aired) {
@@ -144,8 +169,20 @@ pub fn is_aired(aired: Option<&str>, now_unix: i64) -> bool {
 /// the reader cannot watch it, and a row that does nothing when clicked reads
 /// as broken.
 pub fn aired_episodes(info: &[EpisodeInfo], now_unix: i64) -> Vec<EpisodeInfo> {
+    aired_episodes_on(info, now_unix, false)
+}
+
+/// [`aired_episodes`], with the releasing case made explicit.
+///
+/// See [`is_aired_on`] for why an undated record means "not out yet" on a work
+/// that is still airing and "already out" on one that has finished.
+pub fn aired_episodes_on(
+    info: &[EpisodeInfo],
+    now_unix: i64,
+    releasing: bool,
+) -> Vec<EpisodeInfo> {
     info.iter()
-        .filter(|entry| is_aired(entry.aired.as_deref(), now_unix))
+        .filter(|entry| is_aired_on(entry.aired.as_deref(), now_unix, releasing))
         .cloned()
         .collect()
 }
@@ -172,6 +209,7 @@ pub fn episodes_for(anime: &Anime, info: &[EpisodeInfo], now_unix: i64) -> Vec<E
         anime.cover_image.as_deref(),
         info,
         anime.aired_episodes,
+        anime.next_airing,
         now_unix,
     )
 }
@@ -187,21 +225,74 @@ pub fn episodes_for_facts(
     cover_image: Option<&str>,
     info: &[EpisodeInfo],
     aired_through: Option<u32>,
+    next_airing: Option<NextAiringEpisode>,
+    now_unix: i64,
+) -> Vec<Episode> {
+    // The schedule IS an aired count: `next_airing.episode` is the one ABOUT
+    // to air, so one less have already aired. AniList reports this in the same
+    // response as the rest of the media, while `aired_through` comes from a
+    // separate catalogue request that may not have landed (or may not exist
+    // for this work at all).
+    //
+    // Without this, a releasing work whose catalogue fetch failed fell through
+    // to the announced total and drew the whole cour as watchable.
+    let aired_through = aired_through.or_else(|| {
+        next_airing.map(|next| next.episode.saturating_sub(1))
+    });
+
+    let mut episodes = episodes_without_upcoming(
+        episode_count,
+        status,
+        cover_image,
+        info,
+        aired_through,
+        now_unix,
+    );
+
+    // The upcoming entry goes LAST, after the aired list, because that is where
+    // it belongs in time. Appending rather than merging keeps every existing
+    // rule -- padding, capping, the catalogue winning -- untouched.
+    if let Some(next) = next_airing {
+        append_upcoming(&mut episodes, next, cover_image, now_unix);
+    }
+
+    episodes
+}
+
+/// The aired entries for a work, before the upcoming one is appended.
+fn episodes_without_upcoming(
+    episode_count: Option<u32>,
+    status: Option<&str>,
+    cover_image: Option<&str>,
+    info: &[EpisodeInfo],
+    aired_through: Option<u32>,
     now_unix: i64,
 ) -> Vec<Episode> {
     if !info.is_empty() {
-        let known = episodes_from_info(&aired_episodes(info, now_unix), cover_image);
+        // A releasing work's undated records are episodes that have not aired,
+        // not episodes with a missing date. See `is_aired_on`.
+        let releasing = status == Some("RELEASING");
+        let known =
+            episodes_from_info(&aired_episodes_on(info, now_unix, releasing), cover_image);
 
-        // Only a finished work is padded. Every episode of a finished work has
-        // aired by definition, so a missing entry is one the provider has not
-        // titled yet. On a releasing work the same gap could equally be
-        // episodes that have not aired, and adding them would present
-        // unwatchable episodes as ready.
-        return if status == Some("FINISHED") {
-            with_missing_episodes(known, episode_count, cover_image)
-        } else {
-            known
-        };
+        // A catalogue that filtered down to NOTHING is not an answer. Kitsu
+        // returns a record per planned episode with `airdate: null` until each
+        // airs, so an airing cour can arrive as twelve undated rows and no
+        // watchable ones. Falling through to synthesis below draws the episodes
+        // that HAVE aired -- the aired count is known even when the per-episode
+        // dates are not.
+        if !known.is_empty() {
+            // Only a finished work is padded. Every episode of a finished work
+            // has aired by definition, so a missing entry is one the provider
+            // has not titled yet. On a releasing work the same gap could
+            // equally be episodes that have not aired, and adding them would
+            // present unwatchable episodes as ready.
+            return if status == Some("FINISHED") {
+                with_missing_episodes(known, episode_count, cover_image)
+            } else {
+                known
+            };
+        }
     }
 
     // No catalogue to show, so the list has to be synthesised. The count to
@@ -216,9 +307,24 @@ pub fn episodes_for_facts(
     // (everything has aired), and a work with no announced total (One Piece)
     // uses the aired count as its only source of length.
     let ceiling = match (status, aired_through) {
-        (Some("RELEASING"), Some(aired)) => match episode_count {
-            Some(total) => Some(total.min(aired)),
-            None => Some(aired),
+        // Nothing has aired, so nothing is watchable. Without this arm the
+        // announced total leaked through `_ => episode_count` and an unreleased
+        // work offered a full grid of episodes that do not exist yet.
+        (Some("NOT_YET_RELEASED"), _) => Some(0),
+        // A releasing work is capped at what has aired. `aired_through` is
+        // derived from the schedule when the catalogue did not supply it, which
+        // is what stops the whole announced cour being drawn when the episode
+        // fetch fails.
+        //
+        // An unknown aired count yields NOTHING rather than the announced
+        // total. Drawing 26 episodes for a cour three weeks in offers the
+        // reader two dozen episodes they cannot watch, which is the exact bug
+        // this arm exists to prevent -- a short grid is honest, a long one is
+        // not.
+        (Some("RELEASING"), aired) => match (episode_count, aired) {
+            (Some(total), Some(aired)) => Some(total.min(aired)),
+            (None, Some(aired)) => Some(aired),
+            (_, None) => Some(0),
         },
         // No status, but an aired count and no announced total: the aired count
         // is still better than nothing.
@@ -227,6 +333,49 @@ pub fn episodes_for_facts(
     };
 
     synthesize_episodes(ceiling, cover_image)
+}
+
+/// Append the not-yet-aired episode as a trailing entry.
+///
+/// Two guards, both about not lying to the reader:
+///
+/// - An entry with that number already present means the provider disagrees
+///   with its own schedule, so the real entry wins and nothing is added.
+/// - A timestamp in the past means the schedule is stale (the airing already
+///   happened but the pull predates it), so the entry would claim a future
+///   broadcast that is not in the future.
+fn append_upcoming(
+    episodes: &mut Vec<Episode>,
+    next: NextAiringEpisode,
+    cover_image: Option<&str>,
+    now_unix: i64,
+) {
+    if episodes
+        .iter()
+        .any(|episode| episode.number == Some(next.episode))
+    {
+        return;
+    }
+    // `now_unix` is a parameter, not a call, for the same reason everywhere
+    // else in this module: a test must be able to pin the clock.
+    if next.airing_at <= now_unix {
+        return;
+    }
+
+    episodes.push(Episode {
+        number: Some(next.episode),
+        // Deliberately no title: the provider has not published one for an
+        // episode that has not aired, and inventing "Episode 7" would read as
+        // a real title once the grid sorts by it.
+        title: None,
+        thumbnail: cover_image.map(str::to_string),
+        url: None,
+        site: None,
+        aired: None,
+        airing_at: Some(next.airing_at),
+        filler: false,
+        recap: false,
+    });
 }
 
 /// Fill the gaps between a catalogue and the count the provider announced.
@@ -279,6 +428,7 @@ fn with_missing_episodes(
             url: None,
             site: None,
             aired: None,
+            airing_at: None,
             filler: false,
             recap: false,
         });
@@ -448,6 +598,7 @@ mod tests {
             description: None,
             episode_count: count,
             aired_episodes: None,
+            next_airing: None,
             duration_minutes: None,
             format: None,
             genres: Vec::new(),
@@ -494,6 +645,71 @@ mod tests {
     }
 
     #[test]
+    fn an_undated_record_on_a_releasing_work_has_not_aired() {
+        // THE BUG THIS GUARDS: Kitsu returns a record for EVERY planned
+        // episode, with `airdate: null` until each airs. Counting those as
+        // aired drew a full 12-card grid for a cour four weeks into its run.
+        assert!(!is_aired_on(None, now_unix(), true));
+        assert!(!is_aired_on(Some(""), now_unix(), true));
+        // A real past date is still aired on a releasing work.
+        assert!(is_aired_on(Some("2000-01-01"), now_unix(), true));
+        // A real future date is still not.
+        assert!(!is_aired_on(Some("2100-01-01"), now_unix(), true));
+    }
+
+    #[test]
+    fn an_undated_record_on_a_finished_work_is_aired() {
+        // The old behaviour is correct here: a finished work has aired
+        // everything, so a gap in the provider's dates is not evidence of an
+        // unbroadcast episode.
+        assert!(is_aired_on(None, now_unix(), false));
+    }
+
+    #[test]
+    fn a_releasing_catalogue_of_undated_records_falls_back_to_the_aired_count() {
+        // THE REPORTED SHAPE: twelve records, none with an `airdate`, four
+        // having actually aired. The undated rows are correctly dropped, and
+        // the aired count draws the four that are watchable -- not twelve, and
+        // not zero.
+        let catalogue: Vec<EpisodeInfo> = (1..=12)
+            .map(|number| info(number, None))
+            .collect();
+
+        let next = NextAiringEpisode {
+            episode: 5,
+            airing_at: now_unix() + 86_400,
+        };
+        let episodes = episodes_for_facts(
+            Some(12),
+            Some("RELEASING"),
+            None,
+            &catalogue,
+            None,
+            Some(next),
+            now_unix(),
+        );
+
+        assert_eq!(episodes.len(), 5, "4 aired plus the upcoming entry");
+        let numbers: Vec<_> = episodes.iter().filter_map(|e| e.number).collect();
+        assert_eq!(numbers, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn the_same_catalogue_on_a_finished_work_still_shows() {
+        let catalogue: Vec<EpisodeInfo> = (1..=12)
+            .map(|number| info(number, None))
+            .collect();
+
+        let episodes = episodes_for(
+            &anime(Some("FINISHED"), Some(12)),
+            &catalogue,
+            now_unix(),
+        );
+
+        assert_eq!(episodes.len(), 12);
+    }
+
+    #[test]
     fn finished_works_are_padded_to_the_announced_count() {
         let catalogue = vec![info(1, Some("2000-01-01"))];
         let episodes = episodes_for(&anime(Some("FINISHED"), Some(3)), &catalogue, now_unix());
@@ -509,9 +725,204 @@ mod tests {
     }
 
     #[test]
-    fn empty_catalogue_falls_back_to_synthesis() {
+    fn a_releasing_work_with_no_aired_info_shows_nothing() {
+        // WAS `empty_catalogue_falls_back_to_synthesis`, which asserted 4.
+        // That encoded the behaviour where a releasing work with no aired
+        // count drew its whole announced cour -- 26 watchable-looking cards for
+        // a show three weeks into its run. There is nothing to cap against, so
+        // the honest answer is an empty grid rather than an over-long one.
         let episodes = episodes_for(&anime(Some("RELEASING"), Some(4)), &[], now_unix());
+        assert!(episodes.is_empty());
+    }
+
+    #[test]
+    fn a_finished_work_still_falls_back_to_synthesis() {
+        // The guard above is scoped to RELEASING: a finished work has aired
+        // everything, so the announced total IS the real list.
+        let episodes = episodes_for(&anime(Some("FINISHED"), Some(4)), &[], now_unix());
         assert_eq!(episodes.len(), 4);
+    }
+
+    #[test]
+    fn an_unreleased_work_has_no_episodes() {
+        // THE BUG THIS GUARDS: the ceiling match had no unreleased arm, so the
+        // announced count fell through `_ => episode_count` and an unreleased
+        // work offered a full grid of episodes that do not exist yet.
+        let episodes = episodes_for(&anime(Some("NOT_YET_RELEASED"), Some(12)), &[], now_unix());
+        assert!(
+            episodes.is_empty(),
+            "an unreleased work must not offer a synthesised grid"
+        );
+    }
+
+    #[test]
+    fn an_unreleased_work_ignores_a_catalogue_too() {
+        // Even a stale catalogue entry cannot make an unreleased work playable:
+        // the entries are dropped as unaired, and synthesis is capped at zero.
+        let catalogue = vec![info(1, Some("2100-01-01"))];
+        let episodes = episodes_for(
+            &anime(Some("NOT_YET_RELEASED"), Some(12)),
+            &catalogue,
+            now_unix(),
+        );
+        assert!(episodes.is_empty());
+    }
+
+    #[test]
+    fn a_releasing_work_is_capped_by_its_schedule_alone() {
+        // THE BUG THIS GUARDS: the catalogue fetch had failed, so there was no
+        // `aired_through`. The match fell through to the announced total and
+        // drew all 14 episodes. The schedule says ep 5 is next, so 4 have
+        // aired -- that is the cap.
+        let next = NextAiringEpisode {
+            episode: 5,
+            airing_at: now_unix() + 86_400,
+        };
+        let episodes = episodes_for_facts(
+            Some(14),
+            Some("RELEASING"),
+            None,
+            &[],
+            None,
+            Some(next),
+            now_unix(),
+        );
+
+        assert_eq!(episodes.len(), 5, "4 aired plus the upcoming entry");
+        let numbers: Vec<_> = episodes.iter().filter_map(|e| e.number).collect();
+        assert_eq!(numbers, vec![1, 2, 3, 4, 5]);
+        assert!(episodes[3].airing_at.is_none(), "ep 4 has aired");
+        assert_eq!(
+            episodes[4].airing_at,
+            Some(next.airing_at),
+            "ep 5 is the upcoming one"
+        );
+    }
+
+    #[test]
+    fn an_explicit_aired_count_beats_the_schedule() {
+        // The catalogue's own count is authoritative when present; the schedule
+        // is only a fallback for when it is missing.
+        let next = NextAiringEpisode {
+            episode: 5,
+            airing_at: now_unix() + 86_400,
+        };
+        let episodes = episodes_for_facts(
+            Some(14),
+            Some("RELEASING"),
+            None,
+            &[],
+            Some(3),
+            Some(next),
+            now_unix(),
+        );
+        // 3 aired, and ep 4 is now skipped as already past... but ep 5 is still
+        // upcoming, so 3 aired entries plus the trailing one.
+        assert_eq!(episodes.len(), 4);
+        assert_eq!(episodes[3].number, Some(5));
+    }
+
+    #[test]
+    fn a_releasing_work_appends_the_next_episode_last() {
+        let catalogue = vec![info(1, Some("2000-01-01")), info(2, Some("2000-01-08"))];
+        let next = NextAiringEpisode {
+            episode: 3,
+            airing_at: now_unix() + 86_400,
+        };
+        let episodes = episodes_for_facts(
+            Some(12),
+            Some("RELEASING"),
+            None,
+            &catalogue,
+            Some(2),
+            Some(next),
+            now_unix(),
+        );
+
+        assert_eq!(episodes.len(), 3);
+        let last = episodes.last().expect("an upcoming entry");
+        assert_eq!(last.number, Some(3));
+        assert_eq!(last.airing_at, Some(next.airing_at));
+        assert!(last.title.is_none(), "no title has been published yet");
+    }
+
+    #[test]
+    fn a_finished_work_gets_no_upcoming_entry() {
+        // A finished work reports no `nextAiringEpisode`, so the field is None
+        // and the list is exactly what it was before.
+        let episodes = episodes_for(&anime(Some("FINISHED"), Some(3)), &[], now_unix());
+        assert_eq!(episodes.len(), 3);
+        assert!(episodes.iter().all(|episode| episode.airing_at.is_none()));
+    }
+
+    #[test]
+    fn a_stale_schedule_is_not_shown_as_upcoming() {
+        // The airing already happened but the payload predates it: claiming a
+        // future broadcast that is in the past would be a lie.
+        //
+        // The clock is PINNED here. With the system clock the assertion would
+        // pass for the wrong reason, and would start failing the moment the
+        // test ran before the timestamp.
+        let pinned = 1_700_000_000i64;
+        let next = NextAiringEpisode {
+            episode: 4,
+            airing_at: pinned - 60,
+        };
+        let episodes = episodes_for_facts(
+            Some(12),
+            Some("RELEASING"),
+            None,
+            &[info(1, Some("2000-01-01"))],
+            Some(3),
+            Some(next),
+            pinned,
+        );
+        assert!(episodes.iter().all(|episode| episode.airing_at.is_none()));
+    }
+
+    #[test]
+    fn a_future_schedule_is_shown_against_the_pinned_clock() {
+        // The mirror of the test above: same pinned clock, timestamp ahead of
+        // it. This is what proves the comparison uses the injected value
+        // rather than whatever the machine thinks the time is.
+        let pinned = 1_700_000_000i64;
+        let next = NextAiringEpisode {
+            episode: 4,
+            airing_at: pinned + 60,
+        };
+        let episodes = episodes_for_facts(
+            Some(12),
+            Some("RELEASING"),
+            None,
+            &[info(1, Some("2000-01-01"))],
+            Some(3),
+            Some(next),
+            pinned,
+        );
+        assert_eq!(
+            episodes.last().and_then(|episode| episode.airing_at),
+            Some(pinned + 60)
+        );
+    }
+
+    #[test]
+    fn an_already_listed_episode_is_not_duplicated() {
+        // The provider disagreeing with its own schedule must not produce two
+        // cards for one number.
+        let next = NextAiringEpisode {
+            episode: 2,
+            airing_at: now_unix() + 86_400,
+        };
+        let episodes = episodes_for_facts(
+            Some(12),
+            Some("RELEASING"),
+            None,
+            &[info(1, Some("2000-01-01")), info(2, Some("2000-01-08"))],
+            Some(2),
+            Some(next),
+            now_unix(),
+        );
+        assert_eq!(episodes.len(), 2);
     }
 
     #[test]
@@ -534,6 +945,7 @@ mod tests {
             site: None,
             thumbnail: None,
             aired: None,
+            airing_at: None,
             filler: false,
             recap: false,
         };
@@ -549,6 +961,7 @@ mod tests {
             site: None,
             thumbnail: None,
             aired: None,
+            airing_at: None,
             filler: false,
             recap: false,
         };
@@ -578,6 +991,7 @@ mod tests {
                 site: None,
                 thumbnail: None,
                 aired: None,
+                airing_at: None,
                 filler: false,
                 recap: false,
             })

@@ -27,7 +27,11 @@ Item {
         if (item.format) out.push(item.format)
         if (item.durationMinutes != null) out.push(item.durationMinutes + "m")
         if (item.seasonYear != null) out.push(String(item.seasonYear))
-        if (item.episodeCount != null) out.push(item.episodeCount + " eps")
+        // "0 eps" rather than nothing for an unreleased work: the mapping
+        // already zeroed the announced total, and an absent fact reads as
+        // unknown instead of "none yet".
+        if (item.status === "NOT_YET_RELEASED") out.push("0 eps")
+        else if (item.episodeCount != null) out.push(item.episodeCount + " eps")
         return out
     }
 

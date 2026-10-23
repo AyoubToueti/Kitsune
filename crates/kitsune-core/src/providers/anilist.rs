@@ -1847,10 +1847,16 @@ struct Media {
 }
 
 /// The next broadcast, as AniList reports it.
+///
+/// Both fields come from the same `nextAiringEpisode` object, so asking for the
+/// date costs no extra request: AniList rate-limits per request, not per field.
 #[derive(Deserialize, Default)]
 struct NextAiringWire {
     #[serde(default)]
     episode: Option<u32>,
+    /// Unix seconds (UTC) at which that episode airs.
+    #[serde(rename = "airingAt", default)]
+    airing_at: Option<i64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -1977,6 +1983,30 @@ struct CoverImage {
 /// Map AniList's shape onto our domain type.
 fn map_media(media: Media) -> Anime {
     let title = media.title.unwrap_or_default();
+    let status = non_empty(media.status);
+
+    // An unreleased work has no episodes to watch, so it reports none. The
+    // announced `episodes` field is a total the provider has PLANNED, and
+    // showing it made an unreleased show look like it had a watchable list.
+    //
+    // Zeroed here rather than in each surface: every card, list and page reads
+    // this one field, so one rule keeps them all honest. The trade-off is that
+    // the planned total is no longer visible anywhere for an unreleased work.
+    let unreleased = status.as_deref() == Some("NOT_YET_RELEASED");
+    let episode_count = if unreleased { None } else { media.episodes };
+
+    let next_airing = media
+        .next_airing_episode
+        .as_ref()
+        .and_then(|next| match (next.episode, next.airing_at) {
+            (Some(episode), Some(airing_at)) => Some(crate::types::NextAiringEpisode {
+                episode,
+                airing_at,
+            }),
+            // Half a schedule is not a schedule: without both the number and
+            // the date there is nothing useful to show.
+            _ => None,
+        });
 
     Anime {
         id: media.id,
@@ -1991,6 +2021,7 @@ fn map_media(media: Media) -> Anime {
             .as_ref()
             .and_then(|next| next.episode)
             .map(|episode| episode.saturating_sub(1)),
+        next_airing,
         title: Title {
             romaji: non_empty(title.romaji),
             english: non_empty(title.english),
@@ -2000,13 +2031,13 @@ fn map_media(media: Media) -> Anime {
         cover_image: media.cover_image.and_then(pick_cover),
         banner_image: non_empty(media.banner_image),
         description: non_empty(media.description),
-        episode_count: media.episodes,
+        episode_count,
         duration_minutes: media.duration,
         format: non_empty(media.format),
         genres: media.genres.unwrap_or_default(),
         average_score: media.average_score,
         popularity: media.popularity,
-        status: non_empty(media.status),
+        status,
         season: non_empty(media.season),
         season_year: media.season_year,
         streaming_episodes: media
@@ -4239,6 +4270,67 @@ mod tests {
         assert!(anime[0].cover_image.is_none());
         assert!(anime[0].genres.is_empty());
         assert_eq!(anime[0].episode_count, None);
+    }
+
+    #[tokio::test]
+    async fn an_unreleased_work_reports_no_episode_count() {
+        // The announced `episodes` total is a plan, not a watchable list.
+        // Zeroing it at the mapping boundary is what keeps every surface --
+        // cards, lists, the detail chip -- from advertising episodes that do
+        // not exist yet.
+        let mut media = media_json();
+        media["status"] = serde_json::json!("NOT_YET_RELEASED");
+        media["episodes"] = serde_json::json!(12);
+
+        let (_server, provider) = provider_with(page_response(vec![media]), 200).await;
+        let anime = provider.trending(1).await.unwrap();
+
+        assert_eq!(anime[0].episode_count, None);
+        assert_eq!(anime[0].status.as_deref(), Some("NOT_YET_RELEASED"));
+    }
+
+    #[tokio::test]
+    async fn a_releasing_work_keeps_its_announced_count() {
+        // The guard must not fire for a work that is actually airing.
+        let mut media = media_json();
+        media["status"] = serde_json::json!("RELEASING");
+        media["episodes"] = serde_json::json!(12);
+
+        let (_server, provider) = provider_with(page_response(vec![media]), 200).await;
+        let anime = provider.trending(1).await.unwrap();
+
+        assert_eq!(anime[0].episode_count, Some(12));
+    }
+
+    #[tokio::test]
+    async fn the_next_airing_episode_carries_its_date() {
+        // `airingAt` is requested in the same `nextAiringEpisode` object as the
+        // number, so this costs no extra request.
+        let mut media = media_json();
+        media["nextAiringEpisode"] =
+            serde_json::json!({ "episode": 7, "airingAt": 1_800_000_000 });
+
+        let (_server, provider) = provider_with(page_response(vec![media]), 200).await;
+        let anime = provider.trending(1).await.unwrap();
+
+        let next = anime[0].next_airing.expect("a scheduled episode");
+        assert_eq!(next.episode, 7);
+        assert_eq!(next.airing_at, 1_800_000_000);
+        // The aired count still comes from the same object: 7 means 6 aired.
+        assert_eq!(anime[0].aired_episodes, Some(6));
+    }
+
+    #[tokio::test]
+    async fn a_half_schedule_is_dropped() {
+        // Without both the number and the date there is nothing to show.
+        let mut media = media_json();
+        media["nextAiringEpisode"] = serde_json::json!({ "episode": 7 });
+
+        let (_server, provider) = provider_with(page_response(vec![media]), 200).await;
+        let anime = provider.trending(1).await.unwrap();
+
+        assert!(anime[0].next_airing.is_none());
+        assert_eq!(anime[0].aired_episodes, Some(6));
     }
 
     #[tokio::test]

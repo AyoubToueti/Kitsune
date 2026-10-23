@@ -1376,15 +1376,28 @@ impl qobject::Backend {
                     .episodes(kitsu_id)
                     .await
                     .map(|catalogue| {
-                        // An empty `aired` with a non-empty list means the
-                        // provider withheld the count; the list length is then
-                        // the honest floor rather than zero.
-                        let aired = if catalogue.aired == 0 {
-                            catalogue.info.len() as u32
-                        } else {
-                            catalogue.aired
-                        };
-                        serde_json::json!({ "info": catalogue.info, "aired": aired })
+                        // `aired` is passed through AS COUNTED, including zero.
+                        //
+                        // It used to be replaced with the record count when it
+                        // was zero, on the theory that an empty count meant the
+                        // provider withheld it. Kitsu does not withhold it --
+                        // it returns a record for every PLANNED episode, so a
+                        // cour that has not started airing reports zero dated
+                        // records and a full list of undated ones. Substituting
+                        // the list length turned "nothing has aired" into
+                        // "all twelve have aired", which is the bug this whole
+                        // path exists to avoid.
+                        //
+                        // A work with no catalogue at all reports 0 here too,
+                        // which the episode rules read as "unknown" and fall
+                        // back to synthesis for.
+                        tracing::info!(
+                            kitsu_id,
+                            records = catalogue.info.len(),
+                            aired = catalogue.aired,
+                            "episode catalogue"
+                        );
+                        serde_json::json!({ "info": catalogue.info, "aired": catalogue.aired })
                     }),
                 // No mapping means no episode data. Reported as an empty
                 // catalogue rather than an error, so the page falls back to
@@ -1434,6 +1447,7 @@ impl qobject::Backend {
             (!cover.is_empty()).then_some(cover.as_str()),
             &info,
             (catalogue.aired > 0).then_some(catalogue.aired),
+            catalogue.next_airing,
             kitsune_core::episodes::now_unix(),
         );
         let json = serde_json::to_string(&episodes).unwrap_or_else(|_| "[]".into());
@@ -2420,6 +2434,13 @@ struct EpisodeCatalogueWire {
     info: Vec<EpisodeInfo>,
     #[serde(default)]
     aired: u32,
+    /// The episode about to air, when the work is still releasing.
+    ///
+    /// Travels with the catalogue rather than on its own signal: the grid is
+    /// built in one call, and a separate `nextAiring` property would be a
+    /// second source of truth for the same list.
+    #[serde(rename = "nextAiring", default)]
+    next_airing: Option<kitsune_core::types::NextAiringEpisode>,
 }
 
 /// Parse an `Anime.provider` spelling into a [`ProviderId`].

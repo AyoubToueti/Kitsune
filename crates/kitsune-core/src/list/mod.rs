@@ -27,6 +27,7 @@ pub(crate) fn test_anime(provider: crate::types::ProviderId, id: i64) -> crate::
         description: None,
         episode_count: None,
         aired_episodes: None,
+        next_airing: None,
         duration_minutes: None,
         format: None,
         genres: Vec::new(),

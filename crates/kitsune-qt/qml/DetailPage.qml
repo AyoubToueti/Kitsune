@@ -87,7 +87,12 @@ Item {
         const a = page.anime
         const out = []
         if (a.format) out.push({ label: "Format", value: a.format })
-        if (a.episodeCount != null) out.push({ label: "Episodes", value: a.episodeCount + " eps" })
+        // An unreleased work says "0 eps" rather than hiding the row: the
+        // reader asked how many episodes it has, and "none yet" is the honest
+        // answer. The provider's own announced total is deliberately not
+        // shown, because those episodes cannot be watched.
+        if (a.status === "NOT_YET_RELEASED") out.push({ label: "Episodes", value: "0 eps" })
+        else if (a.episodeCount != null) out.push({ label: "Episodes", value: a.episodeCount + " eps" })
         if (a.durationMinutes != null) out.push({ label: "Duration", value: a.durationMinutes + " min" })
         if (a.status) out.push({ label: "Status", value: a.status })
         if (a.seasonYear != null) out.push({ label: "Year", value: String(a.seasonYear) })
@@ -117,6 +122,18 @@ Item {
         if (t === "") return "Episode " + number
         if (/^ep(isode)?\.?\s*\d+/i.test(t)) return t
         return "Episode " + number + " - " + t
+    }
+
+    // The label for the trailing entry representing an episode that has not
+    // aired yet. The date is formatted here rather than in Rust so it follows
+    // the reader's locale; `airingAt` is unix seconds (UTC).
+    function upcomingLabel(ep) {
+        const number = ep.number !== undefined ? ep.number : 0
+        const when = ep.airingAt
+            ? Qt.formatDate(new Date(ep.airingAt * 1000), "d MMM")
+            : ""
+        if (when === "") return "Episode " + number
+        return "Episode " + number + " · " + when
     }
 
     function computeOffset(list) {
@@ -245,11 +262,31 @@ Item {
         }
         if (backend) backend.getWatchPositions()
 
+        // `nextAiring` rides along with the catalogue: the grid is built in
+        // one call, so a separate property would be a second source of truth
+        // for the same list. It is only present on a still-airing work.
+        // `aired` has TWO sources and the fallback matters:
+        //
+        // - `page.airedEpisodes` comes from the episode catalogue request, and
+        //   is 0 when that request failed or the work has no mapping.
+        // - `anime.airedEpisodes` comes from the DETAIL response, where AniList
+        //   derives it from `nextAiringEpisode`.
+        //
+        // Only the first was passed before. A releasing work whose catalogue
+        // fetch failed therefore arrived with an aired count of 0, the cap had
+        // nothing to work with, and the announced total was drawn in full.
+        const aired = page.airedEpisodes > 0
+            ? page.airedEpisodes
+            : (anime.airedEpisodes || 0)
         const json = backend.buildEpisodes(
             anime.episodeCount || 0,
             anime.status || "",
             anime.coverImage || "",
-            JSON.stringify({ info: page.episodeInfo, aired: page.airedEpisodes }))
+            JSON.stringify({
+                info: page.episodeInfo,
+                aired: aired,
+                nextAiring: anime.nextAiring || null
+            }))
         var list = JSON.parse(json) || []
         if (!page.sortAscending) {
             list.reverse()
@@ -881,9 +918,15 @@ Item {
 
                             readonly property int epNumber: modelData.number !== undefined
                                 ? modelData.number : (index + 1)
-                            readonly property bool watched: page.watchedThrough > 0
+                            // An episode that has not aired yet. It is drawn as
+                            // a date, not a play affordance: there is nothing
+                            // to watch, and a card that does nothing on click
+                            // reads as broken.
+                            readonly property bool upcoming: modelData.airingAt !== undefined
+                                && modelData.airingAt !== null
+                            readonly property bool watched: !upcoming && page.watchedThrough > 0
                                 && epNumber < page.watchedThrough
-                            readonly property bool current: page.watchedThrough > 0
+                            readonly property bool current: !upcoming && page.watchedThrough > 0
                                 && epNumber === page.watchedThrough
 
                             width: 200
@@ -1021,7 +1064,11 @@ Item {
                                         }
                                     }
 
+                                    // Never shown for an upcoming episode:
+                                    // the play affordance promises a stream
+                                    // that does not exist yet.
                                     Rectangle {
+                                        visible: !upcoming
                                         anchors.centerIn: parent
                                         width: 36
                                         height: 36
@@ -1048,8 +1095,10 @@ Item {
                                         anchors.right: parent.right
                                         anchors.bottom: parent.bottom
                                         anchors.margins: 8
-                                        text: page.episodeLabel(modelData, index)
-                                        color: "white"
+                                        text: upcoming
+                                            ? page.upcomingLabel(modelData)
+                                            : page.episodeLabel(modelData, index)
+                                        color: upcoming ? Theme.accent : "white"
                                         font.pixelSize: 11
                                         font.bold: true
                                         elide: Text.ElideRight
@@ -1060,9 +1109,13 @@ Item {
 
                                 HoverHandler { id: epHover }
 
+                                // Inert for an upcoming episode: there is no
+                                // release to search for yet, so a click would
+                                // open a watch page that can only fail.
                                 MouseArea {
                                     anchors.fill: parent
-                                    cursorShape: Qt.PointingHandCursor
+                                    enabled: !upcoming
+                                    cursorShape: upcoming ? Qt.ArrowCursor : Qt.PointingHandCursor
                                     onClicked: page.triggerWatch(epNumber)
                                 }
                             }

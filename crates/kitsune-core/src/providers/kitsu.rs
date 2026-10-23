@@ -367,17 +367,18 @@ impl KitsuProvider {
     ///
     /// Two deliberate limits:
     ///
-    /// - **`aired` comes from `meta.count` on the FIRST page**, then the list is
-    ///   trimmed to it. Kitsu's `meta.count` is the number of episode RECORDS,
-    ///   and a record exists only once the episode has aired -- which is what
-    ///   makes it usable as an aired count rather than an announced total.
+    /// - **`aired` is COUNTED from the records that carry an `airdate`.**
+    ///   `meta.count` is NOT an aired count: verified against a live cour four
+    ///   weeks into its run, Kitsu returned all twelve records with
+    ///   `airdate: null`. It creates a record per planned episode up front and
+    ///   fills the date in as each one airs, so the count is the cour length.
+    ///   Counting the dated records is the only honest measure Kitsu offers.
     /// - **Paging stops at [`MAX_EPISODE_PAGES`].** A 1400-episode work would
     ///   otherwise issue 70 requests from one click. The count is still exact;
     ///   only the tail of the list is dropped, and the UI already renders a
     ///   truncated grid.
     pub async fn episodes(&self, kitsu_id: i64) -> Result<EpisodeCatalogue, ProviderError> {
         let mut all: Vec<EpisodeInfo> = Vec::new();
-        let mut aired: u32 = 0;
         let mut page = 1u32;
 
         loop {
@@ -388,13 +389,6 @@ impl KitsuProvider {
             );
 
             let envelope: EpisodeEnvelope = self.get(&url).await?;
-
-            if page == 1 {
-                // `meta.count` is the total number of records, which Kitsu only
-                // creates for episodes that have aired. An absent count means
-                // "unknown", not "zero" -- the empty list speaks for itself.
-                aired = envelope.meta.count;
-            }
 
             let before = all.len();
             all.extend(
@@ -415,6 +409,20 @@ impl KitsuProvider {
         }
 
         all.sort_by_key(|episode| episode.number);
+
+        // Counted, NOT taken from `meta.count`. A record with no `airdate` is a
+        // planned episode: Kitsu creates the whole cour up front and dates each
+        // one as it airs. See the note on this method.
+        let aired = all
+            .iter()
+            .filter(|episode| {
+                episode
+                    .aired
+                    .as_deref()
+                    .map(|date| !date.trim().is_empty())
+                    .unwrap_or(false)
+            })
+            .count() as u32;
 
         Ok(EpisodeCatalogue { info: all, aired })
     }
@@ -483,14 +491,14 @@ struct CollectionMeta {
 
 /// A JSON:API collection of episodes.
 ///
-/// Shares [`CollectionMeta`] with the anime collection: `meta.count` means the
-/// same thing on both -- how many records exist in total.
+/// `meta.count` is deliberately NOT read. It is the number of episode RECORDS,
+/// which for an airing work is the whole cour rather than what has aired: Kitsu
+/// creates a record per planned episode up front and dates each one as it
+/// airs. `episodes` counts the dated records instead.
 #[derive(Deserialize)]
 struct EpisodeEnvelope {
     #[serde(default)]
     data: Vec<EpisodeResource>,
-    #[serde(default)]
-    meta: CollectionMeta,
 }
 
 #[derive(Deserialize)]
@@ -748,6 +756,13 @@ impl MappingResource {
 /// single-title lookup, which is the only caller that can fill `id_mal`.
 fn map_anime(resource: &AnimeResource, included: &[MappingResource]) -> Anime {
     let attrs = &resource.attributes;
+    let status = normalize_status(attrs.status.as_deref());
+
+    // Same rule as AniList: an unreleased work has nothing to watch, so it
+    // reports no episodes. Kitsu spells this "upcoming" or "tba", both of
+    // which `normalize_status` folds into `NOT_YET_RELEASED`.
+    let unreleased = status.as_deref() == Some("NOT_YET_RELEASED");
+    let episode_count = if unreleased { None } else { attrs.episode_count };
 
     Anime {
         id: resource.id.parse().unwrap_or_default(),
@@ -771,7 +786,7 @@ fn map_anime(resource: &AnimeResource, included: &[MappingResource]) -> Anime {
             .and_then(|image| pick_image(image)),
         description: non_empty(attrs.synopsis.clone())
             .or_else(|| non_empty(attrs.description.clone())),
-        episode_count: attrs.episode_count,
+        episode_count,
         duration_minutes: attrs.episode_length,
         format: non_empty(attrs.subtype.clone()),
         // Categories live behind a relationship, so a list response carries no
@@ -780,7 +795,10 @@ fn map_anime(resource: &AnimeResource, included: &[MappingResource]) -> Anime {
         genres: Vec::new(),
         average_score: parse_score(attrs.average_rating.as_deref()),
         popularity: attrs.user_count,
-        status: normalize_status(attrs.status.as_deref()),
+        status,
+        // Kitsu publishes no next-broadcast data, so a Kitsu-sourced airing
+        // work simply gets no upcoming entry rather than a guessed one.
+        next_airing: None,
         season_year: parse_year(attrs.start_date.as_deref()),
         season: None,
         streaming_episodes: Vec::new(),
@@ -1246,6 +1264,34 @@ mod tests {
     use super::*;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn an_upcoming_kitsu_work_reports_no_episode_count() {
+        // Kitsu spells "not out yet" as `upcoming` or `tba`; both must zero
+        // the count, exactly as AniList's `NOT_YET_RELEASED` does.
+        for status in ["upcoming", "tba"] {
+            let mut json = anime_json("7442", false);
+            json["attributes"]["status"] = serde_json::json!(status);
+            json["attributes"]["episodeCount"] = serde_json::json!(12);
+
+            let resource: AnimeResource = serde_json::from_value(json).expect("valid resource");
+            let anime = map_anime(&resource, &[]);
+
+            assert_eq!(anime.episode_count, None, "status {status}");
+            assert_eq!(anime.status.as_deref(), Some("NOT_YET_RELEASED"));
+        }
+    }
+
+    #[test]
+    fn a_finished_kitsu_work_keeps_its_count() {
+        // The guard must not fire for a work that has finished airing.
+        let json = anime_json("7442", false);
+        let resource: AnimeResource = serde_json::from_value(json).expect("valid resource");
+        let anime = map_anime(&resource, &[]);
+
+        assert_eq!(anime.episode_count, Some(25));
+        assert!(anime.next_airing.is_none(), "Kitsu has no schedule data");
+    }
 
     /// A realistic anime resource. Values copied from a live response.
     fn anime_json(id: &str, nsfw: bool) -> serde_json::Value {

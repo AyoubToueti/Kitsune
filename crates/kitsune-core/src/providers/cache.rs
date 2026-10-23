@@ -290,6 +290,7 @@ impl<P: AnimeProvider> CachedProvider<P> {
                 episode_count: relation.episode_count,
                 id_mal: None,
                 aired_episodes: None,
+                next_airing: None,
                 banner_image: None,
                 description: None,
                 duration_minutes: None,
