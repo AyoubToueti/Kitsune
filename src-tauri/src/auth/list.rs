@@ -153,9 +153,12 @@ pub fn record_last_played(
     store: State<'_, LastPlayedStore>,
     anime_id: i64,
     episode: Option<u32>,
+    // Optional so an older frontend that sends only the id and episode still
+    // works; it just records no namespace, which was the previous behaviour.
+    provider: Option<String>,
 ) -> Result<(), String> {
     store
-        .write(anime_id, episode)
+        .write(anime_id, provider.as_deref(), episode)
         .map_err(|err| err.to_string())
 }
 
