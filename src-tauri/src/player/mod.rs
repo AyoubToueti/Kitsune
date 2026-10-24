@@ -6,13 +6,16 @@
 //! torrent, hand the frontend a stream URL, and optionally hand the same URL
 //! to a desktop player.
 
+pub mod choice;
 pub mod chooser;
 pub mod commands;
+pub mod external;
+pub mod icons;
+pub mod launch;
 
-// `icons`, `launch` and `state` moved to `kitsune-core`; re-exported under the
-// same names so `super::icons::...`, `super::launch::...`, `super::state::...`
-// and `crate::player::launch` paths keep resolving unchanged.
-pub use kitsune_core::player::{icons, launch, state};
+// The torrent session itself stays in `kitsune-core`, because the Qt frontend
+// drives it too. Only the external-player pieces above are Tauri's alone.
+pub use kitsune_core::player::state;
 
 pub use chooser::{
     choose_player_blocking, list_players, registered_players, PlayerChoice, PlayerOption,

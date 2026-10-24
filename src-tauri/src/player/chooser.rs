@@ -22,7 +22,7 @@
 
 // The chosen-player types live in `kitsune-core` (they cross every frontend);
 // re-exported so `super::chooser::PlayerChoice` etc. keep resolving.
-pub use kitsune_core::player::choice::{PlayerChoice, PlayerOption, VIDEO_CONTENT_TYPE};
+pub use super::choice::{PlayerChoice, PlayerOption, VIDEO_CONTENT_TYPE};
 
 /// An icon `data:` URL for a player's executable, if one can be found.
 ///

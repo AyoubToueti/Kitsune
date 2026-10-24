@@ -163,8 +163,7 @@ pub async fn open_in_player(
             }) as Arc<dyn Fn(usize) + Send + Sync>
         });
 
-    state
-        .open_in_player(&url, player.as_deref(), torrent_id, on_exit)
+    super::external::open_in_player(&state, &url, player.as_deref(), torrent_id, on_exit)
         .await
         .map_err(|err| err.to_string())
 }
@@ -209,8 +208,7 @@ pub async fn choose_and_open_player(
         // "unsupported" error as a cancel would do.
         Err(err) if err == super::chooser::CHOOSER_UNSUPPORTED => {
             tracing::info!("chooser: unsupported here, using the stored player");
-            return state
-                .open_in_player(&url, None, torrent_id, on_exit)
+            return super::external::open_in_player(&state, &url, None, torrent_id, on_exit)
                 .await
                 .map_err(|err| err.to_string());
         }
@@ -229,8 +227,7 @@ pub async fn choose_and_open_player(
         choice.extra_args
     );
 
-    state
-        .open_in_player_choice(&url, &choice, torrent_id, on_exit)
+    super::external::open_in_player_choice(&state, &url, &choice, torrent_id, on_exit)
         .await
         .map_err(|err| err.to_string())
 }
@@ -365,8 +362,7 @@ pub async fn open_in_player_choice(
         }) as Arc<dyn Fn(usize) + Send + Sync>
     });
 
-    state
-        .open_in_player_choice(&url, &choice, torrent_id, on_exit)
+    super::external::open_in_player_choice(&state, &url, &choice, torrent_id, on_exit)
         .await
         .map_err(|err| err.to_string())
 }

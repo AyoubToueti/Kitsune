@@ -40,8 +40,6 @@ dirs = "6"
 # diagnostics::speedtest drives a client against Cloudflare at runtime, so
 # reqwest belongs in [dependencies], not only [dev-dependencies].
 reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
-# player::icons encodes an icon file as a `data:` URL for the picker.
-base64 = "0.22"
 # providers::traits declares an async trait (AnimeProvider).
 async-trait = "0.1.92"
 # indexer::parse ports Sonarr's release-name regexes, which use lookaround and
