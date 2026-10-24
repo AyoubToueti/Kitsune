@@ -43,8 +43,51 @@ Popup {
         }
     }
 
-    // No save on close: every control writes as soon as it changes, so by the
-    // time the popup is dismissed there is nothing left to flush.
+    // --- Dynamic Auto-Scroll to Speed Test Results ---
+    property bool autoScrollOnResult: false
+
+    NumberAnimation {
+        id: smoothScrollAnim
+        target: scrollArea
+        property: "contentY"
+        duration: 350
+        easing.type: Easing.InOutQuad
+    }
+
+    function doScrollToBottom() {
+        // Use callLater to wait for QML layout pass after result items become visible
+        Qt.callLater(function() {
+            if (!scrollArea) return
+            const targetY = Math.max(0, scrollArea.contentHeight - scrollArea.height)
+            smoothScrollAnim.stop()
+            smoothScrollAnim.to = targetY
+            smoothScrollAnim.start()
+        })
+    }
+
+    Connections {
+        target: SpeedTestStore
+
+        function onRunningChanged() {
+            if (SpeedTestStore.running) {
+                popup.autoScrollOnResult = true
+            } else if (popup.autoScrollOnResult) {
+                popup.doScrollToBottom()
+            }
+        }
+
+        function onResultChanged() {
+            if (popup.autoScrollOnResult) {
+                popup.doScrollToBottom()
+            }
+        }
+
+        function onErrorChanged() {
+            if (popup.autoScrollOnResult) {
+                popup.doScrollToBottom()
+            }
+        }
+    }
 
     Connections {
         target: popup.backend
@@ -59,13 +102,8 @@ Popup {
             // Text fields are only rewritten when they are not focused: a
             // save raised by another control would otherwise wipe whatever
             // the reader is halfway through typing here.
-            if (!playerField.activeFocus) playerField.text = s.player || ""
-            if (!playerArgsField.activeFocus) {
-                playerArgsField.text = (s.playerArgs || []).join(" ")
-            }
             if (!downloadField.activeFocus) downloadField.text = s.downloadDir || ""
             seedersBox.value = s.minSeeders !== undefined ? s.minSeeders : 0
-            askSwitch.checked = s.askEveryTime !== false
             popup.themeValue = s.theme || "system"
             popup.shortcuts = s.shortcuts || ({})
             popup.resumeValue = s.resumeBehavior || "ask"
@@ -177,13 +215,12 @@ Popup {
     function save() {
         if (!current || loading) return
         const s = current
-        s.player = playerField.text
-        s.playerArgs = playerArgsField.text.trim().length > 0
-            ? playerArgsField.text.trim().split(/\s+/)
-            : []
+        // `player`, `playerArgs` and `askEveryTime` are deliberately left
+        // untouched: the Qt player is embedded-only, so those settings have no
+        // effect here. They ride along in `current` so the Tauri app's values
+        // are not reset by a save made from this popup.
         s.downloadDir = downloadField.text.length > 0 ? downloadField.text : null
         s.minSeeders = Math.round(seedersBox.value)
-        s.askEveryTime = askSwitch.checked
         s.theme = popup.themeValue
         s.resumeRewindSeconds = popup.rewindValue
         s.shortcuts = popup.shortcuts
@@ -260,12 +297,28 @@ Popup {
 
         // --- Body -------------------------------------------------------
         Flickable {
+            id: scrollArea
             Layout.fillWidth: true
             Layout.fillHeight: true
             contentWidth: width
             contentHeight: bodyColumn.implicitHeight + 16
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+
+            ScrollBar.vertical: ScrollBar {
+                policy: ScrollBar.AsNeeded
+            }
+
+            // Dynamically readjust target as contentHeight expands after results render
+            onContentHeightChanged: {
+                if (popup.autoScrollOnResult) {
+                    popup.doScrollToBottom()
+                }
+            }
+
+            // User manual scroll/flick cancels auto-scrolling
+            onMovementStarted: popup.autoScrollOnResult = false
+            onFlickStarted: popup.autoScrollOnResult = false
 
             ColumnLayout {
                 id: bodyColumn
@@ -331,184 +384,6 @@ Popup {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: popup.signedIn ? popup.disconnect() : popup.signIn()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // ===== Player configuration =============================
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 24
-                    Layout.rightMargin: 24
-                    implicitHeight: playerCol.implicitHeight + 28
-                    radius: 10
-                    color: "transparent"
-                    border.width: 1
-                    border.color: Theme.borderSubtle
-
-                    ColumnLayout {
-                        id: playerCol
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: 14
-                        spacing: 10
-
-                        Text {
-                            text: "PLAYER CONFIGURATION"
-                            color: Theme.inkFaint
-                            font.pixelSize: 10
-                            font.bold: true
-                            font.letterSpacing: 1.2
-                        }
-
-                        Text { text: "Executable / Command"; color: Theme.ink; font.pixelSize: 12; font.bold: true }
-                        TextField {
-                            id: playerField
-                            Layout.fillWidth: true
-                            color: Theme.ink
-                            placeholderText: "mpv"
-                            placeholderTextColor: Theme.inkFaint
-                            font.pixelSize: 12
-                            background: Rectangle {
-                                radius: 8; color: Theme.surface; border.width: 1
-                                border.color: playerField.activeFocus ? Theme.accent : Theme.borderSubtle
-                            }
-                            // Commit on blur/Enter rather than per keystroke:
-                            // saving mid-word would fire a write per character
-                            // and make the field jitter as values round-trip.
-                            onEditingFinished: popup.save()
-                        }
-
-                        Text { text: "Extra Arguments"; color: Theme.ink; font.pixelSize: 12; font.bold: true }
-                        TextField {
-                            id: playerArgsField
-                            Layout.fillWidth: true
-                            color: Theme.ink
-                            placeholderText: "e.g. --fs --force-media-title"
-                            placeholderTextColor: Theme.inkFaint
-                            font.pixelSize: 12
-                            background: Rectangle {
-                                radius: 8; color: Theme.surface; border.width: 1
-                                border.color: playerArgsField.activeFocus ? Theme.accent : Theme.borderSubtle
-                            }
-                            onEditingFinished: popup.save()
-                        }
-                        Text {
-                            text: "Passed directly to player before stream URL"
-                            color: Theme.inkFaint
-                            font.pixelSize: 10
-                        }
-
-                        Item { Layout.preferredHeight: 4 }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Text {
-                                Layout.fillWidth: true
-                                text: "Always prompt for media player choice before streaming"
-                                color: Theme.ink
-                                font.pixelSize: 12
-                            }
-                            ThemedSwitch {
-                                id: askSwitch
-                                onToggled: popup.save()
-                            }
-                        }
-                    }
-                }
-
-                // ===== Player shortcuts =================================
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 24
-                    Layout.rightMargin: 24
-                    implicitHeight: scCol.implicitHeight + 28
-                    radius: 10
-                    color: "transparent"
-                    border.width: 1
-                    border.color: Theme.borderSubtle
-
-                    ColumnLayout {
-                        id: scCol
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.margins: 14
-                        spacing: 8
-
-                        Text {
-                            text: "PLAYER SHORTCUTS"
-                            color: Theme.inkFaint
-                            font.pixelSize: 10
-                            font.bold: true
-                            font.letterSpacing: 1.2
-                        }
-                        Text {
-                            text: "Click a field and press the key you want. Esc cancels."
-                            color: Theme.inkFaint
-                            font.pixelSize: 10
-                        }
-
-                        Repeater {
-                            model: popup.shortcutActions
-                            delegate: RowLayout {
-                                required property var modelData
-                                Layout.fillWidth: true
-                                spacing: 8
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: modelData.label
-                                    color: Theme.ink
-                                    font.pixelSize: 12
-                                }
-
-                                TextField {
-                                    id: scField
-                                    Layout.preferredWidth: 120
-                                    readOnly: true
-                                    horizontalAlignment: TextInput.AlignHCenter
-                                    color: activeFocus ? Theme.accent : Theme.ink
-                                    text: activeFocus
-                                        ? "Press a key…"
-                                        : popup.shortcutFor(modelData.key, modelData.def)
-                                    font.pixelSize: 12
-                                    font.family: "monospace"
-                                    background: Rectangle {
-                                        radius: 8
-                                        color: Theme.surface
-                                        border.width: 1
-                                        border.color: scField.activeFocus ? Theme.accent : Theme.borderSubtle
-                                    }
-
-                                    Keys.onPressed: (event) => {
-                                        if (event.key === Qt.Key_Escape) {
-                                            const next = Object.assign({}, popup.shortcuts)
-                                            delete next[modelData.key]
-                                            popup.shortcuts = next
-                                            focus = false
-                                            popup.save()
-                                            event.accepted = true
-                                            return
-                                        }
-                                        if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control
-                                                || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta) {
-                                            event.accepted = true
-                                            return
-                                        }
-                                        const seq = popup.sequenceFromEvent(event)
-                                        if (seq.length > 0) {
-                                            const next = Object.assign({}, popup.shortcuts)
-                                            next[modelData.key] = seq
-                                            popup.shortcuts = next
-                                        }
-                                        focus = false
-                                        popup.save()
-                                        event.accepted = true
-                                    }
                                 }
                             }
                         }
@@ -769,6 +644,101 @@ Popup {
                             font.pixelSize: 10
                             wrapMode: Text.WordWrap
                             Layout.fillWidth: true
+                        }
+                    }
+                }
+
+                // ===== Player shortcuts =================================
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 24
+                    Layout.rightMargin: 24
+                    implicitHeight: scCol.implicitHeight + 28
+                    radius: 10
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
+
+                    ColumnLayout {
+                        id: scCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 8
+
+                        Text {
+                            text: "PLAYER SHORTCUTS"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+                        Text {
+                            text: "Click a field and press the key you want. Esc cancels."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                        }
+
+                        Repeater {
+                            model: popup.shortcutActions
+                            delegate: RowLayout {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.label
+                                    color: Theme.ink
+                                    font.pixelSize: 12
+                                }
+
+                                TextField {
+                                    id: scField
+                                    Layout.preferredWidth: 120
+                                    readOnly: true
+                                    horizontalAlignment: TextInput.AlignHCenter
+                                    color: activeFocus ? Theme.accent : Theme.ink
+                                    text: activeFocus
+                                        ? "Press a key…"
+                                        : popup.shortcutFor(modelData.key, modelData.def)
+                                    font.pixelSize: 12
+                                    font.family: "monospace"
+                                    background: Rectangle {
+                                        radius: 8
+                                        color: Theme.surface
+                                        border.width: 1
+                                        border.color: scField.activeFocus ? Theme.accent : Theme.borderSubtle
+                                    }
+
+                                    Keys.onPressed: (event) => {
+                                        if (event.key === Qt.Key_Escape) {
+                                            const next = Object.assign({}, popup.shortcuts)
+                                            delete next[modelData.key]
+                                            popup.shortcuts = next
+                                            focus = false
+                                            popup.save()
+                                            event.accepted = true
+                                            return
+                                        }
+                                        if (event.key === Qt.Key_Shift || event.key === Qt.Key_Control
+                                                || event.key === Qt.Key_Alt || event.key === Qt.Key_Meta) {
+                                            event.accepted = true
+                                            return
+                                        }
+                                        const seq = popup.sequenceFromEvent(event)
+                                        if (seq.length > 0) {
+                                            const next = Object.assign({}, popup.shortcuts)
+                                            next[modelData.key] = seq
+                                            popup.shortcuts = next
+                                        }
+                                        focus = false
+                                        popup.save()
+                                        event.accepted = true
+                                    }
+                                }
+                            }
                         }
                     }
                 }
