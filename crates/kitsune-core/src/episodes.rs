@@ -229,16 +229,22 @@ pub fn episodes_for_facts(
     now_unix: i64,
 ) -> Vec<Episode> {
     // The schedule IS an aired count: `next_airing.episode` is the one ABOUT
-    // to air, so one less have already aired. AniList reports this in the same
-    // response as the rest of the media, while `aired_through` comes from a
-    // separate catalogue request that may not have landed (or may not exist
-    // for this work at all).
+    // to air, so one less have already aired.
     //
-    // Without this, a releasing work whose catalogue fetch failed fell through
-    // to the announced total and drew the whole cour as watchable.
-    let aired_through = aired_through.or_else(|| {
-        next_airing.map(|next| next.episode.saturating_sub(1))
-    });
+    // It is combined with the catalogue's count by taking the MINIMUM, not by
+    // preferring one. Both can overshoot:
+    //
+    // - Kitsu's `meta.count` includes episodes it has PLANNED but not aired,
+    //   so One Piece reported 1410 against ~1181 actually out.
+    // - A schedule is the provider's plan, and can run ahead of what shipped.
+    //
+    // Whichever is lower is the safer claim: it can only under-offer an
+    // episode, never present an unbroadcast one as watchable.
+    let schedule_aired = next_airing.map(|next| next.episode.saturating_sub(1));
+    let aired_through = match (aired_through, schedule_aired) {
+        (Some(catalogue), Some(schedule)) => Some(catalogue.min(schedule)),
+        (catalogue, schedule) => catalogue.or(schedule),
+    };
 
     let mut episodes = episodes_without_upcoming(
         episode_count,
@@ -282,16 +288,32 @@ fn episodes_without_upcoming(
         // that HAVE aired -- the aired count is known even when the per-episode
         // dates are not.
         if !known.is_empty() {
-            // Only a finished work is padded. Every episode of a finished work
-            // has aired by definition, so a missing entry is one the provider
-            // has not titled yet. On a releasing work the same gap could
-            // equally be episodes that have not aired, and adding them would
-            // present unwatchable episodes as ready.
-            return if status == Some("FINISHED") {
-                with_missing_episodes(known, episode_count, cover_image)
-            } else {
-                known
-            };
+            // A finished work is padded to its announced total: every episode
+            // has aired, so a missing entry is one the provider has not titled.
+            if status == Some("FINISHED") {
+                return with_missing_episodes(known, episode_count, cover_image);
+            }
+
+            // A RELEASING work is padded to what has AIRED, never to the
+            // announced total -- the difference is the whole point.
+            //
+            // The case this exists for is a long runner. Paging stops at a
+            // hundred records, so One Piece arrived with a hundred aired
+            // entries and an aired count of 1181: the grid showed 1..100 and
+            // then jumped to the next-airing card. Filling 101..1181 with bare
+            // numbered entries is what Naruto and Bleach already look like,
+            // and it costs no requests.
+            //
+            // `with_missing_episodes` refuses a list that does not start at 1,
+            // so a later cour (13..24) is left alone rather than padded against
+            // a franchise total it does not share.
+            if releasing {
+                if let Some(aired) = aired_through {
+                    return with_missing_episodes(known, Some(aired), cover_image);
+                }
+            }
+
+            return known;
         }
     }
 
@@ -820,6 +842,84 @@ mod tests {
         // upcoming, so 3 aired entries plus the trailing one.
         assert_eq!(episodes.len(), 4);
         assert_eq!(episodes[3].number, Some(5));
+    }
+
+    #[test]
+    fn a_truncated_long_runner_fills_its_tail() {
+        // THE REPORTED CASE: One Piece. Paging stopped at 100 records while the
+        // aired count is 1181, so the grid showed 1..100 and then jumped to the
+        // next-airing card. The tail must be synthesised, not left as a gap.
+        let catalogue: Vec<EpisodeInfo> = (1..=100)
+            .map(|number| info(number, Some("2000-01-01")))
+            .collect();
+
+        let episodes = episodes_for_facts(
+            Some(1181),
+            Some("RELEASING"),
+            None,
+            &catalogue,
+            Some(1181),
+            None,
+            now_unix(),
+        );
+
+        assert_eq!(episodes.len(), 1181, "the tail must be filled");
+        // The first hundred keep their real catalogue entries.
+        assert_eq!(episodes[0].title.as_deref(), Some("Episode 1"));
+        // The tail is bare but numbered, so every episode is reachable.
+        let numbers: Vec<u32> = episodes.iter().filter_map(|e| e.number).collect();
+        assert_eq!(numbers.first(), Some(&1));
+        assert_eq!(numbers.last(), Some(&1181));
+    }
+
+    #[test]
+    fn the_lower_of_the_two_aired_counts_wins() {
+        // THE REPORTED CASE: Kitsu's `meta.count` is 1410 because it counts
+        // PLANNED records, while the schedule says episode 1182 is next, so
+        // 1181 have aired. Trusting the catalogue overshot by 229 episodes --
+        // the grid offered episodes that do not exist.
+        let catalogue: Vec<EpisodeInfo> = (1..=100)
+            .map(|number| info(number, Some("2000-01-01")))
+            .collect();
+        let next = NextAiringEpisode {
+            episode: 1182,
+            airing_at: now_unix() + 86_400,
+        };
+
+        let episodes = episodes_for_facts(
+            Some(1410),
+            Some("RELEASING"),
+            None,
+            &catalogue,
+            Some(1410),
+            Some(next),
+            now_unix(),
+        );
+
+        // 1181 aired plus the upcoming entry.
+        assert_eq!(episodes.len(), 1182);
+        let numbers: Vec<u32> = episodes.iter().filter_map(|e| e.number).collect();
+        assert_eq!(numbers.last(), Some(&1182));
+    }
+
+    #[test]
+    fn a_later_cour_is_never_padded() {
+        // 13..24 with a franchise total would invent the previous cour.
+        let catalogue: Vec<EpisodeInfo> = (13..=24)
+            .map(|number| info(number, Some("2000-01-01")))
+            .collect();
+
+        let episodes = episodes_for_facts(
+            Some(1181),
+            Some("RELEASING"),
+            None,
+            &catalogue,
+            Some(1181),
+            None,
+            now_unix(),
+        );
+
+        assert_eq!(episodes.len(), 12, "a non-1-based cour is left alone");
     }
 
     #[test]

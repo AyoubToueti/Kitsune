@@ -39,6 +39,14 @@ Item {
     property string stage: "releases"
     property var releases: []
     property bool searching: false
+    // Whether a search has COMPLETED for this open.
+    //
+    // The empty state is deliberately not shown until it is true: before the
+    // first search, `releases` is empty and `searching` is still false for the
+    // frame before `search()` runs, which painted the sleeping fox with a Retry
+    // button before anything had been asked. "Nothing yet" and "nothing found"
+    // are different states and need different art.
+    property bool searched: false
     property string error: ""
 
     // Which search a reply belongs to; the backend echoes it back. Bumped on
@@ -78,6 +86,7 @@ Item {
         function onReleasesReady(tag, json) {
             if (tag !== page.searchTag) return
             page.searching = false
+            page.searched = true
             page.releases = JSON.parse(json) || []
             if (page.releases.length === 0) {
                 page.error = "No releases found for this episode."
@@ -87,6 +96,7 @@ Item {
         function onReleasesFailed(tag, message) {
             if (tag !== page.searchTag) return
             page.searching = false
+            page.searched = true
             page.error = message
         }
 
@@ -143,6 +153,7 @@ Item {
         }
         page.searchGeneration += 1
         page.searching = true
+        page.searched = false
         page.error = ""
         backend.searchReleases(
             page.searchTag,
@@ -465,6 +476,7 @@ Item {
                     readonly property bool noHits: page.error.toLowerCase().indexOf("no ") === 0
 
                     visible: page.stage === "releases" && !page.searching
+                        && page.searched
                         && (page.error.length > 0 || page.releases.length === 0)
                     Layout.fillWidth: true
                     Layout.preferredHeight: implicitHeight

@@ -51,6 +51,9 @@ Item {
     // more announced episodes than watchable ones.
     property var episodeInfo: []
     property int airedEpisodes: 0
+    // Which work's episodes are already loaded, so a repeat `animeReady` for
+    // the same id does not re-fetch. See `onAnimeReady`.
+    property int episodesLoadedFor: 0
     property bool sortAscending: true
 
     // --- Jump-to-episode --------------------------------------------------
@@ -190,7 +193,18 @@ Item {
                 page.anime = parsed
                 page.loadFailed = false
                 page.loadError = ""
-                page.loadEpisodes()
+                // Only fetch the episodes ONCE per work.
+                //
+                // `animeReady` is a signal on the shared Backend object, not
+                // scoped to this page. The watch modal fetches the same work
+                // when it opens (for its title forms), and that reply arrives
+                // here too -- matching `animeId` and re-running the whole
+                // episode load. That was the spinner and network round trip
+                // behind the grid every time a release was picked or the
+                // popup closed.
+                if (page.episodesLoadedFor !== page.animeId) {
+                    page.loadEpisodes()
+                }
                 page.loadListEntry()
                 RetryState.reset()
             }
@@ -317,6 +331,7 @@ Item {
         }
 
         page.episodesLoading = true
+        page.episodesLoadedFor = anime.id
         backend.getEpisodes(anime.id, anime.provider || "anilist")
     }
 

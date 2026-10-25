@@ -24,6 +24,13 @@ Popup {
     property string stage: "releases"
     property var releases: []
     property bool searching: false
+    // Whether a search has COMPLETED for this open.
+    //
+    // The empty state is deliberately not shown until it is true. Before the
+    // first search `releases` is empty and `searching` is briefly false, which
+    // painted the sleeping fox and a Retry button before anything had been
+    // asked. "Nothing yet" and "nothing found" are different states.
+    property bool searched: false
     property string error: ""
 
     property string releaseMode: "episodes"
@@ -373,6 +380,13 @@ Popup {
         if (modal.stage === "play") modal.wakeChrome()
     }
 
+    // Whether the Continue record has been written for this playback.
+    //
+    // Deliberately separate from `recordWatchPosition`, which fires every five
+    // seconds: this must happen ONCE, and only after the player has reported a
+    // real duration.
+    property bool lastPlayedRecorded: false
+
     Timer {
         interval: 5000
         repeat: true
@@ -384,6 +398,19 @@ Popup {
             const dur = p.duration || 0
             if (pos > 0) {
                 modal.backend.recordWatchPosition(modal.animeId, modal.episodeNumber, pos, dur)
+            }
+
+            // The Continue record waits for a REAL duration.
+            //
+            // It used to be written when the stream URL resolved, which is
+            // before playback starts -- so the disc moved to the top with no
+            // duration to show, and a playback that never actually began still
+            // claimed to have been watched. `duration` is only known once the
+            // container is open, so this is the first honest moment.
+            if (!modal.lastPlayedRecorded && dur > 0) {
+                modal.lastPlayedRecorded = true
+                modal.backend.recordLastPlayed(
+                    modal.animeId, modal.episodeNumber, modal.animeProvider)
             }
         }
     }
@@ -457,6 +484,7 @@ Popup {
         modal.badges = ({})
         modal.error = ""
         modal.searching = false
+        modal.searched = false
         modal.probing = false
         modal.releaseTitle = ""
         modal.releaseMagnet = ""
@@ -473,6 +501,7 @@ Popup {
         modal.resumePromptOpen = false
         modal.resumeSeekTarget = -1
         modal.pendingResume = null
+        modal.lastPlayedRecorded = false
 
         // Identity.
         modal.animeId = anime
@@ -510,9 +539,24 @@ Popup {
     }
 
     onClosed: {
+        // Safety net for a short watch: the five-second timer is what normally
+        // records the Continue entry, so closing before the first tick would
+        // otherwise leave nothing behind even though playback did start.
+        //
+        // Guarded on a REAL duration, exactly like the timer. That is what
+        // separates "watched for a moment" from "opened the modal and backed
+        // out": the former has an open container and reports one, the latter
+        // never started a player at all.
+        //
+        // This used to fire unconditionally, which is why clicking an episode
+        // and closing the popup moved the disc without anything having played.
         modal.savePositionNow()
-        if (modal.backend && modal.animeId > 0) {
-            modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber, modal.animeProvider)
+        const p = playerLoader.item
+        if (!modal.lastPlayedRecorded && p && (p.duration || 0) > 0
+                && modal.backend && modal.animeId > 0) {
+            modal.lastPlayedRecorded = true
+            modal.backend.recordLastPlayed(
+                modal.animeId, modal.episodeNumber, modal.animeProvider)
         }
         modal.teardown()
     }
@@ -733,6 +777,7 @@ Popup {
         // toggle, or Retry).
         modal.searchGeneration += 1
         searching = true
+        searched = false
         error = ""
         releases = []
         badges = ({})
@@ -848,6 +893,7 @@ Popup {
             // dropped, not painted: it would show the wrong episode's list.
             if (tag !== modal.searchTag) return
             modal.searching = false
+            modal.searched = true
             modal.releases = JSON.parse(json) || []
             if (modal.releases.length === 0) {
                 modal.error = modal.releaseMode === "packs"
@@ -866,6 +912,7 @@ Popup {
         function onReleasesFailed(tag, message) {
             if (tag !== modal.searchTag) return
             modal.searching = false
+            modal.searched = true
             modal.error = message
         }
 
@@ -949,7 +996,10 @@ Popup {
             modal.backend.holdTorrent(modal.torrentId)
             modal.loadStream()
             if (modal.backend && modal.animeId > 0) {
-                modal.backend.recordLastPlayed(modal.animeId, modal.episodeNumber, modal.animeProvider)
+                // NOT `recordLastPlayed` here: the stream has only just been
+                // resolved, so there is no duration and playback may not start
+                // at all. The five-second timer writes it once `duration` is
+                // real. See `lastPlayedRecorded`.
                 modal.backend.setListEntry(modal.animeId, "current", modal.episodeNumber)
                 if (modal.releaseMagnet.length > 0) {
                     modal.backend.recordLastRelease(
@@ -1220,6 +1270,7 @@ Popup {
 
                         Layout.fillWidth: true
                         visible: modal.stage === "releases" && !modal.searching
+                            && modal.searched
                             && (modal.error !== "" || modal.releases.length === 0)
                         compact: true
                         artWidth: 96

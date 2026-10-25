@@ -367,19 +367,29 @@ impl KitsuProvider {
     ///
     /// Two deliberate limits:
     ///
-    /// - **`aired` is COUNTED from the records that carry an `airdate`.**
-    ///   `meta.count` is NOT an aired count: verified against a live cour four
-    ///   weeks into its run, Kitsu returned all twelve records with
-    ///   `airdate: null`. It creates a record per planned episode up front and
-    ///   fills the date in as each one airs, so the count is the cour length.
-    ///   Counting the dated records is the only honest measure Kitsu offers.
+    /// - **`aired` is COUNTED from the records that carry an `airdate`**, not
+    ///   read from `meta.count`. Verified against a live cour four weeks into
+    ///   its run, Kitsu returned all twelve records with `airdate: null`: it
+    ///   creates a record per planned episode up front and dates each one as
+    ///   it airs, so `meta.count` is the cour length rather than what aired.
     /// - **Paging stops at [`MAX_EPISODE_PAGES`].** A 1400-episode work would
-    ///   otherwise issue 70 requests from one click. The count is still exact;
-    ///   only the tail of the list is dropped, and the UI already renders a
-    ///   truncated grid.
+    ///   otherwise issue 70 requests from one click.
+    ///
+    /// The two rules meet on a LONG RUNNER. Paging stops at 100 records, so the
+    /// dated count can only ever reach 100 -- One Piece reported `aired: 100`
+    /// against 1181 real episodes, and the grid showed 1..100 then jumped to
+    /// the next-airing card. When the fetch was TRUNCATED, `meta.count` is the
+    /// better number: every episode on a truncated first page has aired by
+    /// definition (the cap is reached long after the start), so the record
+    /// count is the aired count for exactly the works where the dated count
+    /// cannot work. See [`EpisodeCatalogue::truncated`].
     pub async fn episodes(&self, kitsu_id: i64) -> Result<EpisodeCatalogue, ProviderError> {
         let mut all: Vec<EpisodeInfo> = Vec::new();
         let mut page = 1u32;
+        // Read on the first page only: it is the collection total, so later
+        // pages would repeat it.
+        let mut total_records: u32 = 0;
+        let mut truncated = false;
 
         loop {
             let offset = (page - 1) * MAX_PAGE_LIMIT;
@@ -389,6 +399,10 @@ impl KitsuProvider {
             );
 
             let envelope: EpisodeEnvelope = self.get(&url).await?;
+
+            if page == 1 {
+                total_records = envelope.meta.count;
+            }
 
             let before = all.len();
             all.extend(
@@ -402,7 +416,12 @@ impl KitsuProvider {
             // nothing also stops: without that, a malformed `links.next` could
             // loop for MAX_EPISODE_PAGES requests that all return the same rows.
             let full_page = all.len() - before >= MAX_PAGE_LIMIT as usize;
-            if !full_page || page >= MAX_EPISODE_PAGES {
+            if !full_page {
+                break;
+            }
+            if page >= MAX_EPISODE_PAGES {
+                // A FULL page at the cap means there is more we did not fetch.
+                truncated = true;
                 break;
             }
             page += 1;
@@ -413,7 +432,7 @@ impl KitsuProvider {
         // Counted, NOT taken from `meta.count`. A record with no `airdate` is a
         // planned episode: Kitsu creates the whole cour up front and dates each
         // one as it airs. See the note on this method.
-        let aired = all
+        let dated = all
             .iter()
             .filter(|episode| {
                 episode
@@ -424,7 +443,21 @@ impl KitsuProvider {
             })
             .count() as u32;
 
-        Ok(EpisodeCatalogue { info: all, aired })
+        // On a truncated fetch the dated count is useless -- it can never
+        // exceed the cap -- while every episode of a long runner has aired. The
+        // collection total is then the honest number, and the grid synthesises
+        // the tail from it.
+        let aired = if truncated {
+            total_records.max(dated)
+        } else {
+            dated
+        };
+
+        Ok(EpisodeCatalogue {
+            info: all,
+            aired,
+            truncated,
+        })
     }
 }
 
@@ -437,8 +470,18 @@ impl KitsuProvider {
 pub struct EpisodeCatalogue {
     /// The episodes fetched, sorted by number. May be shorter than `aired`.
     pub info: Vec<EpisodeInfo>,
-    /// How many episodes have aired, from Kitsu's `meta.count`.
+    /// How many episodes have aired.
+    ///
+    /// Counted from the dated records, EXCEPT when [`Self::truncated`], where
+    /// the dated count cannot exceed the page cap and Kitsu's collection total
+    /// is used instead.
     pub aired: u32,
+    /// Whether paging stopped at [`MAX_EPISODE_PAGES`] with more still to fetch.
+    ///
+    /// A long runner like One Piece reports its full length here while only the
+    /// first hundred records were read. The grid synthesises the tail from
+    /// `aired` rather than leaving a jump from 100 to the next-airing episode.
+    pub truncated: bool,
 }
 
 impl EpisodeCatalogue {
@@ -491,14 +534,16 @@ struct CollectionMeta {
 
 /// A JSON:API collection of episodes.
 ///
-/// `meta.count` is deliberately NOT read. It is the number of episode RECORDS,
-/// which for an airing work is the whole cour rather than what has aired: Kitsu
-/// creates a record per planned episode up front and dates each one as it
-/// airs. `episodes` counts the dated records instead.
+/// `meta.count` is the number of episode RECORDS. For a fresh cour that is the
+/// planned length rather than what has aired, so it is NOT used as the aired
+/// count directly -- see `episodes`. It IS used when the fetch was truncated,
+/// where the dated count cannot exceed the page cap.
 #[derive(Deserialize)]
 struct EpisodeEnvelope {
     #[serde(default)]
     data: Vec<EpisodeResource>,
+    #[serde(default)]
+    meta: CollectionMeta,
 }
 
 #[derive(Deserialize)]
