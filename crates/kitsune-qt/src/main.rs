@@ -6,6 +6,7 @@
 mod backend;
 mod mpv;
 mod screenshot;
+mod single_instance;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
 
@@ -59,6 +60,52 @@ fn main() {
         "kitsune-qt: logging to {}",
         kitsune_core::diagnostics::logging::log_file_path().display()
     );
+
+    // Deep-link handling, before any Qt object exists.
+    //
+    // `kitsune://auth#access_token=...` is what AniList redirects to after the
+    // reader authorises. The OS launches this executable to deliver it, so two
+    // things have to happen here and nowhere later:
+    //
+    //   1. If an instance is ALREADY RUNNING, hand it the URL and exit. Doing
+    //      this before `QGuiApplication` is what stops a second window from
+    //      ever appearing -- the blank white one the reader used to get.
+    //   2. Otherwise record the token NOW, before the QML engine loads. Then
+    //      `Backend::new` restores it from disk and the app starts signed in,
+    //      with no restart and no race against the UI.
+    let pending_url = single_instance::auth_url_from_args(std::env::args());
+
+    // Runtime for the bus only. The Backend builds its own later; this one
+    // lives for the whole process. A multi-thread runtime is required
+    // because zbus's connection dispatch task must keep running after the
+    // initial `acquire()` returns -- otherwise a forwarded `ApplyAuthUrl`
+    // from a second launch would never be answered.
+    let bus_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build the bus runtime");
+
+    if let Some(url) = pending_url.clone() {
+        // A running instance is the one that should apply this.
+        if bus_runtime.block_on(single_instance::forward(&url)) {
+            eprintln!("kitsune-qt: forwarded a sign-in to the running instance");
+            return;
+        }
+
+        // No instance took it, so this process IS the one to apply it.
+        match kitsune_core::auth::flow::parse_token(&url) {
+            Some(token) => {
+                let store = kitsune_core::auth::TokenStore::new();
+                match store.write(&token) {
+                    Ok(()) => eprintln!("kitsune-qt: stored the AniList token from a deep link"),
+                    Err(err) => eprintln!("kitsune-qt: could not store the token: {err:#}"),
+                }
+            }
+            // Not our URL, or no usable token. Deep links arrive from
+            // anywhere, so this is not an error worth stopping for.
+            None => eprintln!("kitsune-qt: ignored a deep link with no token"),
+        }
+    }
 
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
@@ -175,6 +222,21 @@ fn main() {
             engine.set_initial_properties(&props);
         }
     }
+
+    // Claim the bus name so a later launch knows to forward here instead of
+    // opening a window. The guard MUST outlive `app.exec()`: dropping it
+    // releases the name, and the next launch would then think IT is the first
+    // instance.
+    let _bus_guard = match bus_runtime.block_on(single_instance::acquire()) {
+        Ok(guard) => guard,
+        Err(err) => {
+            // No session bus (a bare TTY, a broken environment). The app still
+            // runs as a single window; only deep-link forwarding is lost, and
+            // refusing to start over that would be a poor trade.
+            eprintln!("kitsune-qt: single-instance unavailable: {err}");
+            None
+        }
+    };
 
     if let Some(engine) = engine.as_mut() {
         // On failure Qt logs "QQmlApplicationEngine failed to load component"

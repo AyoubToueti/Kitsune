@@ -27,6 +27,10 @@ serde_json = "1"
 # Background-task failure logs (torrent removal/release). Matches the core
 # crate's logging; the subscriber lives in kitsune-core::diagnostics::logging.
 tracing = "0.1.44"
+# Session-bus single-instance + deep-link forwarding. Chosen over a C++ D-Bus
+# shim because cxx-qt-lib exposes no QDBus types, and over QLocalServer because
+# the bus is a natural name mutex with nothing to clean up after a crash.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [build-dependencies]
 # Generates and compiles the C++ side of every #[cxx_qt::bridge].

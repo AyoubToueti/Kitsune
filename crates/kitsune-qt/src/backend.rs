@@ -326,6 +326,37 @@ pub mod qobject {
         #[cxx_name = "syncMediaList"]
         fn sync_media_list(self: Pin<&mut Self>);
 
+        /// Apply a `kitsune://auth#access_token=...` redirect URL.
+        ///
+        /// Returns whether a token was applied, so a caller can tell "not our
+        /// URL" from "applied".
+        #[qinvokable]
+        #[cxx_name = "applyAuthUrl"]
+        fn apply_auth_url(self: Pin<&mut Self>, url: QString) -> bool;
+
+        /// Apply a sign-in that a SECOND launch forwarded over D-Bus.
+        ///
+        /// The bus service cannot reach this object (it is created by QML, not
+        /// by `main`), so it parks the URL in a process-wide slot and this
+        /// drains it. QML calls it when the window becomes active, which is
+        /// exactly when the reader returns from the browser.
+        ///
+        /// Returns whether a token was applied. A no-op when nothing is
+        /// pending, so it is cheap to call on every activation.
+        #[qinvokable]
+        #[cxx_name = "takePendingAuthUrl"]
+        fn take_pending_auth_url(self: Pin<&mut Self>) -> bool;
+
+        /// Register the D-Bus notification callback.
+        ///
+        /// Called once from QML at startup. After this, when a deep link
+        /// arrives via D-Bus, the bus service invokes the callback which
+        /// queues `pendingAuthArrived` on the Qt thread, auto-raising the
+        /// window without requiring manual focus.
+        #[qinvokable]
+        #[cxx_name = "initDeepLinkNotify"]
+        fn init_deep_link_notify(self: Pin<&mut Self>);
+
         /// Forget the stored token.
         #[qinvokable]
         #[cxx_name = "logout"]
@@ -441,6 +472,14 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "authStatusReady"]
         fn auth_status_ready(self: Pin<&mut Self>, signed_in: bool);
+
+        /// Emitted when a deep link arrives via D-Bus while the app is running.
+        ///
+        /// QML connects to this signal to auto-raise the window and drain the
+        /// pending URL, so the user doesn't need to manually focus the app.
+        #[qsignal]
+        #[cxx_name = "pendingAuthArrived"]
+        fn pending_auth_arrived(self: Pin<&mut Self>);
 
         #[qsignal]
         #[cxx_name = "continueWatchingReady"]
@@ -1395,6 +1434,9 @@ impl qobject::Backend {
                             kitsu_id,
                             records = catalogue.info.len(),
                             aired = catalogue.aired,
+                            // True when paging stopped at the page cap: the
+                            // grid then synthesises the tail from `aired`.
+                            truncated = catalogue.truncated,
                             "episode catalogue"
                         );
                         serde_json::json!({ "info": catalogue.info, "aired": catalogue.aired })
@@ -1964,15 +2006,80 @@ impl qobject::Backend {
         self.spawn_sync();
     }
 
+    fn apply_auth_url(mut self: Pin<&mut Self>, url: QString) -> bool {
+        let url = url.to_string();
+
+        let Some(token) = flow::parse_token(&url) else {
+            // Either not our scheme, or no usable token in the fragment. A
+            // foreign URL is not an error -- deep links can come from
+            // anywhere -- so this is logged at debug and otherwise ignored.
+            tracing::debug!("ignored a deep link that carried no token");
+            return false;
+        };
+
+        // Store BEFORE telling the provider. Holding a token that failed to
+        // persist would work until the next restart and then appear to sign
+        // the reader out for no reason -- worse than not signing in at all.
+        // Same ordering as the Tauri implementation.
+        if let Err(err) = self.rust().tokens.write(&token) {
+            let message = format!("could not store the AniList token: {err:#}");
+            tracing::error!("{message}");
+            self.as_mut().auth_error(QString::from(&message));
+            return false;
+        }
+
+        self.rust().anilist.set_token(Some(token));
+        tracing::info!("signed in from a deep link");
+        self.as_mut().auth_status_ready(true);
+
+        // Reconcile straight away: the reader just signed in, and the list on
+        // screen is either empty or belongs to whoever was signed in before.
+        self.as_mut().spawn_sync();
+        true
+    }
+
+    fn take_pending_auth_url(mut self: Pin<&mut Self>) -> bool {
+        let slot = crate::single_instance::pending();
+        let url = {
+            let mut guard = slot.lock().expect("pending-auth mutex poisoned");
+            guard.take()
+        };
+        let Some(url) = url else {
+            return false;
+        };
+        self.as_mut().apply_auth_url(QString::from(&url))
+    }
+
+    fn init_deep_link_notify(self: Pin<&mut Self>) {
+        let qt_thread = self.qt_thread();
+        let callback: crate::single_instance::NotifyCallback = std::sync::Arc::new(move || {
+            let thread = qt_thread.clone();
+            let _ = thread.queue(|qobject| {
+                qobject.pending_auth_arrived();
+            });
+        });
+        crate::single_instance::set_notify(callback);
+    }
+
     fn logout(self: Pin<&mut Self>) {
+        // Logged at entry as well as on success: "Disconnect did nothing" has
+        // two very different causes -- the click never reaching this function,
+        // or the file removal failing -- and without these two lines there is
+        // no way to tell them apart from the outside.
+        tracing::info!(
+            path = %self.rust().tokens.path().display(),
+            "logout requested"
+        );
         // Clear the store, then the live provider, so signing out takes effect
         // on the next request rather than at the next restart.
         if let Err(err) = self.rust().tokens.clear() {
             let message = err.to_string();
+            tracing::error!(%message, "logout failed to clear the token store");
             self.auth_error(QString::from(&message));
             return;
         }
         self.rust().anilist.clear_token();
+        tracing::info!("logout cleared the token");
         self.auth_status_ready(false);
     }
 

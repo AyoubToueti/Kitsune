@@ -28,7 +28,37 @@ Window {
 
     Backend {
         id: backend
+        Component.onCompleted: backend.initDeepLinkNotify()
     }
+
+    // A sign-in forwarded by a SECOND launch over D-Bus.
+    //
+    // The bus service cannot reach this object, so it parks the URL in a
+    // process-wide slot and the Backend drains it. Doing that on activation is
+    // exactly the right moment: the reader has just come back from the browser
+    // tab where they authorised, which is also when the compositor gives this
+    // window focus again.
+    //
+    // `Component.onCompleted` also drains, because the forwarded link can land
+    // while the app is still starting up.
+    function drainPendingAuth() {
+        if (backend && backend.takePendingAuthUrl()) {
+            root.raise()
+            root.requestActivate()
+        }
+    }
+
+    // Auto-raise when a deep link arrives while the app is running but not
+    // focused. The D-Bus service emits this signal immediately, so the window
+    // activates without requiring manual focus.
+    Connections {
+        target: backend
+        function onPendingAuthArrived() {
+            root.drainPendingAuth()
+        }
+    }
+
+    onActiveChanged: if (active) root.drainPendingAuth()
 
     // Delegates to `TitlePreference` so the reader's chosen language applies
     // here too. The wrapper stays because every call site already spells it
@@ -536,6 +566,10 @@ Window {
         // pull each, chained, until the rate limit tripped. A signed-out
         // reader is a no-op inside the backend.
         root.backend.syncMediaList()
+
+        // A forwarded sign-in may already be waiting if the second launch beat
+        // the window to the slot.
+        root.drainPendingAuth()
 
         if (initialOpenId > 0) {
             root.navigate(detailComponent, { "animeId": initialOpenId, "backend": root.backend })
