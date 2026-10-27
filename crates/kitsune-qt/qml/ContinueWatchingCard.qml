@@ -50,10 +50,7 @@ Item {
             //radius: 12
             color: Theme.surfaceRaised
             clip: true
-            border.width: 1
-            border.color: hover.hovered ? Theme.accent : Theme.glassBorder
-
-            Behavior on border.color { ColorAnimation { duration: 180 } }
+            // no border on this rectangle
 
             // Image Cover with smooth scale zoom on hover
             Image {
@@ -195,6 +192,16 @@ Item {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: card.openWatch(card.anime ? card.anime.id : 0, card.episode)
                 }
+            }
+
+            // ── Border overlay — on top of everything ─────────────────────
+            Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.width: 1
+                border.color: hover.hovered ? Theme.accent : Theme.glassBorder
+                z: 1000
+                Behavior on border.color { ColorAnimation { duration: 180 } }
             }
         }
 

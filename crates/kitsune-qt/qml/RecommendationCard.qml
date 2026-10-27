@@ -152,10 +152,7 @@ Item {
             //radius: 12
             color: Theme.surfaceRaised
             clip: true
-            border.width: 1
-            border.color: hover.hovered ? Theme.accent : Theme.glassBorder
-
-            Behavior on border.color { ColorAnimation { duration: 180 } }
+            // no border on this rectangle
 
             Image {
                 anchors.fill: parent
@@ -302,6 +299,16 @@ Item {
                 animeId: card.animeId
                 animeStatus: card.anime ? (card.anime.status || "") : ""
                 z: 30
+            }
+
+            // ── Border overlay — on top of everything ─────────────────────
+            Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.width: 1
+                border.color: hover.hovered ? Theme.accent : Theme.glassBorder
+                z: 1000
+                Behavior on border.color { ColorAnimation { duration: 180 } }
             }
         }
 
