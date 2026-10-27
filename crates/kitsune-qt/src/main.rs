@@ -5,6 +5,7 @@
 
 mod backend;
 mod mpv;
+mod netcache;
 mod screenshot;
 mod single_instance;
 
@@ -237,6 +238,14 @@ fn main() {
             None
         }
     };
+
+    // Attach the HTTP disk cache BEFORE load(). The engine only consults the
+    // factory when it builds its network manager, which happens on the first
+    // network request -- so installing it later would miss the first images
+    // and, worse, do nothing at all if a manager already existed.
+    if let Some(engine) = engine.as_mut() {
+        netcache::install(engine);
+    }
 
     if let Some(engine) = engine.as_mut() {
         // On failure Qt logs "QQmlApplicationEngine failed to load component"

@@ -70,7 +70,12 @@ fn main() {
             .qml_file(QmlFile::from("qml/SpeedTestStore.qml").singleton(true))
             .qml_file(QmlFile::from("qml/DetailCache.qml").singleton(true)),
     )
-    .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])
+    .files([
+        "src/backend.rs",
+        "src/screenshot.rs",
+        "src/mpv.rs",
+        "src/netcache.rs",
+    ])
     // The brand mark, embedded so the UI can use it without shipping a loose
     // file next to the binary. `qrc_resources` inherits the QML module's
     // prefix, so these land at
@@ -85,8 +90,16 @@ fn main() {
     // render target).
     .qt_module("Quick")
     .qt_module("OpenGL")
+    // `QNetworkDiskCache` / `QQmlNetworkAccessManagerFactory`, for the image
+    // cache installed before the engine loads.
+    .qt_module("Network")
+    .qt_module("Qml")
     // The screenshot helper is plain C++ driven from Rust.
     .cpp_file("cpp/screenshot.cpp")
+    // The image HTTP cache. A header is listed so moc runs where it is needed;
+    // the factory here is not a QObject, so this is just a normal pair.
+    .cpp_file(CppFile::from("cpp/netcache.h"))
+    .cpp_file(CppFile::from("cpp/netcache.cpp"))
     // `MpvObject` has a Q_OBJECT (virtuals + signals). CppFile's defaults run
     // moc over the HEADER and compile the .cpp, so both files are listed.
     .cpp_file(CppFile::from("cpp/mpvitem.h"))
