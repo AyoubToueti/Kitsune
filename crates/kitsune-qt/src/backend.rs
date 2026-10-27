@@ -632,9 +632,12 @@ pub mod qobject {
         #[cxx_name = "userListFailed"]
         fn user_list_failed(self: Pin<&mut Self>, message: QString);
 
+        /// `media_id` echoes the request, so a hidden DetailPage does not adopt
+        /// another work's entry -- that silently moved the "Resume Ep N" CTA
+        /// and the list-status chip onto the wrong work.
         #[qsignal]
         #[cxx_name = "listEntryReady"]
-        fn list_entry_ready(self: Pin<&mut Self>, json: QString);
+        fn list_entry_ready(self: Pin<&mut Self>, media_id: i64, json: QString);
 
         /// Emitted after any successful list write, so views can re-read.
         #[qsignal]
@@ -688,9 +691,12 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "animeReady"]
         fn anime_ready(self: Pin<&mut Self>, json: QString);
+        /// Echoes the request identity for the same reason as
+        /// `episodesFailed`: a hidden DetailPage must not adopt another
+        /// work's failure and paint an error over a healthy page.
         #[qsignal]
         #[cxx_name = "animeFailed"]
-        fn anime_failed(self: Pin<&mut Self>, message: QString);
+        fn anime_failed(self: Pin<&mut Self>, id: i64, provider: QString, message: QString);
 
         /// A page of recommendations. `id` echoes the requested work so a
         /// reply for a work the reader has navigated away from is ignored.
@@ -744,12 +750,16 @@ pub mod qobject {
         #[cxx_name = "taggedScheduleFailed"]
         fn tagged_schedule_failed(self: Pin<&mut Self>, tag: QString, message: QString);
 
+        /// `id` and `provider` ECHO the request, because this is a broadcast:
+        /// `StackView` keeps a hidden DetailPage alive, so without them the
+        /// page underneath would adopt the reply meant for the page on screen
+        /// and redraw its episode grid with the wrong work's catalogue.
         #[qsignal]
         #[cxx_name = "episodesReady"]
-        fn episodes_ready(self: Pin<&mut Self>, json: QString);
+        fn episodes_ready(self: Pin<&mut Self>, id: i64, provider: QString, json: QString);
         #[qsignal]
         #[cxx_name = "episodesFailed"]
-        fn episodes_failed(self: Pin<&mut Self>, message: QString);
+        fn episodes_failed(self: Pin<&mut Self>, id: i64, provider: QString, message: QString);
 
         // --- Speed test ------------------------------------------------------
 
@@ -1856,13 +1866,19 @@ impl qobject::Backend {
                     let _ = qt_thread
                         .clone()
                         .queue(move |qobject| qobject.anime_ready(QString::from(&json)));
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.list_entry_ready(QString::from(&entry_json)));
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.list_entry_ready(id, QString::from(&entry_json))
+                    });
                 }
                 Err(err) => {
                     let message = err.to_string();
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.anime_failed(QString::from(&message)));
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.anime_failed(
+                            id,
+                            QString::from(provider_namespace(namespace)),
+                            QString::from(&message),
+                        )
+                    });
                 }
             }
         });
@@ -2023,6 +2039,11 @@ impl qobject::Backend {
         // id from, which is the difference between the right episode list and
         // an empty one.
         let provider = provider.to_string();
+        // Parsed once, then used for BOTH the fetch decision and the identity
+        // echoed back to QML, so the page compares against exactly the
+        // namespace the request was made in.
+        let namespace = provider_id_from(&provider);
+        let namespace_str = provider_namespace(namespace);
         let qt_thread = self.qt_thread();
         let runtime = Arc::clone(&self.rust().runtime);
         let kitsu = Arc::clone(&self.rust().kitsu);
@@ -2030,7 +2051,7 @@ impl qobject::Backend {
         runtime.spawn(async move {
             // A Kitsu id addresses episodes directly; an AniList id has to be
             // bridged through Kitsu's mapping table first.
-            let resolved = if provider == "kitsu" {
+            let resolved = if namespace == ProviderId::Kitsu {
                 Ok(Some(id))
             } else {
                 kitsu.kitsu_id_for_anilist(id).await
@@ -2073,14 +2094,31 @@ impl qobject::Backend {
 
             match result {
                 Ok(payload) => {
+                    // `info` and `aired` stay at the top level so the existing
+                    // reader of this payload keeps working; the identity is
+                    // added alongside, not wrapped around it.
+                    let mut payload = payload;
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert("id".into(), serde_json::json!(id));
+                        object.insert(
+                            "provider".into(),
+                            serde_json::json!(provider_namespace(namespace)),
+                        );
+                    }
                     let json = payload.to_string();
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.episodes_ready(QString::from(&json)));
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.episodes_ready(id, QString::from(namespace_str), QString::from(&json))
+                    });
                 }
                 Err(err) => {
                     let message = err.to_string();
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.episodes_failed(QString::from(&message)));
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.episodes_failed(
+                            id,
+                            QString::from(namespace_str),
+                            QString::from(&message),
+                        )
+                    });
                 }
             }
         });
@@ -4317,7 +4355,7 @@ impl qobject::Backend {
                 })
             };
             let json = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
-            self.list_entry_ready(QString::from(&json));
+            self.list_entry_ready(media_id, QString::from(&json));
             return;
         }
 
@@ -4325,7 +4363,7 @@ impl qobject::Backend {
         // answer from that copy rather than making a request.
         if let Some(known) = self.rust().provider.cached_entry(media_id) {
             let json = serde_json::to_string(&known).unwrap_or_else(|_| "null".into());
-            self.list_entry_ready(QString::from(&json));
+            self.list_entry_ready(media_id, QString::from(&json));
             return;
         }
 
@@ -4343,8 +4381,9 @@ impl qobject::Backend {
                 // `None` -> JSON `null`, which QML reads as "not on list".
                 Ok(entry) => {
                     let json = serde_json::to_string(&entry).unwrap_or_else(|_| "null".into());
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.list_entry_ready(QString::from(&json)));
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.list_entry_ready(media_id, QString::from(&json))
+                    });
                 }
                 // Deliberately silent. The entry is a decoration on the detail
                 // page's status menu; a failed read leaves it showing nothing
@@ -4526,6 +4565,17 @@ fn provider_id_from(raw: &str) -> ProviderId {
         "kitsu" => ProviderId::Kitsu,
         "tmdb" => ProviderId::Tmdb,
         _ => ProviderId::AniList,
+    }
+}
+
+/// The inverse of [`provider_id_from`], for echoing a request's namespace back
+/// to QML. Spelled exactly like `Anime.provider` so a page can compare it
+/// against its own `animeProvider` property without translating.
+fn provider_namespace(provider: ProviderId) -> &'static str {
+    match provider {
+        ProviderId::Kitsu => "kitsu",
+        ProviderId::Tmdb => "tmdb",
+        _ => "anilist",
     }
 }
 

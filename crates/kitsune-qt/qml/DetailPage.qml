@@ -58,9 +58,18 @@ Item {
     property var episodeInfo: []
     property int airedEpisodes: 0
     // Which work's episodes are already loaded, so a repeat `animeReady` for
-    // the same id does not re-fetch. See `onAnimeReady`.
-    property int episodesLoadedFor: 0
+    // the same work does not re-fetch. See `onAnimeReady`.
+    //
+    // Keyed on `provider:id`, not the bare id: ids live in per-source
+    // namespaces, so id 21 on AniList and id 21 on Kitsu are different works
+    // and must not share a cached catalogue.
+    property string episodesLoadedFor: ""
     property bool sortAscending: true
+
+    // Which work's detail request is already in flight or done, so the three
+    // triggers that can call `maybeLoad()` -- `animeId`, `backend`, and
+    // `Component.onCompleted` -- do not issue the same request more than once.
+    property string detailLoadedFor: ""
 
     // --- Jump-to-episode --------------------------------------------------
     property int jumpQuery: 0
@@ -145,6 +154,26 @@ Item {
         return "Episode " + number + " · " + when
     }
 
+    // The identity of the work this page is showing, as one comparable string.
+    // Used for the episode-cache key and for matching a reply to its request.
+    function episodeKey() {
+        return (page.animeProvider || "anilist") + ":" + page.animeId
+    }
+
+    // Whether a backend reply belongs to THIS page.
+    //
+    // Every handler in `Connections` must call this before touching state.
+    // Those signals are broadcasts, and `StackView` keeps a hidden DetailPage
+    // alive, so a reply for the page on screen otherwise lands here too and
+    // redraws this page with another work's episodes.
+    //
+    // Declared on the page, NOT inside `Connections`: a function in that block
+    // belongs to the Connections object and `page.replyMatches(...)` fails.
+    function replyMatches(id, provider) {
+        return id === page.animeId
+            && (provider || "anilist") === (page.animeProvider || "anilist")
+    }
+
     function computeOffset(list) {
         const numbers = list.map(function (e) { return e.number })
             .filter(function (n) { return n !== undefined })
@@ -188,6 +217,8 @@ Item {
         function onAnimePartial(json) {
             const parsed = JSON.parse(json)
             if (parsed === null || parsed.id !== page.animeId) return
+            if ((parsed.provider || "anilist") !== (page.animeProvider || "anilist")) return
+            DetailCache.putDetail(page.episodeKey(), json)
             if (page.anime === null) page.anime = parsed
         }
 
@@ -195,7 +226,12 @@ Item {
             const parsed = JSON.parse(json)
             if (parsed === null) {
                 page.anime = null
-            } else if (parsed.id === page.animeId) {
+            } else if (parsed.id === page.animeId
+                       && (parsed.provider || "anilist") === (page.animeProvider || "anilist")) {
+                // Cached as the RAW string: `page.anime` below is shared by
+                // reference across the page, so caching that object would
+                // alias live UI state.
+                DetailCache.putAnime(page.episodeKey(), json)
                 page.anime = parsed
                 page.loadFailed = false
                 page.loadError = ""
@@ -209,19 +245,33 @@ Item {
                 // episode load. That was the spinner and network round trip
                 // behind the grid every time a release was picked or the
                 // popup closed.
-                if (page.episodesLoadedFor !== page.animeId) {
+                if (page.episodesLoadedFor !== page.episodeKey()) {
                     page.loadEpisodes()
                 }
                 page.loadListEntry()
                 RetryState.reset()
             }
         }
-        function onAnimeFailed(message) {
+        function onAnimeFailed(id, provider, message) {
+            if (!page.replyMatches(id, provider)) return
             page.loadFailed = true
             page.loadError = message
             RetryState.reportFailure(message)
         }
-        function onEpisodesReady(json) {
+        // Every handler below MUST check the identity the backend echoes back.
+        //
+        // These are broadcast signals, and `StackView` keeps a hidden DetailPage
+        // alive: going Detail(A) -> Detail(related B) leaves A listening. Without
+        // this guard B's reply landed in A's grid, and A's `episodesLoadedFor`
+        // was already its own id, so the wrong cards were never replaced -- they
+        // just showed up on Back.
+        //
+        // The guard lives on the PAGE (see `replyMatches` near `episodeKey`), not
+        // here: a function declared inside `Connections` belongs to the
+        // Connections object, so `page.replyMatches(...)` would not resolve.
+        function onEpisodesReady(id, provider, json) {
+            if (!page.replyMatches(id, provider)) return
+            DetailCache.putEpisodes(page.episodeKey(), json)
             // `{ info, aired }`: the catalogue plus how many have actually
             // aired. A bare array here would silently lose the aired count and
             // re-introduce the "unaired episodes are playable" bug.
@@ -232,7 +282,8 @@ Item {
             page.rebuildEpisodes()
             page.refreshDownloadedEpisodes()
         }
-        function onEpisodesFailed(message) {
+        function onEpisodesFailed(id, provider, message) {
+            if (!page.replyMatches(id, provider)) return
             // No catalogue: fall back to the previous behaviour, which
             // synthesises from the announced count. Clearing the loading flag
             // is what un-hides the grid in that case.
@@ -244,14 +295,31 @@ Item {
 
         function onAuthStatusReady(signedInNow) {
             page.signedIn = signedInNow
-            if (signedInNow && page.anime) page.fetchListEntry()
-            else if (!signedInNow) {
+            if (signedInNow && page.anime) {
+                // Re-assert what the shared store already knows before the
+                // read comes back, so the chip cannot flash signed-out.
+                page.listStatus = ListStatusStore.statusFor(page.animeId)
+                page.listEntryId = ListStatusStore.entryIdFor(page.animeId)
+                page.fetchListEntry()
+            } else if (!signedInNow) {
                 page.listStatus = ""
                 page.listEntryId = 0
             }
         }
-        function onListEntryReady(json) {
+        function onListEntryReady(mediaId, json) {
+            // Another work's entry would move this page's status chip AND its
+            // "Resume Ep N" CTA onto the wrong show.
+            if (mediaId !== page.animeId) return
             const entry = JSON.parse(json)
+
+            // A `null` payload means "not on the list" -- but it is ALSO what
+            // a transient cache miss looks like on the backend's fallback read.
+            // Only honour the empty answer when the shared store agrees; when
+            // the store still knows this work is listed, keep the chip rather
+            // than degrading to the signed-out CTA. A genuine removal goes
+            // through `listChanged`, which updates the store first.
+            if (!entry && ListStatusStore.isListed(page.animeId)) return
+
             page.listStatus = entry ? (entry.status || "") : ""
             page.listEntryId = entry ? (entry.id || 0) : 0
             page.aniProgress = entry ? (entry.progress || 0) : 0
@@ -277,6 +345,9 @@ Item {
             if (!parsed) return
             if (parsed.animeId !== page.animeId) return
             if (String(parsed.provider || "") !== page.animeProvider) return
+            // Genuinely app-wide, so identity cannot narrow it -- but a hidden
+            // page must not paint an error the reader cannot see or act on.
+            if (!page.visible) return
             page.refreshDownloadedEpisodes()
         }
         function onAuthError(message) {
@@ -345,8 +416,25 @@ Item {
             return
         }
 
+        const key = page.episodeKey()
+
+        // A forward push builds a NEW page with the same props, so it would
+        // otherwise re-walk Kitsu's episode paging (up to MAX_EPISODE_PAGES
+        // requests) for a catalogue this session already has.
+        const cachedJson = DetailCache.episodes(key)
+        if (cachedJson !== "") {
+            const cached = JSON.parse(cachedJson) || ({})
+            page.episodeInfo = cached.info || []
+            page.airedEpisodes = cached.aired || 0
+            page.episodesLoading = false
+            page.episodesLoadedFor = key
+            page.rebuildEpisodes()
+            page.refreshDownloadedEpisodes()
+            return
+        }
+
         page.episodesLoading = true
-        page.episodesLoadedFor = anime.id
+        page.episodesLoadedFor = key
         backend.getEpisodes(anime.id, anime.provider || "anilist")
     }
 
@@ -419,18 +507,83 @@ Item {
 
     function maybeLoad() {
         if (animeId > 0 && backend) {
-            page.anime = null
+            // `animeId`, `backend` and `Component.onCompleted` can all fire for
+            // the same page, and the first two do so on EVERY first visit (the
+            // window sets `animeId`, then `backend`). Without this guard a
+            // single open issued up to three `getAnime` calls.
+            const key = page.episodeKey()
+            if (page.detailLoadedFor === key) return
+            page.detailLoadedFor = key
+
             page.loadFailed = false
             page.loadError = ""
-            page.signedIn = false
-            page.listStatus = ""
-            page.listEntryId = 0
+
+            // A forward push rebuilds this page from the same props, so paint
+            // the work from cache instead of re-requesting it. Back never
+            // reaches here (its page was never destroyed), which is why only
+            // Forward used to flash the skeleton.
+            const cachedJson = DetailCache.anime(key)
+            if (cachedJson !== "") {
+                page.anime = JSON.parse(cachedJson)
+                page.refreshDownloadedEpisodes()
+
+                // Seed the list chip SYNCHRONOUSLY from the shared store.
+                //
+                // Sign-in is a SESSION fact, not per-work state, so resetting
+                // it here (as this function used to) made a rebuilt page render
+                // the signed-OUT "Sign in to AniList" CTA until an async chain
+                // -- authStatus -> fetchListEntry -> listEntryReady -- happened
+                // to complete. Any hiccup in that chain left the page wrong
+                // with nothing to retry it. `ListStatusStore` already holds
+                // every entry and survives page rebuilds, so read it directly.
+                page.signedIn = ListStatusStore.signedIn
+                page.listStatus = ListStatusStore.statusFor(page.animeId)
+                page.listEntryId = ListStatusStore.entryIdFor(page.animeId)
+
+                // The side effects `onAnimeReady` would have run: without
+                // these the status chip and the retry overlay go stale.
+                page.loadListEntry()
+                RetryState.reset()
+                // ALWAYS go through loadEpisodes(), never guard on the cache
+                // being populated: it picks cache or network itself.
+                //
+                // The old `DetailCache.episodes(key) !== ""` test here was a
+                // real bug -- if the work was cached but the episodes were not
+                // (the first visit's request failed, or was still in flight
+                // when the reader navigated away), the grid stayed empty and
+                // NOTHING ever retried. A miss must reach the network.
+                if (page.episodesLoadedFor !== key) {
+                    page.loadEpisodes()
+                }
+                return
+            }
+
+            // Same synchronous seed on the slow path. It matters here too:
+            // `goForward` reuses nothing, but `animeId` can change on a page
+            // that `navigate()` re-pushes, and without this the chip would
+            // still hold the PREVIOUS work's status.
+            page.signedIn = ListStatusStore.signedIn
+            page.listStatus = ListStatusStore.statusFor(page.animeId)
+            page.listEntryId = ListStatusStore.entryIdFor(page.animeId)
+
+            // No full work cached. Paint the partial if we have one, so the
+            // hero and title appear immediately instead of the skeleton, then
+            // let the real request fill in the rest.
+            const partialJson = DetailCache.detail(key)
+            page.anime = partialJson !== "" ? JSON.parse(partialJson) : null
             backend.getAnime(animeId, page.animeProvider)
         }
     }
 
     function reload() {
         if (animeId > 0 && backend) {
+            // Explicit Retry must never be answered from cache -- that is the
+            // one place a stale entry is legitimately thrown away.
+            DetailCache.invalidate(page.episodeKey())
+            page.episodesLoadedFor = ""
+            // Cleared so the re-request below is not swallowed by the
+            // duplicate-trigger guard in `maybeLoad`.
+            page.detailLoadedFor = ""
             page.anime = null
             page.loadFailed = false
             page.loadError = ""
@@ -441,6 +594,12 @@ Item {
     onAnimeIdChanged: maybeLoad()
     onAnimeProviderChanged: maybeLoad()
     onBackendChanged: maybeLoad()
+
+    // `navigate()` can push this page with every prop already set, in which
+    // case none of the changed-handlers above fire and nothing would load.
+    // This covers that case; `detailLoadedFor` keeps it from double-requesting
+    // when the handlers did fire.
+    Component.onCompleted: maybeLoad()
 
     Timer {
         id: statusBusyTimer
@@ -987,11 +1146,13 @@ Item {
                                 && epNumber === page.watchedThrough
                             readonly property bool downloaded: page.episodeIsDownloaded(epNumber)
 
-                            width: 200
-                            height: 134
+                            width: episodeGrid.cellWidth
+                            height: episodeGrid.cellHeight
 
                             Item {
-                                anchors.fill: parent
+                                anchors.centerIn: parent
+                                width: 200
+                                height: 134
                                 scale: epHover.hovered ? 1.03 : 1.0
 
                                 Behavior on scale {
@@ -1003,12 +1164,6 @@ Item {
                                     anchors.fill: parent
                                     //radius: 10
                                     color: Theme.surfaceHover
-                                    border.width: (page.highlightedIndex === index || current) ? 2 : 1
-                                    border.color: page.highlightedIndex === index
-                                        ? Theme.accent
-                                        : (current
-                                            ? Theme.accent
-                                            : (epHover.hovered ? Theme.accent : Theme.borderSubtle))
                                     clip: true
 
                                     Image {
@@ -1183,6 +1338,19 @@ Item {
                                         elide: Text.ElideRight
                                         maximumLineCount: 2
                                         wrapMode: Text.WordWrap
+                                    }
+
+                                    // ── Border overlay — on top of everything ─────────────────────
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        color: "transparent"
+                                        border.width: (page.highlightedIndex === index || current) ? 2 : 1
+                                        border.color: page.highlightedIndex === index
+                                            ? Theme.accent
+                                            : (current
+                                                ? Theme.accent
+                                                : (epHover.hovered ? Theme.accent : Theme.borderSubtle))
+                                        z: 1000
                                     }
                                 }
 

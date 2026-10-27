@@ -67,7 +67,8 @@ fn main() {
             .qml_file(QmlFile::from("qml/RetryState.qml").singleton(true))
             .qml_file(QmlFile::from("qml/DragState.qml").singleton(true))
             .qml_file(QmlFile::from("qml/TitlePreference.qml").singleton(true))
-            .qml_file(QmlFile::from("qml/SpeedTestStore.qml").singleton(true)),
+            .qml_file(QmlFile::from("qml/SpeedTestStore.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/DetailCache.qml").singleton(true)),
     )
     .files(["src/backend.rs", "src/screenshot.rs", "src/mpv.rs"])
     // The brand mark, embedded so the UI can use it without shipping a loose
