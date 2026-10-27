@@ -13,7 +13,7 @@ Rectangle {
     property string title: ""
 
     Layout.fillWidth: true
-    radius: 12
+    //radius: 12
     color: "transparent"
     border.width: 1
     border.color: Theme.borderSubtle

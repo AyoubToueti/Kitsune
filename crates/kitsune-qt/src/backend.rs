@@ -61,12 +61,7 @@ pub mod qobject {
         /// `pageInfo` says whether another page exists. Emits `listReady`.
         #[qinvokable]
         #[cxx_name = "getListPaged"]
-        fn get_list_paged(
-            self: Pin<&mut Self>,
-            filter: QString,
-            page: i32,
-            per_page: i32,
-        );
+        fn get_list_paged(self: Pin<&mut Self>, filter: QString, page: i32, per_page: i32);
 
         /// Every home shelf (trending + the five curated blocks) in ONE
         /// request. Emits `homeReady(json)` with a `HomeShelves` object, or
@@ -78,12 +73,7 @@ pub mod qobject {
         /// Browse with filters and paging. `query` is a JSON `BrowseQuery`.
         #[qinvokable]
         #[cxx_name = "getBrowse"]
-        fn get_browse(
-            self: Pin<&mut Self>,
-            query: QString,
-            page: i32,
-            per_page: i32,
-        );
+        fn get_browse(self: Pin<&mut Self>, query: QString, page: i32, per_page: i32);
 
         /// Look up a single title. Emits JSON `null` when the id is unknown.
         /// One work's full detail.
@@ -136,13 +126,7 @@ pub mod qobject {
         /// an untagged reply from a standalone SchedulePage would overwrite it.
         #[qinvokable]
         #[cxx_name = "getScheduleTagged"]
-        fn get_schedule_tagged(
-            self: Pin<&mut Self>,
-            tag: QString,
-            from: i64,
-            to: i64,
-            limit: i32,
-        );
+        fn get_schedule_tagged(self: Pin<&mut Self>, tag: QString, from: i64, to: i64, limit: i32);
 
         /// Full episode metadata for a work.
         ///
@@ -184,12 +168,7 @@ pub mod qobject {
         /// `files_json` is a JSON `TorrentFile[]`. Synchronous.
         #[qinvokable]
         #[cxx_name = "pickFile"]
-        fn pick_file(
-            self: Pin<&mut Self>,
-            files_json: QString,
-            episode: i32,
-            offset: i32,
-        ) -> i32;
+        fn pick_file(self: Pin<&mut Self>, files_json: QString, episode: i32, offset: i32) -> i32;
 
         /// Measure latency and download throughput against Cloudflare. Runs
         /// asynchronously; progress arrives on `speedTestProgress`, the final
@@ -287,6 +266,11 @@ pub mod qobject {
         #[cxx_name = "probeReleases"]
         fn probe_releases(self: Pin<&mut Self>, tag: QString, releases_json: QString);
 
+        /// Probe one release on demand and return its full health report.
+        #[qinvokable]
+        #[cxx_name = "probeRelease"]
+        fn probe_release(self: Pin<&mut Self>, tag: QString, release_json: QString);
+
         /// Fetch a `.torrent` from an indexer and write it to `path`.
         ///
         /// The fetch happens here rather than in QML: Nyaa cannot be reached
@@ -295,6 +279,147 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "downloadTorrent"]
         fn download_torrent(self: Pin<&mut Self>, url: QString, path: QString);
+
+        // --- Permanent episode downloads -------------------------------------
+
+        /// Start downloading ONE episode for keeps, from a release.
+        ///
+        /// `release_json` is the `Release` the reader picked; `file_idx` the
+        /// file inside it to keep. `season` and `episode` may be `0` when
+        /// unknown, which keeps the original torrent file name instead of
+        /// building an `SxxEyy` name from numbers we do not have.
+        ///
+        /// Emits `downloadStarted(json)` with the stored record, or
+        /// `downloadFailed(id, message)`.
+        ///
+        /// `file_indices_json` is a JSON array of file indices. A season pack
+        /// passes every file the reader ticked in the picker, which produces
+        /// one download record per file so each episode shows up separately on
+        /// the Downloads page.
+        #[qinvokable]
+        #[cxx_name = "startEpisodeDownload"]
+        fn start_episode_download(
+            self: Pin<&mut Self>,
+            anime_id: i64,
+            provider: QString,
+            episode: i32,
+            season: i32,
+            title: QString,
+            episode_title: QString,
+            cover_url: QString,
+            release_json: QString,
+            file_indices_json: QString,
+        );
+
+        /// Resolve a release's file list WITHOUT starting a download.
+        ///
+        /// Needed by the include/exclude picker: a torrent's file list is only
+        /// known once metadata resolves, and the reader must choose from it
+        /// before anything is written. Emits `releaseFilesReady(token, json)`.
+        ///
+        /// The torrent is dropped again as soon as the list is read, so merely
+        /// inspecting a release never leaves a transfer running.
+        #[qinvokable]
+        #[cxx_name = "listReleaseFiles"]
+        fn list_release_files(self: Pin<&mut Self>, token: QString, release_json: QString);
+
+        /// Re-read the store and emit `downloadsReady(json)`.
+        #[qinvokable]
+        #[cxx_name = "getDownloads"]
+        fn get_downloads(self: Pin<&mut Self>);
+
+        /// Reattach every incomplete download left from a previous run.
+        ///
+        /// Runs once per process. Each torrent is restored PAUSED, using cached
+        /// `.torrent` metadata when available and the magnet otherwise, so a
+        /// restart never silently resumes transfers. Stale process-local torrent
+        /// IDs are replaced with the new engine IDs; a group that cannot be
+        /// restored is marked Failed with the reason.
+        #[qinvokable]
+        #[cxx_name = "restoreDownloads"]
+        fn restore_downloads(self: Pin<&mut Self>);
+
+        /// List every file in the torrent behind `group_key`.
+        ///
+        /// Emits `downloadFilesReady(token, json)` where `json` is
+        /// `{ groupKey, name, files: [{ idx, name, lengthBytes, selected }] }`.
+        /// A group with no live torrent is reattached temporarily; it is dropped
+        /// again before the reply, so inspecting files never starts a transfer.
+        #[qinvokable]
+        #[cxx_name = "listDownloadFiles"]
+        fn list_download_files(self: Pin<&mut Self>, token: QString, group_key: QString);
+
+        /// Replace the selected files of the torrent behind `group_key`.
+        ///
+        /// `indices_json` is a JSON array of file indices. Existing rows for
+        /// files no longer selected are removed (their completed library files
+        /// are left alone), and newly selected files become rows. Emits
+        /// `downloadFilesReady` with the refreshed list, or
+        /// `downloadFilesFailed(token, message)`.
+        #[qinvokable]
+        #[cxx_name = "setDownloadFiles"]
+        fn set_download_files(
+            self: Pin<&mut Self>,
+            token: QString,
+            group_key: QString,
+            indices_json: QString,
+        );
+
+        /// Poll every in-flight download once and emit `downloadProgress(json)`.
+        ///
+        /// Driven by a QML timer at ~1 Hz; each call also completes any
+        /// download whose file has fully arrived.
+        #[qinvokable]
+        #[cxx_name = "pollDownloads"]
+        fn poll_downloads(self: Pin<&mut Self>);
+
+        /// Forget a download, optionally deleting the file from disk.
+        #[qinvokable]
+        #[cxx_name = "removeDownload"]
+        fn remove_download(self: Pin<&mut Self>, id: QString, delete_file: bool);
+
+        /// Pause a running download.
+        #[qinvokable]
+        #[cxx_name = "pauseDownload"]
+        fn pause_download(self: Pin<&mut Self>, id: QString);
+
+        /// Resume a paused download.
+        #[qinvokable]
+        #[cxx_name = "resumeDownload"]
+        fn resume_download(self: Pin<&mut Self>, id: QString);
+
+        /// Change one download's queue priority: "high", "normal", or "low".
+        #[qinvokable]
+        #[cxx_name = "setDownloadPriority"]
+        fn set_download_priority(self: Pin<&mut Self>, id: QString, priority: QString);
+
+        /// The library directory downloads are saved into.
+        #[qinvokable]
+        #[cxx_name = "libraryDir"]
+        fn library_dir(self: Pin<&mut Self>) -> QString;
+
+        /// Absolute path of a completed download, or an empty string.
+        ///
+        /// QML plays it with the same embedded `MpvObject` the watch page
+        /// uses, so a download needs no second player binary.
+        #[qinvokable]
+        #[cxx_name = "downloadPath"]
+        fn download_path(self: Pin<&mut Self>, id: QString) -> QString;
+
+        /// Completed downloads of one work, whose files are still on disk.
+        #[qinvokable]
+        #[cxx_name = "downloadedForAnime"]
+        fn downloaded_for_anime(self: Pin<&mut Self>, anime_id: i64, provider: QString) -> QString;
+
+        /// Open a completed download's folder in the file manager.
+        #[qinvokable]
+        #[cxx_name = "openDownloadFolder"]
+        fn open_download_folder(self: Pin<&mut Self>, id: QString);
+
+        /// Open the library directory itself.
+        #[qinvokable]
+        #[cxx_name = "openLibraryFolder"]
+        fn open_library_folder(self: Pin<&mut Self>);
 
         // --- Account (AniList list) ------------------------------------------
         //
@@ -376,12 +501,7 @@ pub mod qobject {
         /// `status` is the wire string ("current", "completed", ...).
         #[qinvokable]
         #[cxx_name = "setListEntry"]
-        fn set_list_entry(
-            self: Pin<&mut Self>,
-            media_id: i64,
-            status: QString,
-            progress: i32,
-        );
+        fn set_list_entry(self: Pin<&mut Self>, media_id: i64, status: QString, progress: i32);
 
         /// Remove a work from the reader's list.
         #[qinvokable]
@@ -401,12 +521,7 @@ pub mod qobject {
         /// that issued it, and a bare id cannot say which that is.
         #[qinvokable]
         #[cxx_name = "recordLastPlayed"]
-        fn record_last_played(
-            self: Pin<&mut Self>,
-            anime_id: i64,
-            episode: i32,
-            provider: QString,
-        );
+        fn record_last_played(self: Pin<&mut Self>, anime_id: i64, episode: i32, provider: QString);
 
         /// The most recently opened work as JSON, or `null`.
         #[qinvokable]
@@ -705,6 +820,15 @@ pub mod qobject {
         #[cxx_name = "probeDone"]
         fn probe_done(self: Pin<&mut Self>, tag: QString);
 
+        /// Full result for one on-demand release probe.
+        #[qsignal]
+        #[cxx_name = "releaseProbeReady"]
+        fn release_probe_ready(self: Pin<&mut Self>, tag: QString, json: QString);
+
+        #[qsignal]
+        #[cxx_name = "releaseProbeFailed"]
+        fn release_probe_failed(self: Pin<&mut Self>, tag: QString, message: QString);
+
         /// A `.torrent` was written to disk.
         #[qsignal]
         #[cxx_name = "downloadDone"]
@@ -712,6 +836,59 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "downloadFailed"]
         fn download_failed(self: Pin<&mut Self>, message: QString);
+
+        // --- Permanent downloads ---------------------------------------------
+
+        /// The full list after a change, as a JSON `DownloadRecord[]`.
+        #[qsignal]
+        #[cxx_name = "downloadsReady"]
+        fn downloads_ready(self: Pin<&mut Self>, json: QString);
+
+        /// One or more records changed progress or status.
+        #[qsignal]
+        #[cxx_name = "downloadProgress"]
+        fn download_progress(self: Pin<&mut Self>, json: QString);
+
+        /// A download was accepted and stored.
+        #[qsignal]
+        #[cxx_name = "downloadStarted"]
+        fn download_started(self: Pin<&mut Self>, json: QString);
+
+        /// A download finished and its file is in the library.
+        #[qsignal]
+        #[cxx_name = "downloadCompleted"]
+        fn download_completed(self: Pin<&mut Self>, json: QString);
+
+        /// A download could not start or finish. `id` is empty when the record
+        /// never existed.
+        #[qsignal]
+        #[cxx_name = "episodeDownloadFailed"]
+        fn episode_download_failed(self: Pin<&mut Self>, id: QString, message: QString);
+
+        /// The file list for one torrent, after `listDownloadFiles` or a
+        /// successful `setDownloadFiles`.
+        #[qsignal]
+        #[cxx_name = "downloadFilesReady"]
+        fn download_files_ready(self: Pin<&mut Self>, token: QString, json: QString);
+
+        /// A download's file list could not be read or changed.
+        #[qsignal]
+        #[cxx_name = "downloadFilesFailed"]
+        fn download_files_failed(self: Pin<&mut Self>, token: QString, message: QString);
+
+        /// A release's file list, for the include/exclude picker.
+        ///
+        /// `token` is echoed from `listReleaseFiles` so a slow reply for a
+        /// previously opened release can be ignored. `json` is a
+        /// `{ name, files: [{ idx, name, lengthBytes }] }` object.
+        #[qsignal]
+        #[cxx_name = "releaseFilesReady"]
+        fn release_files_ready(self: Pin<&mut Self>, token: QString, json: QString);
+
+        /// The file list could not be read (bad magnet, no metadata, timeout).
+        #[qsignal]
+        #[cxx_name = "releaseFilesFailed"]
+        fn release_files_failed(self: Pin<&mut Self>, token: QString, message: QString);
     }
 
     // Enables `self.qt_thread()` and the `queue(...)` used to hop back onto the
@@ -727,20 +904,24 @@ use std::sync::Arc;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
-use kitsune_core::auth::{TokenStore, flow};
+use kitsune_core::auth::LastPlayedStore;
+use kitsune_core::auth::{flow, TokenStore};
 use kitsune_core::diagnostics::speedtest::{SpeedTestProgress, SpeedTester};
+use kitsune_core::downloads::{
+    cached_torrent_path, plan_queue, remove_cached_torrent, remove_download_cache,
+    save_cached_torrent, DownloadPriority, DownloadRecord, DownloadStatus, DownloadsStore,
+    QueueAction,
+};
 use kitsune_core::indexer::{
     download_to, probe_rank, probe_releases_standalone, rank, HealthBadge, IndexerRegistry,
     ProbeOutcome, ReleaseCache, ReleaseRequest, SearchMode,
 };
-use kitsune_core::providers::cache::ttl;
-use kitsune_core::auth::LastPlayedStore;
 use kitsune_core::list::{ListSync, MediaListStore};
 use kitsune_core::player::state::PlayerState;
 use kitsune_core::player::{LastReleaseStore, WatchPositionStore};
+use kitsune_core::providers::cache::ttl;
 use kitsune_core::providers::{
-    AniListProvider, AnimeProvider, CachedProvider, FailoverProvider,
-    KitsuProvider,
+    AniListProvider, AnimeProvider, CachedProvider, FailoverProvider, KitsuProvider,
 };
 use kitsune_core::settings::{MetadataSource, Settings, SettingsStore};
 use kitsune_core::types::{
@@ -794,6 +975,12 @@ pub struct BackendRust {
     watch_positions: Arc<WatchPositionStore>,
     /// The release last played per work, so a resume can reselect it.
     last_releases: Arc<LastReleaseStore>,
+    /// The permanent episode downloads and their status.
+    ///
+    /// `None` when the store could not be opened (no data directory, or an
+    /// unwritable one). Every download command then reports that rather than
+    /// panicking, so a broken environment cannot take the whole app down.
+    downloads: Option<Arc<DownloadsStore>>,
     /// The reader's media list, kept locally.
     ///
     /// Every list read is answered from here, so the pages work while AniList is
@@ -817,6 +1004,22 @@ pub struct BackendRust {
     /// other feature keeps working -- the speed test is a diagnostic, not a
     /// prerequisite.
     speed_tester: Option<Arc<SpeedTester>>,
+    /// Whether the startup reattach pass has been started.
+    ///
+    /// The Downloads page is created lazily and can call `restoreDownloads`
+    /// again; the pass must not add the same torrent twice.
+    downloads_restore_started: Arc<AtomicBool>,
+    /// Whether every startup reattach has finished.
+    ///
+    /// Polling is suspended until then: records still carry stale engine IDs,
+    /// and a poll that raced the reattach would mark a resumable group Failed.
+    downloads_restore_done: Arc<AtomicBool>,
+    /// Group keys whose reattach is still running.
+    ///
+    /// `pollDownloads` skips these: before the new engine ID is stored, the
+    /// record still points at a stale ID, and the "torrent vanished" branch
+    /// would otherwise mark a perfectly resumable download as Failed.
+    restoring_downloads: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
 }
 
 impl Default for BackendRust {
@@ -885,6 +1088,13 @@ impl Default for BackendRust {
             last_played: Arc::new(LastPlayedStore::new()),
             watch_positions: Arc::new(WatchPositionStore::new()),
             last_releases: Arc::new(LastReleaseStore::new()),
+            downloads: match DownloadsStore::new() {
+                Ok(store) => Some(Arc::new(store)),
+                Err(err) => {
+                    tracing::warn!("downloads store unavailable: {err:#}");
+                    None
+                }
+            },
             media_list,
             list_sync,
             sync_in_flight: Arc::new(AtomicBool::new(false)),
@@ -905,7 +1115,452 @@ impl Default for BackendRust {
                     None
                 }
             },
+            downloads_restore_started: Arc::new(AtomicBool::new(false)),
+            downloads_restore_done: Arc::new(AtomicBool::new(false)),
+            restoring_downloads: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
+    }
+}
+
+/// Every record belonging to one torrent group.
+fn group_records(records: &[DownloadRecord], group_key: &str) -> Vec<DownloadRecord> {
+    records
+        .iter()
+        .filter(|record| record.group_key() == group_key)
+        .cloned()
+        .collect()
+}
+
+/// The group a row belongs to. `None` when the id no longer exists.
+fn group_key_for_id(records: &[DownloadRecord], id: u64) -> Option<String> {
+    records
+        .iter()
+        .find(|record| record.id == id)
+        .map(DownloadRecord::group_key)
+}
+
+/// The info hash for a group, preferring a persisted one and falling back to
+/// the magnet for records written before the field existed.
+fn group_info_hash(records: &[DownloadRecord]) -> Option<String> {
+    records
+        .iter()
+        .find_map(|record| {
+            record
+                .info_hash
+                .as_deref()
+                .filter(|hash| !hash.trim().is_empty())
+                .map(str::to_string)
+        })
+        .or_else(|| {
+            records
+                .iter()
+                .filter_map(|record| record.magnet.as_deref())
+                .find_map(|magnet| kitsune_core::torrent::parse_info_hash(magnet).ok())
+        })
+}
+
+/// The first non-empty magnet in a group.
+fn group_magnet(records: &[DownloadRecord]) -> Option<String> {
+    records.iter().find_map(|record| {
+        record
+            .magnet
+            .clone()
+            .filter(|magnet| !magnet.trim().is_empty())
+    })
+}
+
+/// Distinct engine IDs referenced by a group, in encounter order.
+fn unique_torrent_ids(records: &[DownloadRecord]) -> Vec<usize> {
+    let mut ids = Vec::new();
+    for id in records.iter().filter_map(|record| record.torrent_id) {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// The union of every file index selected in a group.
+fn group_indices(records: &[DownloadRecord]) -> Vec<usize> {
+    let mut indices: Vec<usize> = records
+        .iter()
+        .map(|record| record.file_idx as usize)
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// The torrent's file count for a group, or the number of known rows.
+fn group_file_count(records: &[DownloadRecord], group_key: &str) -> u32 {
+    records
+        .iter()
+        .filter(|record| record.group_key() == group_key)
+        .filter_map(|record| record.torrent_file_count)
+        .max()
+        .unwrap_or_else(|| {
+            records
+                .iter()
+                .filter(|record| record.group_key() == group_key)
+                .count() as u32
+        })
+}
+
+/// The cache directory for a group.
+///
+/// Newer records persist the exact per-torrent folder. A record written before
+/// that field existed kept its partial data directly in the configured download
+/// directory (the session root), so restore falls back to that root instead of
+/// inventing a new per-hash folder and redownloading everything.
+fn group_cache_dir(records: &[DownloadRecord], player: &PlayerState) -> std::path::PathBuf {
+    records
+        .iter()
+        .find_map(|record| {
+            record
+                .cache_dir
+                .as_deref()
+                .filter(|dir| !dir.trim().is_empty())
+                .map(std::path::PathBuf::from)
+        })
+        .unwrap_or_else(|| player.resolved_download_dir())
+}
+
+/// Whether a record should be reattached at startup.
+fn needs_restore(record: &DownloadRecord) -> bool {
+    matches!(
+        record.status,
+        DownloadStatus::Downloading | DownloadStatus::Queued | DownloadStatus::Paused
+    )
+}
+
+/// Record that a group's reattach is running, without holding the lock across
+/// an await.
+fn mark_restoring(
+    restoring: &std::sync::Mutex<std::collections::HashSet<String>>,
+    group_key: &str,
+) {
+    restoring
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(group_key.to_string());
+}
+
+fn unmark_restoring(
+    restoring: &std::sync::Mutex<std::collections::HashSet<String>>,
+    group_key: &str,
+) {
+    restoring
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(group_key);
+}
+
+fn is_restoring(
+    restoring: &std::sync::Mutex<std::collections::HashSet<String>>,
+    group_key: &str,
+) -> bool {
+    restoring
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(group_key)
+}
+
+/// A torrent reattached from cached metadata or its magnet.
+struct AttachedGroup {
+    torrent_id: usize,
+    files: Vec<kitsune_core::player::TorrentFile>,
+    info_hash: String,
+    cache_dir: std::path::PathBuf,
+}
+
+/// Reattach one group's torrent, preferring cached `.torrent` metadata.
+///
+/// `paused` is true for the startup restore and for temporary inspection; the
+/// add path leaves it false so a resumed group keeps transferring.
+async fn attach_group(
+    player: &PlayerState,
+    records: &[DownloadRecord],
+    paused: bool,
+    indices: &[usize],
+) -> Result<AttachedGroup, String> {
+    if indices.is_empty() {
+        return Err("the group has no selected files".to_string());
+    }
+
+    let info_hash = group_info_hash(records)
+        .ok_or_else(|| "no info hash or magnet for this torrent".to_string())?;
+    let cache_dir = group_cache_dir(records, player);
+    let cached = cached_torrent_path(&info_hash);
+    let magnet = group_magnet(records);
+
+    if cached.is_none() && magnet.is_none() {
+        return Err("no cached metadata and no magnet to restore from".to_string());
+    }
+
+    let started = player
+        .start_download_in(
+            if cached.is_some() {
+                None
+            } else {
+                magnet.as_deref()
+            },
+            cached.as_deref(),
+            indices,
+            Some(&cache_dir),
+            paused,
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let files = player.torrent_files(started);
+    if files.is_empty() {
+        return Err("the torrent did not expose any files".to_string());
+    }
+
+    Ok(AttachedGroup {
+        torrent_id: started,
+        files,
+        info_hash,
+        cache_dir,
+    })
+}
+
+/// A group's live torrent and file list, when the engine still knows it.
+fn live_files(
+    player: &PlayerState,
+    records: &[DownloadRecord],
+) -> Option<(usize, Vec<kitsune_core::player::TorrentFile>)> {
+    for torrent_id in unique_torrent_ids(records) {
+        let files = player.torrent_files(torrent_id);
+        if !files.is_empty() {
+            return Some((torrent_id, files));
+        }
+    }
+    None
+}
+
+/// Cache metadata from a freshly attached torrent, when it is available.
+fn save_attached_metadata(player: &PlayerState, attached: &AttachedGroup) {
+    if let Some(bytes) = player.torrent_bytes(attached.torrent_id) {
+        if let Err(err) = save_cached_torrent(&attached.info_hash, &bytes) {
+            tracing::warn!(
+                "could not cache torrent metadata for {}: {err:#}",
+                attached.info_hash
+            );
+        }
+    }
+}
+
+/// Records refreshed from the torrent engine while a download runs.
+///
+/// Pure, so the store -> JSON mapping and the status transitions are unit
+/// tested without a runtime, a torrent, or the Qt event loop.
+fn downloads_json(records: &[DownloadRecord]) -> String {
+    // Same shape as `download_progress`, so a store refresh after pause,
+    // priority or a file edit keeps the fields the grouped page needs. A plain
+    // record list has no `groupKey`/`fileCount`; QML would have to guess and
+    // would briefly relabel a multi-file torrent as one file.
+    let views: Vec<DownloadView> = records
+        .iter()
+        .map(|record| {
+            let file_count = group_file_count(records, &record.group_key());
+            DownloadView::idle(record.clone(), file_count, false)
+        })
+        .collect();
+    views_json(&views)
+}
+
+/// Seconds until ONE file completes, from the whole-torrent rate.
+///
+/// librqbit reports one download speed and one ETA per torrent. On a season
+/// pack that ETA covers every selected file, so printing it on episode 3 is off
+/// by hours. Scaling by this file's remaining bytes against the torrent's
+/// remaining bytes gives a usable estimate at the same rate.
+///
+/// `None` when the rate is zero (nothing is arriving, so there is no estimate)
+/// or the file is already complete.
+fn file_eta(
+    record: &DownloadRecord,
+    progress: &kitsune_core::torrent::TorrentProgress,
+) -> Option<u64> {
+    let bytes_per_second = progress.download_mbps * 1024.0 * 1024.0;
+    if bytes_per_second <= 0.0 {
+        return None;
+    }
+
+    let file_done = progress
+        .file_progress
+        .get(record.file_idx as usize)
+        .copied()
+        .unwrap_or(0);
+    let remaining = record.total_bytes.saturating_sub(file_done);
+    if remaining == 0 {
+        return None;
+    }
+
+    Some((remaining as f64 / bytes_per_second) as u64)
+}
+
+/// A download record plus the live numbers the page shows.
+///
+/// Flattened rather than nested so the QML shape stays exactly the record it
+/// already reads, with four extra keys -- no `view.record.title` churn in every
+/// binding.
+///
+/// The live fields are deliberately NOT on `DownloadRecord`: that one is
+/// persisted, and a speed from five minutes ago in `downloads.json` would be a
+/// lie the page could not tell from a live one.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadView {
+    #[serde(flatten)]
+    record: DownloadRecord,
+    /// Identity shared by every file of this torrent, for grouping in QML.
+    group_key: String,
+    /// Files the torrent contained, when known.
+    file_count: u32,
+    /// True while this group is being reattached after a restart.
+    restoring: bool,
+    /// Current download rate in MiB/s. Zero when not live.
+    speed_mbps: f64,
+    /// Peers currently transferring pieces.
+    peers_live: u32,
+    /// Seconds until this file completes, when derivable.
+    eta_seconds: Option<u64>,
+}
+
+impl DownloadView {
+    /// A record with no live data (queued, complete, failed).
+    fn idle(record: DownloadRecord, file_count: u32, restoring: bool) -> Self {
+        Self {
+            group_key: record.group_key(),
+            record,
+            file_count,
+            restoring,
+            speed_mbps: 0.0,
+            peers_live: 0,
+            eta_seconds: None,
+        }
+    }
+}
+
+/// The view list, for the page.
+fn views_json(views: &[DownloadView]) -> String {
+    serde_json::to_string(views).unwrap_or_else(|_| "[]".into())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadedView {
+    record_id: u64,
+    episode: Option<u32>,
+    release_title: String,
+    magnet: Option<String>,
+    torrent_url: Option<String>,
+    file_name: String,
+    size_bytes: u64,
+}
+
+fn downloaded_views_for(
+    records: &[DownloadRecord],
+    anime_id: i64,
+    provider: &str,
+) -> Vec<DownloadedView> {
+    let provider = provider.trim().to_ascii_lowercase();
+    records
+        .iter()
+        .filter(|record| {
+            record.anime_id == anime_id
+                && record.provider.eq_ignore_ascii_case(&provider)
+                && record.status == DownloadStatus::Complete
+                && !record.output_path.is_empty()
+                && std::fs::metadata(&record.output_path).is_ok()
+        })
+        .map(|record| DownloadedView {
+            record_id: record.id,
+            episode: record.episode,
+            release_title: record.release_title.clone(),
+            magnet: record.magnet.clone(),
+            torrent_url: record.torrent_url.clone(),
+            file_name: record.file_name.clone(),
+            size_bytes: record.total_bytes,
+        })
+        .collect()
+}
+
+/// A torrent's file list, with this group's selected indices marked.
+fn download_files_json(
+    group_key: &str,
+    name: &str,
+    files: &[kitsune_core::player::TorrentFile],
+    selected: &std::collections::HashSet<usize>,
+) -> String {
+    let files: Vec<serde_json::Value> = files
+        .iter()
+        .map(|file| {
+            serde_json::json!({
+                "idx": file.idx,
+                "name": file.name,
+                "lengthBytes": file.length_bytes,
+                "selected": selected.contains(&file.idx),
+            })
+        })
+        .collect();
+    serde_json::to_string(&serde_json::json!({
+        "groupKey": group_key,
+        "name": name,
+        "files": files,
+    }))
+    .unwrap_or_else(|_| "null".into())
+}
+
+/// The episode number a file name announces, if any.
+///
+/// A season pack lists `Show - 01.mkv`, `Show - 02.mkv`, ... and each record
+/// must carry its OWN number, or the Downloads page shows seven rows all
+/// claiming to be episode 1. Delegates to the indexer's parser so a file name
+/// is read exactly like a release name, with the same "delimited token"
+/// discipline that stops `1080p` matching as episode 1080.
+fn episode_from_filename(file_name: &str) -> Option<u32> {
+    let parsed = kitsune_core::indexer::parse::parse_release(file_name);
+    parsed.episode
+}
+
+/// Parse a QML-supplied download id (`""` or garbage becomes `0`).
+fn download_id(raw: &str) -> u64 {
+    raw.trim().parse::<u64>().unwrap_or(0)
+}
+
+/// Unix seconds, for the store's timestamps.
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Open `path` with the desktop's file manager.
+///
+/// Used for "show in folder", so it opens the CONTAINING directory rather than
+/// the file: the reader wants to see it next to the rest of the library. A
+/// spawn failure is logged, not reported -- there is no useful action the UI
+/// could offer, and the button is a convenience.
+fn open_in_file_manager(path: &std::path::Path) {
+    let dir = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+
+    #[cfg(target_os = "linux")]
+    let program = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+
+    if let Err(err) = std::process::Command::new(program).arg(dir).spawn() {
+        tracing::warn!("could not open {}: {err}", dir.display());
     }
 }
 
@@ -952,8 +1607,7 @@ impl qobject::Backend {
                     // this a metadata failure left NO trace in the log at all --
                     // which is exactly why "nothing renders" was undiagnosable.
                     tracing::error!("metadata request failed: {message}");
-                    let _ =
-                        qt_thread.queue(move |qobject| err(qobject, QString::from(&message)));
+                    let _ = qt_thread.queue(move |qobject| err(qobject, QString::from(&message)));
                 }
             }
         });
@@ -979,10 +1633,8 @@ impl qobject::Backend {
         let limit = limit_or_default(limit);
         self.spawn_metadata(
             move |provider| async move {
-                let filter: ListFilter = serde_json::from_value(serde_json::Value::String(
-                    filter,
-                ))
-                .map_err(|err| format!("unknown list filter: {err}"))?;
+                let filter: ListFilter = serde_json::from_value(serde_json::Value::String(filter))
+                    .map_err(|err| format!("unknown list filter: {err}"))?;
                 provider
                     .list(filter, limit)
                     .await
@@ -1021,19 +1673,13 @@ impl qobject::Backend {
                     Err(err) => {
                         let message = err.to_string();
                         let _ = qt_thread.queue(move |qobject| {
-                            qobject.tagged_list_failed(
-                                QString::from(&tag),
-                                QString::from(&message),
-                            )
+                            qobject.tagged_list_failed(QString::from(&tag), QString::from(&message))
                         });
                     }
                 },
                 Err(message) => {
                     let _ = qt_thread.queue(move |qobject| {
-                        qobject.tagged_list_failed(
-                            QString::from(&tag),
-                            QString::from(&message),
-                        )
+                        qobject.tagged_list_failed(QString::from(&tag), QString::from(&message))
                     });
                 }
             }
@@ -1048,10 +1694,8 @@ impl qobject::Backend {
         let per_page = limit_or_default(per_page);
         self.spawn_metadata(
             move |provider| async move {
-                let filter: ListFilter = serde_json::from_value(serde_json::Value::String(
-                    filter,
-                ))
-                .map_err(|err| format!("unknown list filter: {err}"))?;
+                let filter: ListFilter = serde_json::from_value(serde_json::Value::String(filter))
+                    .map_err(|err| format!("unknown list filter: {err}"))?;
                 provider
                     .list_page(filter, page, per_page)
                     .await
@@ -1101,15 +1745,13 @@ impl qobject::Backend {
 
             match result {
                 Ok(json) => {
-                    let _ = qt_thread.queue(move |qobject| {
-                        qobject.home_ready(QString::from(&json))
-                    });
+                    let _ =
+                        qt_thread.queue(move |qobject| qobject.home_ready(QString::from(&json)));
                 }
                 Err(message) => {
                     tracing::error!("metadata request failed: {message}");
-                    let _ = qt_thread.queue(move |qobject| {
-                        qobject.home_failed(QString::from(&message))
-                    });
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.home_failed(QString::from(&message)));
                 }
             }
         });
@@ -1202,23 +1844,20 @@ impl qobject::Backend {
                     // strip, so it is worth one extra request to avoid.
                     if let Some(found) = anime.as_mut() {
                         if found.banner_image.is_none() {
-                            found.banner_image =
-                                borrow_banner(&anilist, &kitsu, found).await;
+                            found.banner_image = borrow_banner(&anilist, &kitsu, found).await;
                         }
                     }
 
-                    let json =
-                        serde_json::to_string(&anime).unwrap_or_else(|_| "null".into());
+                    let json = serde_json::to_string(&anime).unwrap_or_else(|_| "null".into());
                     // `None` -> JSON `null`, which QML reads as "not on list".
                     let entry_json =
                         serde_json::to_string(&entry).unwrap_or_else(|_| "null".into());
 
-                    let _ = qt_thread.clone().queue(move |qobject| {
-                        qobject.anime_ready(QString::from(&json))
-                    });
-                    let _ = qt_thread.queue(move |qobject| {
-                        qobject.list_entry_ready(QString::from(&entry_json))
-                    });
+                    let _ = qt_thread
+                        .clone()
+                        .queue(move |qobject| qobject.anime_ready(QString::from(&json)));
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.list_entry_ready(QString::from(&entry_json)));
                 }
                 Err(err) => {
                     let message = err.to_string();
@@ -1277,10 +1916,9 @@ impl qobject::Backend {
                     Ok(r) => r,
                     Err(err) => {
                         let message = format!("unknown recommendation rating: {err}");
-                        let _ = qt_thread
-                            .queue(move |qobject| {
-                                qobject.recommendation_rate_failed(QString::from(&message))
-                            });
+                        let _ = qt_thread.queue(move |qobject| {
+                            qobject.recommendation_rate_failed(QString::from(&message))
+                        });
                         return;
                     }
                 };
@@ -1350,13 +1988,7 @@ impl qobject::Backend {
     /// The tagged variant of `get_schedule`, for the home page's embedded
     /// schedule widget: the reply carries `tag` back so a standalone schedule
     /// page's own request cannot be mistaken for this one's.
-    fn get_schedule_tagged(
-        self: Pin<&mut Self>,
-        tag: QString,
-        from: i64,
-        to: i64,
-        limit: i32,
-    ) {
+    fn get_schedule_tagged(self: Pin<&mut Self>, tag: QString, from: i64, to: i64, limit: i32) {
         let tag = tag.to_string();
         let limit = limit_or_default(limit);
 
@@ -1369,19 +2001,13 @@ impl qobject::Backend {
                 Ok(items) => {
                     let json = json_or_empty(&items);
                     let _ = qt_thread.queue(move |qobject| {
-                        qobject.tagged_schedule_ready(
-                            QString::from(&tag),
-                            QString::from(&json),
-                        )
+                        qobject.tagged_schedule_ready(QString::from(&tag), QString::from(&json))
                     });
                 }
                 Err(err) => {
                     let message = err.to_string();
                     let _ = qt_thread.queue(move |qobject| {
-                        qobject.tagged_schedule_failed(
-                            QString::from(&tag),
-                            QString::from(&message),
-                        )
+                        qobject.tagged_schedule_failed(QString::from(&tag), QString::from(&message))
                     });
                 }
             }
@@ -1411,36 +2037,33 @@ impl qobject::Backend {
             };
 
             let result = match resolved {
-                Ok(Some(kitsu_id)) => kitsu
-                    .episodes(kitsu_id)
-                    .await
-                    .map(|catalogue| {
-                        // `aired` is passed through AS COUNTED, including zero.
-                        //
-                        // It used to be replaced with the record count when it
-                        // was zero, on the theory that an empty count meant the
-                        // provider withheld it. Kitsu does not withhold it --
-                        // it returns a record for every PLANNED episode, so a
-                        // cour that has not started airing reports zero dated
-                        // records and a full list of undated ones. Substituting
-                        // the list length turned "nothing has aired" into
-                        // "all twelve have aired", which is the bug this whole
-                        // path exists to avoid.
-                        //
-                        // A work with no catalogue at all reports 0 here too,
-                        // which the episode rules read as "unknown" and fall
-                        // back to synthesis for.
-                        tracing::info!(
-                            kitsu_id,
-                            records = catalogue.info.len(),
-                            aired = catalogue.aired,
-                            // True when paging stopped at the page cap: the
-                            // grid then synthesises the tail from `aired`.
-                            truncated = catalogue.truncated,
-                            "episode catalogue"
-                        );
-                        serde_json::json!({ "info": catalogue.info, "aired": catalogue.aired })
-                    }),
+                Ok(Some(kitsu_id)) => kitsu.episodes(kitsu_id).await.map(|catalogue| {
+                    // `aired` is passed through AS COUNTED, including zero.
+                    //
+                    // It used to be replaced with the record count when it
+                    // was zero, on the theory that an empty count meant the
+                    // provider withheld it. Kitsu does not withhold it --
+                    // it returns a record for every PLANNED episode, so a
+                    // cour that has not started airing reports zero dated
+                    // records and a full list of undated ones. Substituting
+                    // the list length turned "nothing has aired" into
+                    // "all twelve have aired", which is the bug this whole
+                    // path exists to avoid.
+                    //
+                    // A work with no catalogue at all reports 0 here too,
+                    // which the episode rules read as "unknown" and fall
+                    // back to synthesis for.
+                    tracing::info!(
+                        kitsu_id,
+                        records = catalogue.info.len(),
+                        aired = catalogue.aired,
+                        // True when paging stopped at the page cap: the
+                        // grid then synthesises the tail from `aired`.
+                        truncated = catalogue.truncated,
+                        "episode catalogue"
+                    );
+                    serde_json::json!({ "info": catalogue.info, "aired": catalogue.aired })
+                }),
                 // No mapping means no episode data. Reported as an empty
                 // catalogue rather than an error, so the page falls back to
                 // synthesising from what the provider already told us.
@@ -1477,8 +2100,7 @@ impl qobject::Backend {
         // The catalogue arrives as `{ info, aired }`: the episodes themselves
         // plus how many have aired, which is what stops an airing show from
         // offering episodes the reader cannot watch yet.
-        let catalogue: EpisodeCatalogueWire =
-            serde_json::from_str(&info_json).unwrap_or_default();
+        let catalogue: EpisodeCatalogueWire = serde_json::from_str(&info_json).unwrap_or_default();
         let info = catalogue.info;
 
         let cover = cover_image.to_string();
@@ -1659,9 +2281,8 @@ impl qobject::Backend {
 
             let json = serde_json::to_string(&found).unwrap_or_else(|_| "[]".into());
             let tag = QString::from(&tag);
-            let _ = qt_thread.queue(move |qobject| {
-                qobject.releases_ready(tag, QString::from(&json))
-            });
+            let _ =
+                qt_thread.queue(move |qobject| qobject.releases_ready(tag, QString::from(&json)));
         });
     }
 
@@ -1676,8 +2297,8 @@ impl qobject::Backend {
             match player.add_magnet(&magnet_uri).await {
                 Ok(handle) => {
                     let json = serde_json::to_string(&handle).unwrap_or_else(|_| "null".into());
-                    let _ = qt_thread
-                        .queue(move |qobject| qobject.torrent_added(QString::from(&json)));
+                    let _ =
+                        qt_thread.queue(move |qobject| qobject.torrent_added(QString::from(&json)));
                 }
                 Err(err) => {
                     let message = err.to_string();
@@ -1873,9 +2494,9 @@ impl qobject::Backend {
                 let badge = QString::from(badge_literal(outcome.badge));
                 let index = outcome.index as i32;
                 let score = outcome.combined_score;
-                let _ = qt_thread.clone().queue(move |qobject| {
-                    qobject.probe_result(tag, index, badge, score)
-                });
+                let _ = qt_thread
+                    .clone()
+                    .queue(move |qobject| qobject.probe_result(tag, index, badge, score));
             }
             let tag = QString::from(&tag);
             let _ = qt_thread.queue(move |qobject| qobject.probe_done(tag));
@@ -1933,9 +2554,9 @@ impl qobject::Backend {
                 let badge = QString::from(badge_literal(outcome.badge));
                 let index = outcome.index as i32;
                 let score = outcome.combined_score;
-                let _ = thread_for_events.clone().queue(move |qobject| {
-                    qobject.probe_result(tag, index, badge, score)
-                });
+                let _ = thread_for_events
+                    .clone()
+                    .queue(move |qobject| qobject.probe_result(tag, index, badge, score));
             })
             .await;
 
@@ -1953,7 +2574,1364 @@ impl qobject::Backend {
         });
     }
 
+    fn probe_release(self: Pin<&mut Self>, tag: QString, release_json: QString) {
+        let tag = tag.to_string();
+        let release: Release = match serde_json::from_str(&release_json.to_string()) {
+            Ok(release) => release,
+            Err(err) => {
+                self.release_probe_failed(
+                    QString::from(&tag),
+                    QString::from(&format!("bad release payload: {err}")),
+                );
+                return;
+            }
+        };
+
+        let preference = {
+            let stored = self.rust().settings.read();
+            ReleasePreference {
+                preferred_resolutions: stored.preferred_resolutions,
+                min_seeders: stored.min_seeders,
+            }
+        };
+        let base_score = rank::score(&release, &preference);
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+
+        runtime.spawn(async move {
+            let dir = std::env::temp_dir().join("kitsune-probes");
+            let releases = vec![release];
+            let mut result = None;
+            probe_releases_standalone(dir, &releases, |_, probe| {
+                result = Some(probe_rank::outcome(0, base_score, probe));
+            })
+            .await;
+
+            match result {
+                Some(outcome) => {
+                    let json = serde_json::to_string(&outcome).unwrap_or_else(|_| "null".into());
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.release_probe_ready(QString::from(&tag), QString::from(&json))
+                    });
+                }
+                None => {
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.release_probe_failed(
+                            QString::from(&tag),
+                            QString::from("the availability check could not start"),
+                        )
+                    });
+                }
+            }
+        });
+    }
+
     /// Fetch a `.torrent` from an indexer and write it to `path`.
+    // --- Permanent episode downloads ---------------------------------------
+
+    fn start_episode_download(
+        self: Pin<&mut Self>,
+        anime_id: i64,
+        provider: QString,
+        episode: i32,
+        season: i32,
+        title: QString,
+        episode_title: QString,
+        cover_url: QString,
+        release_json: QString,
+        file_indices_json: QString,
+    ) {
+        let Some(store) = self.rust().downloads.clone() else {
+            self.episode_download_failed(
+                QString::from(""),
+                QString::from("the downloads store is unavailable"),
+            );
+            return;
+        };
+
+        let provider = provider.to_string();
+        let title = title.to_string();
+        let episode_title = episode_title.to_string();
+        let cover_url = cover_url.to_string();
+
+        // A season pack sends several indices; a single-episode release sends
+        // one. Both arrive as a JSON array so there is only one code path.
+        let file_indices: Vec<usize> =
+            match serde_json::from_str::<Vec<i64>>(&file_indices_json.to_string()) {
+                Ok(list) => list
+                    .into_iter()
+                    .filter(|i| *i >= 0)
+                    .map(|i| i as usize)
+                    .collect(),
+                Err(err) => {
+                    self.episode_download_failed(
+                        QString::from(""),
+                        QString::from(&format!("unreadable file list: {err}")),
+                    );
+                    return;
+                }
+            };
+
+        if file_indices.is_empty() {
+            self.episode_download_failed(
+                QString::from(""),
+                QString::from("no files were selected"),
+            );
+            return;
+        }
+
+        let release: Release = match serde_json::from_str(&release_json.to_string()) {
+            Ok(release) => release,
+            Err(err) => {
+                self.episode_download_failed(
+                    QString::from(""),
+                    QString::from(&format!("unreadable release: {err}")),
+                );
+                return;
+            }
+        };
+
+        // The engine id is process-local, so the info hash is the only stable
+        // identity. Refuse a release without one rather than starting a
+        // download that could never be reattached after a restart.
+        let info_hash = release
+            .info_hash
+            .as_deref()
+            .map(str::trim)
+            .filter(|hash| hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_ascii_lowercase)
+            .or_else(|| {
+                kitsune_core::torrent::parse_info_hash(&release.magnet_uri)
+                    .ok()
+                    .map(|hash| hash.to_ascii_lowercase())
+            });
+        let Some(info_hash) = info_hash else {
+            self.episode_download_failed(
+                QString::from(""),
+                QString::from("the release has no usable info hash"),
+            );
+            return;
+        };
+
+        let cache_dir = match self.rust().player.cache_dir_for(&info_hash) {
+            Ok(dir) => dir,
+            Err(err) => {
+                self.episode_download_failed(
+                    QString::from(""),
+                    QString::from(&format!("invalid download cache: {err}")),
+                );
+                return;
+            }
+        };
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+        let library_dir = self.rust().player.resolved_library_dir();
+        let library_dir_string = library_dir.display().to_string();
+        let season_number = release
+            .parsed
+            .season
+            .or((season > 0).then_some(season as u32));
+
+        runtime.spawn(async move {
+            let magnet = release.magnet_uri.clone();
+
+            let started = player
+                .start_download_in(Some(&magnet), None, &file_indices, Some(&cache_dir), false)
+                .await;
+            let torrent_id = match started {
+                Ok(id) => id,
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.episode_download_failed(QString::from(""), QString::from(&message))
+                    });
+                    return;
+                }
+            };
+
+            // Cache the metadata while it is guaranteed to be in memory. A
+            // restart can then reattach without waiting for DHT peers, and it
+            // also preserves the file list after the torrent is removed.
+            if let Some(bytes) = player.torrent_bytes(torrent_id) {
+                if let Err(err) = save_cached_torrent(&info_hash, &bytes) {
+                    tracing::warn!("could not cache torrent metadata for {info_hash}: {err:#}");
+                }
+            }
+
+            // Lengths come from the torrent's own metadata; a release's
+            // `sizeBytes` is the WHOLE torrent, which on a season pack is not
+            // any one episode's size and would make every bar wrong.
+            let torrent_files = player.torrent_files(torrent_id);
+            let torrent_file_count = torrent_files.len() as u32;
+            let mut created: Vec<DownloadRecord> = Vec::with_capacity(file_indices.len());
+
+            for file_idx in &file_indices {
+                let (total_bytes, file_name) = torrent_files
+                    .iter()
+                    .find(|file| file.idx == *file_idx)
+                    .map(|file| (file.length_bytes, file.name.clone()))
+                    .unwrap_or((0, String::new()));
+
+                // A pack's files carry their own episode numbers ("... - 07"),
+                // so each record should say which episode it is rather than
+                // repeating the one the modal was opened for. Falls back to the
+                // modal's episode when the name has no number.
+                let file_episode = if file_indices.len() > 1 {
+                    episode_from_filename(&file_name).or((episode > 0).then_some(episode as u32))
+                } else {
+                    (episode > 0).then_some(episode as u32)
+                };
+
+                created.push(DownloadRecord {
+                    id: 0,
+                    anime_id,
+                    provider: provider.clone(),
+                    episode: file_episode,
+                    title: title.clone(),
+                    cover_image: (!cover_url.is_empty() && cover_url != "undefined")
+                        .then_some(cover_url.clone()),
+                    episode_title: (episode_title != "undefined" && !episode_title.is_empty())
+                        .then_some(episode_title.clone()),
+                    release_title: release.title.clone(),
+                    torrent_id: Some(torrent_id),
+                    magnet: Some(magnet.clone()),
+                    torrent_url: release.torrent_url.clone(),
+                    info_hash: Some(info_hash.clone()),
+                    cache_dir: Some(cache_dir.display().to_string()),
+                    file_idx: *file_idx as u32,
+                    file_name,
+                    status: DownloadStatus::Downloading,
+                    progress_bytes: 0,
+                    total_bytes,
+                    release_seeders: release.seeders,
+                    output_path: String::new(),
+                    added_at: now_secs(),
+                    completed_at: None,
+                    priority: DownloadPriority::Normal,
+                    user_paused: false,
+                    season: season_number,
+                    library_dir: Some(library_dir_string.clone()),
+                    torrent_file_count: Some(torrent_file_count),
+                    error: None,
+                });
+            }
+
+            let ids = match store.insert_many(created.clone()) {
+                Ok(ids) => ids,
+                Err(err) => {
+                    tracing::warn!("could not record downloads: {err:#}");
+                    let _ = player.remove_torrent(torrent_id).await;
+                    let message = err.to_string();
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.episode_download_failed(QString::from(""), QString::from(&message))
+                    });
+                    return;
+                }
+            };
+
+            for (record, id) in created.iter_mut().zip(ids) {
+                record.id = id;
+            }
+
+            // The modal only needs to know the FIRST record: it reports "started
+            // N episodes" from the list it already has, and the Downloads page
+            // reloads the whole store anyway.
+            let first = created.first().cloned();
+            let json = serde_json::to_string(&first).unwrap_or_else(|_| "null".into());
+            let _ = qt_thread.queue(move |qobject| qobject.download_started(QString::from(&json)));
+        });
+    }
+
+    fn list_release_files(self: Pin<&mut Self>, token: QString, release_json: QString) {
+        let token_string = token.to_string();
+        let release: Release = match serde_json::from_str(&release_json.to_string()) {
+            Ok(release) => release,
+            Err(err) => {
+                self.release_files_failed(
+                    token,
+                    QString::from(&format!("unreadable release: {err}")),
+                );
+                return;
+            }
+        };
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            let handle = match player.add_magnet(&release.magnet_uri).await {
+                Ok(handle) => handle,
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.release_files_failed(
+                            QString::from(&token_string),
+                            QString::from(&message),
+                        )
+                    });
+                    return;
+                }
+            };
+
+            // The list is all this command needs, so the torrent is dropped
+            // straight away: leaving it registered would keep the transfer
+            // running for a release the reader may only be inspecting.
+            if let Err(err) = player.remove_torrent(handle.id).await {
+                tracing::warn!("could not drop inspected torrent {}: {err:#}", handle.id);
+            }
+
+            let payload = serde_json::json!({
+                "name": release.title,
+                "files": handle.files,
+            });
+            let json = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
+            let _ = qt_thread.queue(move |qobject| {
+                qobject.release_files_ready(QString::from(&token_string), QString::from(&json))
+            });
+        });
+    }
+
+    fn get_downloads(self: Pin<&mut Self>) {
+        // Synchronous: a small JSON file, read on the Qt thread. Doing this in
+        // the runtime would make every page open race its own first paint.
+        let json = match self.rust().downloads.as_ref() {
+            Some(store) => downloads_json(&store.read_all()),
+            None => "[]".to_string(),
+        };
+        self.downloads_ready(QString::from(&json));
+    }
+
+    fn restore_downloads(self: Pin<&mut Self>) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+
+        // The Downloads page can be instantiated more than once; reattaching a
+        // group twice would add duplicate torrents to the session.
+        if self
+            .rust()
+            .downloads_restore_started
+            .swap(true, Ordering::SeqCst)
+        {
+            return;
+        }
+
+        let mut groups: std::collections::HashMap<String, Vec<DownloadRecord>> =
+            std::collections::HashMap::new();
+        for record in store.read_all().into_iter().filter(needs_restore) {
+            groups.entry(record.group_key()).or_default().push(record);
+        }
+
+        if groups.is_empty() {
+            self.rust()
+                .downloads_restore_done
+                .store(true, Ordering::SeqCst);
+            self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+            return;
+        }
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+        let restoring = Arc::clone(&self.rust().restoring_downloads);
+        let restore_done = Arc::clone(&self.rust().downloads_restore_done);
+        let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(groups.len()));
+
+        for (group_key, records) in groups {
+            mark_restoring(&restoring, &group_key);
+            let store = store.clone();
+            let player = Arc::clone(&player);
+            let restoring = Arc::clone(&restoring);
+            let remaining = Arc::clone(&remaining);
+            let restore_done = Arc::clone(&restore_done);
+            let qt_thread = qt_thread.clone();
+
+            runtime.spawn(async move {
+                let result = attach_group(&player, &records, true, &group_indices(&records)).await;
+
+                let final_list = match result {
+                    Ok(attached) => {
+                        if let Some(bytes) = player.torrent_bytes(attached.torrent_id) {
+                            if let Err(err) = save_cached_torrent(&attached.info_hash, &bytes) {
+                                tracing::warn!(
+                                    "could not cache restored torrent {}: {err:#}",
+                                    attached.info_hash
+                                );
+                            }
+                        }
+
+                        let hash = attached.info_hash.clone();
+                        let cache = attached.cache_dir.display().to_string();
+                        let file_count = attached.files.len() as u32;
+                        let torrent_id = attached.torrent_id;
+                        let update = store.mutate(|all| {
+                            for record in all.iter_mut() {
+                                if record.group_key() != group_key || !needs_restore(record) {
+                                    continue;
+                                }
+                                record.torrent_id = Some(torrent_id);
+                                record.info_hash = Some(hash.clone());
+                                record.cache_dir = Some(cache.clone());
+                                record.torrent_file_count = Some(file_count);
+                                record.status = DownloadStatus::Paused;
+                                record.error = None;
+                            }
+                        });
+                        if let Err(err) = update {
+                            tracing::warn!("could not record restored group {group_key}: {err:#}");
+                        }
+
+                        tracing::info!(
+                            "restored download group {group_key} as torrent {torrent_id} (paused, {} files)",
+                            attached.files.len()
+                        );
+                        downloads_json(&store.read_all())
+                    }
+                    Err(message) => {
+                        tracing::warn!("could not restore download group {group_key}: {message}");
+                        let reason = message.clone();
+                        let update = store.mutate(|all| {
+                            for record in all.iter_mut() {
+                                if record.group_key() != group_key || !needs_restore(record) {
+                                    continue;
+                                }
+                                record.torrent_id = None;
+                                record.status = DownloadStatus::Failed;
+                                record.error = Some(reason.clone());
+                            }
+                        });
+                        if let Err(err) = update {
+                            tracing::warn!("could not mark group {group_key} failed: {err:#}");
+                        }
+                        downloads_json(&store.read_all())
+                    }
+                };
+
+                unmark_restoring(&restoring, &group_key);
+
+                // The last group to finish publishes the complete list once,
+                // rather than every group racing the page with a partial one.
+                if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    restore_done.store(true, Ordering::SeqCst);
+                    let _ = qt_thread.queue(move |qobject| {
+                        qobject.downloads_ready(QString::from(&final_list))
+                    });
+                }
+            });
+        }
+    }
+
+    fn poll_downloads(self: Pin<&mut Self>) {
+        let Some(store) = self.rust().downloads.clone() else {
+            self.downloads_ready(QString::from("[]"));
+            return;
+        };
+
+        // The startup reattach owns the store while it runs. A poll that read
+        // a record before its stale engine ID was replaced would see a missing
+        // torrent and permanently mark a resumable download Failed.
+        if self.rust().downloads_restore_started.load(Ordering::SeqCst)
+            && !self.rust().downloads_restore_done.load(Ordering::SeqCst)
+        {
+            let views: Vec<DownloadView> = store
+                .read_all()
+                .into_iter()
+                .map(|record| {
+                    let count =
+                        group_file_count(std::slice::from_ref(&record), &record.group_key());
+                    DownloadView::idle(record, count, true)
+                })
+                .collect();
+            self.download_progress(QString::from(&views_json(&views)));
+            return;
+        }
+
+        let player = Arc::clone(&self.rust().player);
+        let restoring = Arc::clone(&self.rust().restoring_downloads);
+        let mut records = store.read_all();
+        let mut finished: Vec<DownloadRecord> = Vec::new();
+        let mut completed_paths: Vec<(u64, usize)> = Vec::new();
+        // Live numbers per record id, for the view sent to QML.
+        let mut live: std::collections::HashMap<u64, (f64, u32, Option<u64>)> =
+            std::collections::HashMap::new();
+
+        // Reconcile before polling bytes. A newly added batch used to leave
+        // every torrent downloading at once, which made one episode consume
+        // the pipe while the rest sat at 0%. The queue makes the default
+        // policy one active download and pauses the remainder.
+        let queue_plan = plan_queue(&records, player.max_concurrent_downloads());
+        for (id, action) in queue_plan {
+            let Some(record) = records.iter_mut().find(|record| record.id == id) else {
+                continue;
+            };
+            if is_restoring(&restoring, &record.group_key()) {
+                continue;
+            }
+            let Some(torrent_id) = record.torrent_id else {
+                continue;
+            };
+
+            match action {
+                QueueAction::Start if record.status == DownloadStatus::Queued => {
+                    record.status = DownloadStatus::Downloading;
+                    let runtime = Arc::clone(&self.rust().runtime);
+                    let player = Arc::clone(&self.rust().player);
+                    runtime.spawn(async move {
+                        if let Err(err) = player.resume_torrent(torrent_id).await {
+                            tracing::warn!("could not resume queued torrent {torrent_id}: {err:#}");
+                        }
+                    });
+                }
+                QueueAction::Queue if record.status == DownloadStatus::Downloading => {
+                    record.status = DownloadStatus::Queued;
+                    let runtime = Arc::clone(&self.rust().runtime);
+                    let player = Arc::clone(&self.rust().player);
+                    runtime.spawn(async move {
+                        if let Err(err) = player.pause_torrent(torrent_id).await {
+                            tracing::warn!("could not queue torrent {torrent_id}: {err:#}");
+                        }
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        for record in records.iter_mut() {
+            if is_restoring(&restoring, &record.group_key()) {
+                continue;
+            }
+            let (Some(torrent_id), DownloadStatus::Downloading) =
+                (record.torrent_id, record.status)
+            else {
+                continue;
+            };
+
+            let Some((progress, done)) =
+                player.download_snapshot(torrent_id, record.file_idx as usize)
+            else {
+                // The torrent vanished under us (engine restart, removal from
+                // another surface). Saying "failed" is more honest than a bar
+                // that never moves again.
+                if record.status == DownloadStatus::Downloading {
+                    record.status = DownloadStatus::Failed;
+                    record.error = Some("the torrent is no longer in the download session".into());
+                    finished.push(record.clone());
+                }
+                continue;
+            };
+
+            record.progress_bytes = progress
+                .file_progress
+                .get(record.file_idx as usize)
+                .copied()
+                .unwrap_or(progress.progress_bytes);
+            if record.total_bytes == 0 {
+                record.total_bytes = progress.total_bytes;
+            }
+
+            // The live numbers the page shows. `download_mbps` is the whole
+            // torrent's rate, not this file's: librqbit reports one speed per
+            // torrent, and per-file rates do not exist. For a single-file
+            // download -- the normal case -- they are the same number.
+            live.insert(
+                record.id,
+                (
+                    progress.download_mbps,
+                    progress.peers_live,
+                    // The torrent's ETA covers every selected file, so it is
+                    // only this file's ETA when it is the only one selected.
+                    // Showing a season pack's whole-torrent ETA on episode 3
+                    // would be off by hours.
+                    if progress.file_progress.len() <= 1 {
+                        progress.eta_seconds
+                    } else {
+                        file_eta(record, &progress)
+                    },
+                ),
+            );
+
+            if done {
+                completed_paths.push((record.id, record.file_idx as usize));
+            }
+        }
+
+        let in_flight: Vec<u64> = completed_paths.iter().map(|(id, _)| *id).collect();
+
+        if !completed_paths.is_empty() {
+            // Several files of one torrent can finish between two polls. Only
+            // the LAST of them may drop the torrent: an earlier one would
+            // delete the data the next `finish_download` is still moving.
+            let completed_set: std::collections::HashSet<u64> =
+                completed_paths.iter().map(|(id, _)| *id).collect();
+            let mut last_in_group: std::collections::HashMap<String, u64> =
+                std::collections::HashMap::new();
+            let mut group_has_remaining: std::collections::HashMap<String, bool> =
+                std::collections::HashMap::new();
+            for (id, _) in &completed_paths {
+                let Some(record) = records.iter().find(|record| record.id == *id) else {
+                    continue;
+                };
+                let key = record.group_key();
+                last_in_group.insert(key.clone(), *id);
+                group_has_remaining.entry(key.clone()).or_insert_with(|| {
+                    records.iter().any(|other| {
+                        other.group_key() == key
+                            && other.status != DownloadStatus::Complete
+                            && !completed_set.contains(&other.id)
+                    })
+                });
+            }
+
+            let runtime = Arc::clone(&self.rust().runtime);
+            let qt_thread = self.qt_thread();
+            let store = store.clone();
+            let player = Arc::clone(&self.rust().player);
+            let snapshot = records.clone();
+            let default_library = self.rust().player.resolved_library_dir();
+
+            runtime.spawn(async move {
+                for (id, file_idx) in completed_paths {
+                    let Some(record) = snapshot.iter().find(|r| r.id == id).cloned() else {
+                        continue;
+                    };
+                    let Some(torrent_id) = record.torrent_id else {
+                        continue;
+                    };
+
+                    let season = record.season;
+                    let library_dir = record
+                        .library_dir
+                        .as_deref()
+                        .filter(|dir| !dir.trim().is_empty())
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| default_library.clone());
+
+                    // A season pack backs several records with ONE torrent. If
+                    // any OTHER record still needs it, the transfer must stay
+                    // alive: dropping it here would delete the data the
+                    // remaining episodes are still reading from.
+                    let group_key = record.group_key();
+                    let drop_torrent = last_in_group.get(&group_key).copied() == Some(id)
+                        && !group_has_remaining
+                            .get(&group_key)
+                            .copied()
+                            .unwrap_or(false);
+
+                    let moved = player
+                        .finish_download(
+                            torrent_id,
+                            file_idx,
+                            &library_dir,
+                            &record.title,
+                            season,
+                            record.episode,
+                            drop_torrent,
+                        )
+                        .await;
+
+                    let mut done_record = record.clone();
+                    match moved {
+                        Ok(path) => {
+                            done_record.status = DownloadStatus::Complete;
+                            done_record.output_path = path.display().to_string();
+                            done_record.progress_bytes = done_record.total_bytes;
+                            done_record.completed_at = Some(now_secs());
+                            done_record.torrent_id = None;
+                            done_record.error = None;
+                        }
+                        Err(err) => {
+                            tracing::warn!("download {} could not finish: {err:#}", record.id);
+                            done_record.status = DownloadStatus::Failed;
+                            done_record.error = Some(err.to_string());
+                        }
+                    }
+
+                    if let Err(err) = store.update(&done_record) {
+                        tracing::warn!("could not update download {}: {err:#}", done_record.id);
+                    }
+
+                    let json =
+                        serde_json::to_string(&done_record).unwrap_or_else(|_| "null".into());
+                    let ok = done_record.status == DownloadStatus::Complete;
+                    // `downloadsReady` always carries an ARRAY; the page parses
+                    // it into its list and calls `.filter` on the result. Sending
+                    // one record here (as a failure used to) made that call
+                    // throw `Property 'filter' of object is not a function` on
+                    // every repaint.
+                    let list_json =
+                        serde_json::to_string(&store.read_all()).unwrap_or_else(|_| "[]".into());
+
+                    // One emit per `queue`: the generated signal method takes
+                    // `self: Pin<&mut Self>`, so a single `qobject` cannot be
+                    // used twice in one closure. A second handle is cheap.
+                    if ok {
+                        let completed_thread = qt_thread.clone();
+                        let _ = completed_thread
+                            .queue(move |qobject| qobject.download_completed(QString::from(&json)));
+                    }
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.downloads_ready(QString::from(&list_json)));
+                }
+            });
+        }
+
+        if !finished.is_empty() {
+            for record in finished {
+                let _ = store.update(&record);
+            }
+        }
+
+        // Persist byte counters and status changes by ID. Writing the whole
+        // snapshot would clobber a group changed by the restorer or the file
+        // editor between our read and this write.
+        //
+        // Records whose files are being moved are skipped: the finisher owns
+        // them until it writes `Complete`, and a stale `Downloading` copy would
+        // revert a finished download to a running one with no torrent id.
+        let updates: std::collections::HashMap<u64, DownloadRecord> = records
+            .iter()
+            .filter(|record| !in_flight.contains(&record.id))
+            .filter(|record| !is_restoring(&restoring, &record.group_key()))
+            .map(|record| (record.id, record.clone()))
+            .collect();
+        if let Err(err) = store.mutate(|all| {
+            for record in all.iter_mut() {
+                if let Some(update) = updates.get(&record.id) {
+                    *record = update.clone();
+                }
+            }
+        }) {
+            tracing::warn!("could not persist download progress: {err:#}");
+        }
+
+        // Send the VIEW list, so the page can show speed, peers and ETA next
+        // to the persisted numbers.
+        let views: Vec<DownloadView> = records
+            .iter()
+            .map(|record| {
+                let group_key = record.group_key();
+                let file_count = group_file_count(&records, &group_key);
+                let restoring = is_restoring(&restoring, &group_key);
+                match live.get(&record.id) {
+                    Some((speed, peers, eta)) => DownloadView {
+                        group_key,
+                        record: record.clone(),
+                        file_count,
+                        restoring,
+                        speed_mbps: *speed,
+                        peers_live: *peers,
+                        eta_seconds: *eta,
+                    },
+                    None => DownloadView::idle(record.clone(), file_count, restoring),
+                }
+            })
+            .collect();
+        self.download_progress(QString::from(&views_json(&views)));
+    }
+
+    fn list_download_files(self: Pin<&mut Self>, token: QString, group_key: QString) {
+        let Some(store) = self.rust().downloads.clone() else {
+            self.download_files_failed(token, QString::from("the downloads store is unavailable"));
+            return;
+        };
+
+        let token_string = token.to_string();
+        let key = group_key.to_string();
+        let records = group_records(&store.read_all(), &key);
+        if records.is_empty() {
+            self.download_files_failed(token, QString::from("the download no longer exists"));
+            return;
+        }
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            let mut temporary = None;
+            let (torrent_id, files) = match live_files(&player, &records) {
+                Some(found) => found,
+                None => match attach_group(&player, &records, true, &group_indices(&records)).await
+                {
+                    Ok(attached) => {
+                        save_attached_metadata(&player, &attached);
+                        temporary = Some(attached.torrent_id);
+                        (attached.torrent_id, attached.files)
+                    }
+                    Err(message) => {
+                        let _ = qt_thread.queue(move |qobject| {
+                            qobject.download_files_failed(
+                                QString::from(&token_string),
+                                QString::from(&message),
+                            )
+                        });
+                        return;
+                    }
+                },
+            };
+
+            let selected: std::collections::HashSet<usize> = records
+                .iter()
+                .map(|record| record.file_idx as usize)
+                .collect();
+            let name = records
+                .first()
+                .map(|record| record.release_title.clone())
+                .unwrap_or_default();
+            let json = download_files_json(&key, &name, &files, &selected);
+
+            // Inspection must not leave a transfer behind. The attach was
+            // paused, so dropping it here cannot lose downloaded pieces.
+            if temporary == Some(torrent_id) {
+                if let Err(err) = player.remove_torrent(torrent_id).await {
+                    tracing::warn!("could not drop inspected torrent {torrent_id}: {err:#}");
+                }
+            }
+
+            let _ = qt_thread.queue(move |qobject| {
+                qobject.download_files_ready(QString::from(&token_string), QString::from(&json))
+            });
+        });
+    }
+
+    fn set_download_files(
+        self: Pin<&mut Self>,
+        token: QString,
+        group_key: QString,
+        indices_json: QString,
+    ) {
+        let Some(store) = self.rust().downloads.clone() else {
+            self.download_files_failed(token, QString::from("the downloads store is unavailable"));
+            return;
+        };
+
+        let mut selected: Vec<usize> =
+            match serde_json::from_str::<Vec<i64>>(&indices_json.to_string()) {
+                Ok(indices) => indices
+                    .into_iter()
+                    .filter(|idx| *idx >= 0)
+                    .map(|idx| idx as usize)
+                    .collect(),
+                Err(err) => {
+                    self.download_files_failed(
+                        token,
+                        QString::from(&format!("unreadable file list: {err}")),
+                    );
+                    return;
+                }
+            };
+        selected.sort_unstable();
+        selected.dedup();
+
+        if selected.is_empty() {
+            self.download_files_failed(token, QString::from("a download needs at least one file"));
+            return;
+        }
+
+        let token_string = token.to_string();
+        let key = group_key.to_string();
+        let records = group_records(&store.read_all(), &key);
+        if records.is_empty() {
+            self.download_files_failed(token, QString::from("the download no longer exists"));
+            return;
+        }
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            let selected_set: std::collections::HashSet<usize> = selected.iter().copied().collect();
+            let was_active = records
+                .iter()
+                .any(|record| record.status == DownloadStatus::Downloading);
+            let was_queued = records
+                .iter()
+                .any(|record| record.status == DownloadStatus::Queued);
+            let had_incomplete = records.iter().any(|record| {
+                matches!(
+                    record.status,
+                    DownloadStatus::Downloading | DownloadStatus::Queued | DownloadStatus::Paused
+                )
+            });
+            let prototype = records[0].clone();
+
+            let (torrent_id, files) = match live_files(&player, &records) {
+                Some((torrent_id, files)) => {
+                    if let Err(err) = player.set_only_files(torrent_id, selected.clone()).await {
+                        let message = format!("could not change the file selection: {err}");
+                        let _ = qt_thread.queue(move |qobject| {
+                            qobject.download_files_failed(
+                                QString::from(&token_string),
+                                QString::from(&message),
+                            )
+                        });
+                        return;
+                    }
+                    (torrent_id, files)
+                }
+                None => match attach_group(&player, &records, true, &selected).await {
+                    Ok(attached) => {
+                        save_attached_metadata(&player, &attached);
+                        (attached.torrent_id, attached.files)
+                    }
+                    Err(message) => {
+                        let _ = qt_thread.queue(move |qobject| {
+                            qobject.download_files_failed(
+                                QString::from(&token_string),
+                                QString::from(&message),
+                            )
+                        });
+                        return;
+                    }
+                },
+            };
+
+            if selected_set
+                .iter()
+                .any(|idx| !files.iter().any(|file| file.idx == *idx))
+            {
+                let message = "the torrent no longer contains one of the selected files";
+                let _ = qt_thread.queue(move |qobject| {
+                    qobject
+                        .download_files_failed(QString::from(&token_string), QString::from(message))
+                });
+                return;
+            }
+
+            let info_hash = group_info_hash(&records);
+            let cache_dir = records.iter().find_map(|record| record.cache_dir.clone());
+            let file_count = files.len() as u32;
+            let new_status = if was_active {
+                DownloadStatus::Downloading
+            } else if was_queued {
+                DownloadStatus::Queued
+            } else if had_incomplete {
+                DownloadStatus::Paused
+            } else {
+                // Adding a file to a finished group starts a new transfer.
+                DownloadStatus::Downloading
+            };
+            let should_resume =
+                was_active || (!had_incomplete && new_status == DownloadStatus::Downloading);
+
+            let make_row = |file: &kitsune_core::player::TorrentFile| {
+                let status = new_status.clone();
+                let user_paused = status == DownloadStatus::Paused;
+                DownloadRecord {
+                    id: 0,
+                    anime_id: prototype.anime_id,
+                    provider: prototype.provider.clone(),
+                    episode: episode_from_filename(&file.name).or(prototype.episode),
+                    title: prototype.title.clone(),
+                    cover_image: prototype.cover_image.clone(),
+                    episode_title: prototype.episode_title.clone(),
+                    release_title: prototype.release_title.clone(),
+                    torrent_id: Some(torrent_id),
+                    magnet: prototype.magnet.clone(),
+                    torrent_url: prototype.torrent_url.clone(),
+                    info_hash: info_hash.clone(),
+                    cache_dir: cache_dir.clone(),
+                    file_idx: file.idx as u32,
+                    file_name: file.name.clone(),
+                    status,
+                    progress_bytes: 0,
+                    total_bytes: file.length_bytes,
+                    release_seeders: prototype.release_seeders,
+                    output_path: String::new(),
+                    added_at: now_secs(),
+                    completed_at: None,
+                    priority: prototype.priority,
+                    user_paused,
+                    season: prototype.season,
+                    library_dir: prototype.library_dir.clone(),
+                    torrent_file_count: Some(file_count),
+                    error: None,
+                }
+            };
+
+            let new_rows: Vec<DownloadRecord> = files
+                .iter()
+                .filter(|file| selected_set.contains(&file.idx))
+                .filter(|file| {
+                    !records
+                        .iter()
+                        .any(|record| record.file_idx as usize == file.idx)
+                })
+                .map(&make_row)
+                .collect();
+
+            let update = store.mutate(|all| {
+                all.retain(|record| {
+                    record.group_key() != key || selected_set.contains(&(record.file_idx as usize))
+                });
+                for record in all.iter_mut() {
+                    if record.group_key() != key {
+                        continue;
+                    }
+                    record.torrent_id = Some(torrent_id);
+                    record.info_hash = info_hash.clone();
+                    record.cache_dir = cache_dir.clone();
+                    record.torrent_file_count = Some(file_count);
+                    if record.status != DownloadStatus::Complete {
+                        record.error = None;
+                    }
+                }
+                let mut next = all.iter().map(|record| record.id).max().unwrap_or(0) + 1;
+                for mut row in new_rows {
+                    row.id = next;
+                    next += 1;
+                    all.push(row);
+                }
+            });
+
+            if let Err(err) = update {
+                let message = format!("could not save the file selection: {err}");
+                let _ = qt_thread.queue(move |qobject| {
+                    qobject.download_files_failed(
+                        QString::from(&token_string),
+                        QString::from(&message),
+                    )
+                });
+                return;
+            }
+
+            if should_resume {
+                if let Err(err) = player.resume_torrent(torrent_id).await {
+                    tracing::warn!("could not resume edited torrent {torrent_id}: {err:#}");
+                }
+            }
+
+            let selected_after: std::collections::HashSet<usize> = selected_set.clone();
+            let name = prototype.release_title.clone();
+            let files_json = download_files_json(&key, &name, &files, &selected_after);
+            let list_json = downloads_json(&store.read_all());
+
+            let files_thread = qt_thread.clone();
+            let _ = files_thread.queue(move |qobject| {
+                qobject
+                    .download_files_ready(QString::from(&token_string), QString::from(&files_json))
+            });
+            let _ =
+                qt_thread.queue(move |qobject| qobject.downloads_ready(QString::from(&list_json)));
+        });
+    }
+
+    fn remove_download(self: Pin<&mut Self>, id: QString, delete_file: bool) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+        let id = download_id(&id.to_string());
+        let all = store.read_all();
+        let Some(group_key) = group_key_for_id(&all, id) else {
+            return;
+        };
+        let targets = group_records(&all, &group_key);
+        let target_ids: std::collections::HashSet<u64> =
+            targets.iter().map(|record| record.id).collect();
+        let torrent_ids = unique_torrent_ids(&targets);
+
+        if let Err(err) = store.mutate(|records| {
+            records.retain(|record| !target_ids.contains(&record.id));
+        }) {
+            tracing::warn!("could not remove download group {group_key}: {err:#}");
+            return;
+        }
+
+        for record in &targets {
+            if delete_file && !record.output_path.is_empty() {
+                if let Err(err) = std::fs::remove_file(&record.output_path) {
+                    tracing::warn!("could not delete {}: {err}", record.output_path);
+                }
+            }
+        }
+
+        let remaining = store.read_all();
+        let still_exists = remaining
+            .iter()
+            .any(|record| record.group_key() == group_key);
+
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+        let info_hash = group_info_hash(&targets);
+        let cache_dirs: Vec<(String, std::path::PathBuf)> = targets
+            .iter()
+            .filter_map(|record| {
+                let hash = record.info_hash.clone().or_else(|| info_hash.clone())?;
+                let dir = record.cache_dir.clone().map(std::path::PathBuf::from)?;
+                Some((hash, dir))
+            })
+            .collect();
+
+        runtime.spawn(async move {
+            for torrent_id in torrent_ids {
+                if let Err(err) = player.remove_torrent(torrent_id).await {
+                    tracing::warn!("could not stop torrent {torrent_id}: {err:#}");
+                }
+            }
+
+            // A group is one torrent, so once its last row is gone the cached
+            // metadata and partial data have no remaining owner.
+            if !still_exists {
+                if let Some(hash) = info_hash {
+                    if let Err(err) = remove_cached_torrent(&hash) {
+                        tracing::warn!("could not remove cached torrent {hash}: {err:#}");
+                    }
+                }
+                for (hash, dir) in cache_dirs {
+                    if let Err(err) = remove_download_cache(&dir, &hash) {
+                        tracing::warn!(
+                            "could not remove download cache {}: {err:#}",
+                            dir.display()
+                        );
+                    }
+                }
+            }
+        });
+
+        self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+    }
+
+    fn pause_download(self: Pin<&mut Self>, id: QString) {
+        self.set_download_paused(id, true);
+    }
+
+    fn resume_download(self: Pin<&mut Self>, id: QString) {
+        self.set_download_paused(id, false);
+    }
+
+    fn set_download_priority(self: Pin<&mut Self>, id: QString, priority: QString) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+        let id = download_id(&id.to_string());
+        let priority = match priority.to_string().as_str() {
+            "high" => DownloadPriority::High,
+            "low" => DownloadPriority::Low,
+            _ => DownloadPriority::Normal,
+        };
+
+        let all = store.read_all();
+        let Some(group_key) = group_key_for_id(&all, id) else {
+            return;
+        };
+        if let Err(err) = store.mutate(|records| {
+            for record in records.iter_mut() {
+                if record.group_key() == group_key {
+                    record.priority = priority;
+                }
+            }
+        }) {
+            tracing::warn!("could not update priority for {group_key}: {err:#}");
+        }
+        self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+    }
+
+    fn library_dir(self: Pin<&mut Self>) -> QString {
+        QString::from(
+            &self
+                .rust()
+                .player
+                .resolved_library_dir()
+                .display()
+                .to_string(),
+        )
+    }
+
+    fn download_path(self: Pin<&mut Self>, id: QString) -> QString {
+        let Some(store) = self.rust().downloads.as_ref() else {
+            return QString::from("");
+        };
+        let id = download_id(&id.to_string());
+        let path = store
+            .read_all()
+            .into_iter()
+            .find(|r| r.id == id)
+            .map(|r| r.output_path)
+            .unwrap_or_default();
+
+        if path.is_empty() || !std::path::Path::new(&path).exists() {
+            return QString::from("");
+        }
+        QString::from(&path)
+    }
+
+    fn downloaded_for_anime(self: Pin<&mut Self>, anime_id: i64, provider: QString) -> QString {
+        let records = match self.rust().downloads.as_ref() {
+            Some(store) => store.read_all(),
+            None => Vec::new(),
+        };
+        let views = downloaded_views_for(&records, anime_id, &provider.to_string());
+        let json = serde_json::to_string(&views).unwrap_or_else(|_| "[]".into());
+        QString::from(&json)
+    }
+
+    fn open_download_folder(self: Pin<&mut Self>, id: QString) {
+        let Some(store) = self.rust().downloads.as_ref() else {
+            return;
+        };
+        let id = download_id(&id.to_string());
+        if let Some(record) = store.read_all().into_iter().find(|r| r.id == id) {
+            if !record.output_path.is_empty() {
+                open_in_file_manager(std::path::Path::new(&record.output_path));
+            }
+        }
+    }
+
+    fn open_library_folder(self: Pin<&mut Self>) {
+        open_in_file_manager(&self.rust().player.resolved_library_dir());
+    }
+
+    /// Pause or resume one download group and record the new status.
+    ///
+    /// A group is one torrent, so pausing a card pauses every file row. Resume
+    /// doubles as Retry: a Failed/Paused group with no live torrent is
+    /// reattached from cached metadata (or its magnet).
+    fn set_download_paused(self: Pin<&mut Self>, id: QString, paused: bool) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+        let id = download_id(&id.to_string());
+        let all = store.read_all();
+        let Some(group_key) = group_key_for_id(&all, id) else {
+            return;
+        };
+        let records = group_records(&all, &group_key);
+        let torrent_ids = unique_torrent_ids(&records);
+        let live_id = torrent_ids.first().copied();
+
+        if paused {
+            let _ = store.mutate(|all| {
+                for record in all.iter_mut() {
+                    if record.group_key() == group_key
+                        && !matches!(
+                            record.status,
+                            DownloadStatus::Complete | DownloadStatus::Failed
+                        )
+                    {
+                        record.status = DownloadStatus::Paused;
+                        record.user_paused = true;
+                    }
+                }
+            });
+
+            if let Some(torrent_id) = live_id {
+                let runtime = Arc::clone(&self.rust().runtime);
+                let player = Arc::clone(&self.rust().player);
+                runtime.spawn(async move {
+                    if let Err(err) = player.pause_torrent(torrent_id).await {
+                        tracing::warn!("could not pause torrent {torrent_id}: {err:#}");
+                    }
+                });
+            }
+
+            self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+            return;
+        }
+
+        // No live torrent: this is a Retry of a failed or stale group. Attach
+        // it running rather than merely flipping the flag, or the row would
+        // say Downloading with nothing behind it.
+        if live_id.is_none() {
+            let qt_thread = self.qt_thread();
+            let runtime = Arc::clone(&self.rust().runtime);
+            let player = Arc::clone(&self.rust().player);
+            let restoring = Arc::clone(&self.rust().restoring_downloads);
+            mark_restoring(&restoring, &group_key);
+
+            runtime.spawn(async move {
+                let result = attach_group(&player, &records, false, &group_indices(&records)).await;
+                let list_json = match result {
+                    Ok(attached) => {
+                        if let Some(bytes) = player.torrent_bytes(attached.torrent_id) {
+                            if let Err(err) = save_cached_torrent(&attached.info_hash, &bytes) {
+                                tracing::warn!("could not cache retried torrent: {err:#}");
+                            }
+                        }
+                        let torrent_id = attached.torrent_id;
+                        let hash = attached.info_hash.clone();
+                        let cache = attached.cache_dir.display().to_string();
+                        let file_count = attached.files.len() as u32;
+                        if let Err(err) = store.mutate(|all| {
+                            for record in all.iter_mut() {
+                                if record.group_key() != group_key
+                                    || record.status == DownloadStatus::Complete
+                                {
+                                    continue;
+                                }
+                                record.torrent_id = Some(torrent_id);
+                                record.info_hash = Some(hash.clone());
+                                record.cache_dir = Some(cache.clone());
+                                record.torrent_file_count = Some(file_count);
+                                record.status = DownloadStatus::Downloading;
+                                record.user_paused = false;
+                                record.error = None;
+                            }
+                        }) {
+                            tracing::warn!("could not record retry for {group_key}: {err:#}");
+                        }
+                        downloads_json(&store.read_all())
+                    }
+                    Err(message) => {
+                        if let Err(err) = store.mutate(|all| {
+                            for record in all.iter_mut() {
+                                if record.group_key() == group_key
+                                    && record.status != DownloadStatus::Complete
+                                {
+                                    record.status = DownloadStatus::Failed;
+                                    record.error = Some(message.clone());
+                                }
+                            }
+                        }) {
+                            tracing::warn!(
+                                "could not record retry failure for {group_key}: {err:#}"
+                            );
+                        }
+                        downloads_json(&store.read_all())
+                    }
+                };
+
+                unmark_restoring(&restoring, &group_key);
+                let _ = qt_thread
+                    .queue(move |qobject| qobject.downloads_ready(QString::from(&list_json)));
+            });
+            return;
+        }
+
+        // A restored group is paused on disk. Flip only the rows that can run,
+        // then let the queue planner enforce the concurrency limit.
+        let Some(torrent_id) = live_id else {
+            return;
+        };
+        let _ = store.mutate(|all| {
+            for record in all.iter_mut() {
+                if record.group_key() == group_key
+                    && !matches!(
+                        record.status,
+                        DownloadStatus::Complete | DownloadStatus::Failed
+                    )
+                {
+                    record.status = DownloadStatus::Downloading;
+                    record.user_paused = false;
+                    record.error = None;
+                }
+            }
+        });
+
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+        runtime.spawn(async move {
+            if let Err(err) = player.resume_torrent(torrent_id).await {
+                tracing::warn!("could not resume torrent {torrent_id}: {err:#}");
+            }
+        });
+
+        self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+    }
+
     fn download_torrent(self: Pin<&mut Self>, url: QString, path: QString) {
         let url = url.to_string();
         let path = path.to_string();
@@ -2105,8 +4083,7 @@ impl qobject::Backend {
                     let _ = qt_thread.queue(move |qobject| ok(qobject, QString::from(&json)));
                 }
                 Err(message) => {
-                    let _ =
-                        qt_thread.queue(move |qobject| err(qobject, QString::from(&message)));
+                    let _ = qt_thread.queue(move |qobject| err(qobject, QString::from(&message)));
                 }
             }
         });
@@ -2147,12 +4124,12 @@ impl qobject::Backend {
             rows.sort_by(|a, b| b.0.cmp(&a.0));
             rows.into_iter()
                 .take(limit as usize)
-                .map(|(_, entry)| {
-                    kitsune_core::providers::anilist::ContinueWatchingItem {
+                .map(
+                    |(_, entry)| kitsune_core::providers::anilist::ContinueWatchingItem {
                         anime: entry.anime,
                         progress: entry.progress,
-                    }
-                })
+                    },
+                )
                 .collect()
         };
 
@@ -2187,21 +4164,18 @@ impl qobject::Backend {
         self.user_list_ready(QString::from(&json_or_empty(&entries)));
     }
 
-    fn set_list_entry(
-        mut self: Pin<&mut Self>,
-        media_id: i64,
-        status: QString,
-        progress: i32,
-    ) {
+    fn set_list_entry(mut self: Pin<&mut Self>, media_id: i64, status: QString, progress: i32) {
         let status = status.to_string();
         // `progress <= 0` means "leave progress alone"; sending 0 would reset a
         // tracked position. This is the status-change case (Watching ->
         // Completed), which must not wipe how far the reader got.
-        let progress = if progress > 0 { Some(progress as u32) } else { None };
+        let progress = if progress > 0 {
+            Some(progress as u32)
+        } else {
+            None
+        };
 
-        let parsed: ListStatus = match serde_json::from_value(serde_json::Value::String(
-            status,
-        )) {
+        let parsed: ListStatus = match serde_json::from_value(serde_json::Value::String(status)) {
             Ok(s) => s,
             Err(err) => {
                 let message = format!("unknown list status: {err}");
@@ -2216,9 +4190,7 @@ impl qobject::Backend {
         let anime = self.rust().provider.cached_partial(media_id);
         let store = Arc::clone(&self.rust().media_list);
 
-        let existing = anime
-            .as_ref()
-            .and_then(|a| store.get(a.provider, media_id));
+        let existing = anime.as_ref().and_then(|a| store.get(a.provider, media_id));
 
         let Some(anime) = anime.or_else(|| existing.as_ref().map(|e| e.anime.clone())) else {
             // No snapshot anywhere: there is nothing to render a row from, and
@@ -2255,16 +4227,8 @@ impl qobject::Backend {
             .provider
             .cached_partial(media_id)
             .map(|a| a.provider)
-            .or_else(|| {
-                store
-                    .get(ProviderId::AniList, media_id)
-                    .map(|e| e.provider)
-            })
-            .or_else(|| {
-                store
-                    .get(ProviderId::Kitsu, media_id)
-                    .map(|e| e.provider)
-            })
+            .or_else(|| store.get(ProviderId::AniList, media_id).map(|e| e.provider))
+            .or_else(|| store.get(ProviderId::Kitsu, media_id).map(|e| e.provider))
             .unwrap_or(ProviderId::AniList);
 
         if let Err(err) = store.mark_deleted(provider, media_id) {
@@ -2378,8 +4342,7 @@ impl qobject::Backend {
             match anilist.list_entry(media_id).await {
                 // `None` -> JSON `null`, which QML reads as "not on list".
                 Ok(entry) => {
-                    let json =
-                        serde_json::to_string(&entry).unwrap_or_else(|_| "null".into());
+                    let json = serde_json::to_string(&entry).unwrap_or_else(|_| "null".into());
                     let _ = qt_thread
                         .queue(move |qobject| qobject.list_entry_ready(QString::from(&json)));
                 }
@@ -2433,14 +4396,13 @@ impl qobject::Backend {
 
     /// Record that `anime_id` was opened. Synchronous file write, so it runs on
     /// the Qt thread directly -- no runtime hop for a few bytes to disk.
-    fn record_last_played(
-        self: Pin<&mut Self>,
-        anime_id: i64,
-        episode: i32,
-        provider: QString,
-    ) {
+    fn record_last_played(self: Pin<&mut Self>, anime_id: i64, episode: i32, provider: QString) {
         // `episode <= 0` means "no episode" (a film, or a play with none picked).
-        let episode = if episode > 0 { Some(episode as u32) } else { None };
+        let episode = if episode > 0 {
+            Some(episode as u32)
+        } else {
+            None
+        };
         let provider = provider.to_string();
         // A failure here is not worth surfacing: the record is a hint, and a
         // missed write only means the row keeps its previous order.
@@ -2473,7 +4435,11 @@ impl qobject::Backend {
         position_seconds: f64,
         duration_seconds: f64,
     ) {
-        let episode = if episode > 0 { Some(episode as u32) } else { None };
+        let episode = if episode > 0 {
+            Some(episode as u32)
+        } else {
+            None
+        };
         let _ = self.rust().watch_positions.write(
             anime_id,
             episode,
@@ -2629,5 +4595,93 @@ fn badge_literal(badge: HealthBadge) -> &'static str {
         HealthBadge::Green => "green",
         HealthBadge::Yellow => "yellow",
         HealthBadge::Red => "red",
+    }
+}
+
+#[cfg(test)]
+mod downloaded_for_anime_tests {
+    use super::*;
+    use kitsune_core::downloads::DownloadPriority;
+
+    fn sample_record(id: u64) -> DownloadRecord {
+        DownloadRecord {
+            id,
+            anime_id: 1,
+            provider: "anilist".to_string(),
+            episode: Some(1),
+            title: "Kitsune".to_string(),
+            cover_image: None,
+            episode_title: None,
+            release_title: "[GSC] Show - 01".to_string(),
+            torrent_id: None,
+            magnet: None,
+            torrent_url: None,
+            info_hash: None,
+            cache_dir: None,
+            file_idx: 0,
+            file_name: "Show - 01.mkv".to_string(),
+            status: DownloadStatus::Complete,
+            progress_bytes: 1,
+            total_bytes: 1,
+            release_seeders: None,
+            output_path: String::new(),
+            added_at: 0,
+            completed_at: None,
+            priority: DownloadPriority::Normal,
+            user_paused: false,
+            season: None,
+            library_dir: None,
+            torrent_file_count: None,
+            error: None,
+        }
+    }
+
+    fn with_temp_file() -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join("kitsune-downloaded-for-anime-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("show-01-{}.mkv", std::process::id()));
+        std::fs::write(&path, b"x").unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn keeps_only_existing_complete_file_for_same_anime_provider() {
+        let (_dir, path) = with_temp_file();
+        let mut on_disk = sample_record(1);
+        on_disk.output_path = path.display().to_string();
+        let mut other_anime = sample_record(2);
+        other_anime.anime_id = 2;
+        other_anime.output_path = path.display().to_string();
+        let mut other_provider = sample_record(3);
+        other_provider.provider = "kitsu".to_string();
+        other_provider.output_path = path.display().to_string();
+        let mut missing = sample_record(4);
+        missing.file_name = "Show - 01.mkv".to_string();
+        missing.output_path =
+            "/nonexistent/kitsune-download-should-not-exist/show-01.mkv".to_string();
+
+        let views = downloaded_views_for(
+            &[on_disk, other_anime, other_provider, missing],
+            1,
+            " anilist ",
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].record_id, 1);
+        assert_eq!(views[0].episode, Some(1));
+        assert_eq!(views[0].release_title, "[GSC] Show - 01");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn drops_file_after_reader_deletes_it() {
+        let (dir, path) = with_temp_file();
+        let mut record = sample_record(1);
+        record.output_path = path.display().to_string();
+        assert_eq!(downloaded_views_for(&[record], 1, "anilist").len(), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+        let mut record = sample_record(1);
+        record.output_path = path.display().to_string();
+        assert_eq!(downloaded_views_for(&[record], 1, "anilist").len(), 0);
     }
 }

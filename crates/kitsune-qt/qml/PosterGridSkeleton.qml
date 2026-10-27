@@ -37,7 +37,7 @@ Grid {
                 Skeleton {
                     width: parent.width
                     height: parent.width * 1.5
-                    radius: 12
+                    //radius: 12
                 }
 
                 // Two title lines.

@@ -113,13 +113,46 @@ struct Session {
 
 /// Where downloaded pieces are written.
 ///
-/// Overridable for tests and for a user who wants downloads on another disk;
-/// the default is a directory under the OS temp, which is writable
-/// everywhere and needs no permissions prompt.
+/// Overridable for tests and for a user who wants downloads on another disk.
+/// The default lives under the OS data directory, not in temp: a partial
+/// download that vanishes on reboot cannot be resumed, which is exactly the
+/// bug this path exists to avoid.
 fn download_dir() -> PathBuf {
     std::env::var_os("KITSUNE_DOWNLOAD_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("kitsune-downloads"))
+        .unwrap_or_else(|| {
+            dirs::data_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join("kitsune")
+                .join("downloads")
+        })
+}
+
+/// Where permanently downloaded episodes are stored.
+///
+/// Uses the OS videos directory (e.g. `~/Videos` on Linux) with a `Kitsune`
+/// subfolder, falling back to the home directory if no videos dir exists.
+fn library_dir() -> PathBuf {
+    dirs::video_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Kitsune")
+}
+
+/// Convert a settings bandwidth cap (KiB/s) into the bytes/s librqbit wants.
+///
+/// Zero, absent, and unrepresentable values all read as "unlimited". Pure, so
+/// the conversion is asserted rather than trusted -- a wrong unit here would
+/// cap a reader's transfers at 1/1024th of what they asked for and look like a
+/// broken network.
+fn kib_per_sec_to_bytes(kib: Option<u32>) -> Option<u32> {
+    let kib = kib?;
+    if kib == 0 {
+        return None;
+    }
+    // Saturating rather than wrapping: a typo must not turn into a near-zero
+    // cap, and 4 GiB/s is far past any real link.
+    Some(kib.saturating_mul(1024))
 }
 
 /// Which torrents an external player is reading, and which removals wait on one.
@@ -315,9 +348,9 @@ impl PlayerState {
     /// Where downloaded pieces are written.
     ///
     /// The reader's explicit choice wins; otherwise `KITSUNE_DOWNLOAD_DIR`,
-    /// otherwise the OS temp directory. Read on each session start, so a change
-    /// in settings applies to the next torrent.
-    fn resolved_download_dir(&self) -> PathBuf {
+    /// otherwise the persistent app-data directory. Read on each session start,
+    /// so a change in settings applies to the next torrent.
+    pub fn resolved_download_dir(&self) -> PathBuf {
         if let Some(dir) = self
             .inner
             .settings
@@ -330,8 +363,35 @@ impl PlayerState {
         download_dir()
     }
 
+    /// Where permanently downloaded episodes are stored.
+    ///
+    /// The reader's explicit choice wins; otherwise `~/Videos/Kitsune`,
+    /// otherwise the OS videos directory with a `kitsune` subfolder.
+    /// Distinct from `resolved_download_dir()`, which is the torrent cache.
+    pub fn resolved_library_dir(&self) -> PathBuf {
+        if let Some(dir) = self
+            .inner
+            .settings
+            .as_ref()
+            .and_then(|store| store.read().library_dir)
+            .filter(|dir| !dir.trim().is_empty())
+        {
+            return PathBuf::from(dir);
+        }
+        library_dir()
+    }
+
+    /// Per-torrent partial-data directory for `info_hash`.
+    pub fn cache_dir_for(&self, info_hash: &str) -> Result<PathBuf> {
+        crate::downloads::download_cache_dir(&self.resolved_download_dir(), info_hash)
+    }
+
     /// Start the torrent engine and stream bridge, once.
-    async fn start_session(download_dir: PathBuf) -> Result<Session> {
+    async fn start_session(
+        download_dir: PathBuf,
+        download_bps: Option<u32>,
+        upload_bps: Option<u32>,
+    ) -> Result<Session> {
         // Logged once, and only once per process, because the whole design
         // assumes a single session: two sessions would bind two bridges, run
         // two DHTs, and split the piece queue between them. Seeing this line
@@ -341,7 +401,17 @@ impl PlayerState {
             download_dir.display()
         );
 
-        let engine = TorrentEngine::start(EngineConfig::new(download_dir))
+        // The reader's bandwidth caps, read once at session start. KiB/s in
+        // the settings, bytes/s in librqbit, so the conversion lives in
+        // `kib_per_sec_to_bytes` and nowhere else.
+        let config = EngineConfig::new(download_dir).with_limits(download_bps, upload_bps);
+        tracing::info!(
+            download_bps = ?config.download_bps,
+            upload_bps = ?config.upload_bps,
+            "start_session: bandwidth limits"
+        );
+
+        let engine = TorrentEngine::start(config)
             .await
             .context("failed to start the torrent session")?;
 
@@ -357,10 +427,41 @@ impl PlayerState {
     /// The session, starting it if this is the first call.
     async fn session(&self) -> Result<&Session> {
         let download_dir = self.resolved_download_dir();
+        let (download_bps, upload_bps) = self.resolved_limits();
         self.inner
             .session
-            .get_or_try_init(|| Self::start_session(download_dir))
+            .get_or_try_init(|| Self::start_session(download_dir, download_bps, upload_bps))
             .await
+    }
+
+    /// The bandwidth caps from settings, converted to bytes per second.
+    ///
+    /// KiB/s in the settings file, bytes/s in librqbit. A zero, absent, or
+    /// unparseable value means unlimited -- the reader clearing the field must
+    /// not produce a dead transfer, and `NonZeroU32` could not represent it
+    /// anyway.
+    pub fn resolved_limits(&self) -> (Option<u32>, Option<u32>) {
+        let Some(store) = self.inner.settings.as_ref() else {
+            return (None, None);
+        };
+        let settings = store.read();
+        (
+            kib_per_sec_to_bytes(settings.download_limit_kbps),
+            kib_per_sec_to_bytes(settings.upload_limit_kbps),
+        )
+    }
+
+    /// How many downloads may transfer at once.
+    ///
+    /// Falls back to 1, which is the behaviour the downloads page needs to stop
+    /// eleven torrents competing for the same pipe.
+    pub fn max_concurrent_downloads(&self) -> u32 {
+        self.inner
+            .settings
+            .as_ref()
+            .map(|store| store.read().max_concurrent_downloads)
+            .filter(|limit| *limit > 0)
+            .unwrap_or(1)
     }
 
     /// Add a `.torrent` file and wait for the files it contains.
@@ -410,6 +511,220 @@ impl PlayerState {
         self.cancel_pending_removal(id);
         let files = wait_for_files(&session.engine, id).await?;
         Ok(TorrentHandle { id, files })
+    }
+
+    /// Add a release for PERMANENT download and restrict it to one file.
+    ///
+    /// The play path ([`Self::prepare_stream`]) warms the head and tail so a
+    /// player can start reading immediately. A download wants the opposite:
+    /// every piece of the file, in whatever order the engine prefers, and no
+    /// warm-up traffic competing with the real transfer. So this selects the
+    /// file and returns, leaving the engine to fill it in.
+    ///
+    /// Returns the torrent id, which the caller polls with
+    /// [`Self::torrent_progress`] and finally hands to
+    /// [`Self::finish_download`].
+    ///
+    /// The file selection is best-effort for the same reason as playback: a
+    /// torrent that never leaves `Initializing` still downloads, just in the
+    /// engine's own order, and refusing to start would be worse than a slower
+    /// download.
+    pub async fn start_download(
+        &self,
+        magnet_uri: Option<&str>,
+        torrent_path: Option<&Path>,
+        file_indices: &[usize],
+    ) -> Result<usize> {
+        self.start_download_in(magnet_uri, torrent_path, file_indices, None, false)
+            .await
+    }
+
+    /// Start a permanent download with an explicit cache directory.
+    ///
+    /// `cache_dir` is the per-torrent output folder; without it the session
+    /// root is used, which is fine for one-off callers and tests but not for
+    /// downloads that must survive a settings change. `paused` is used by the
+    /// startup restore: the torrent is reattached with all its files selected
+    /// and left stopped until the reader asks to continue.
+    pub async fn start_download_in(
+        &self,
+        magnet_uri: Option<&str>,
+        torrent_path: Option<&Path>,
+        file_indices: &[usize],
+        cache_dir: Option<&Path>,
+        paused: bool,
+    ) -> Result<usize> {
+        // Every requested index must exist, and a request with none is a
+        // caller bug rather than "download everything".
+        let mut wanted: Vec<usize> = file_indices.to_vec();
+        wanted.sort_unstable();
+        wanted.dedup();
+
+        if wanted.is_empty() {
+            return Err(anyhow!("a download needs at least one file"));
+        }
+
+        let options = match cache_dir {
+            Some(dir) => {
+                crate::torrent::ensure_download_dir(dir)?;
+                crate::torrent::download_options(dir.display().to_string(), wanted.clone(), paused)
+            }
+            None => {
+                let mut options = crate::torrent::playback_options(None);
+                options.only_files = Some(wanted.clone());
+                options.paused = paused;
+                options
+            }
+        };
+
+        let session = self.session().await?;
+        let id = match (magnet_uri, torrent_path) {
+            (Some(uri), _) => session
+                .engine
+                .add_magnet_with_options(uri, options)
+                .await
+                .context("failed to add magnet")?,
+            (None, Some(path)) => session
+                .engine
+                .add_torrent_file_with_options(path, options)
+                .await
+                .with_context(|| format!("failed to add {}", path.display()))?,
+            (None, None) => return Err(anyhow!("a download needs a magnet or a torrent file")),
+        };
+
+        self.cancel_pending_removal(id);
+        let files = match wait_for_files(&session.engine, id).await {
+            Ok(files) => files,
+            Err(err) => {
+                let _ = session.engine.remove_torrent(id).await;
+                return Err(err);
+            }
+        };
+
+        for file_idx in &wanted {
+            if !files.iter().any(|file| file.idx == *file_idx) {
+                let _ = session.engine.remove_torrent(id).await;
+                return Err(anyhow!(
+                    "torrent {id} has no file at index {file_idx} (it has {} files)",
+                    files.len()
+                ));
+            }
+        }
+
+        tracing::info!(
+            "start_download: torrent {id} files {wanted:?} queued (paused={paused}, cache={:?})",
+            cache_dir
+        );
+        Ok(id)
+    }
+
+    /// Reattach an existing download, paused, from cached metadata or a magnet.
+    ///
+    /// `only_files` is the union of every selected file in the group, so a
+    /// season pack comes back as one torrent even though each episode is a
+    /// separate record.
+    pub async fn restore_download(
+        &self,
+        magnet_uri: Option<&str>,
+        torrent_path: Option<&Path>,
+        file_indices: &[usize],
+        cache_dir: &Path,
+    ) -> Result<usize> {
+        self.start_download_in(
+            magnet_uri,
+            torrent_path,
+            file_indices,
+            Some(cache_dir),
+            true,
+        )
+        .await
+    }
+
+    /// Move a finished download into the library and stop its torrent.
+    ///
+    /// Called once [`crate::torrent::TorrentEngine::file_complete`] reports the
+    /// file is fully on disk. The copy is a rename when both paths are on the
+    /// same filesystem and a copy+delete otherwise, so a library on a second
+    /// drive works.
+    ///
+    /// `season`/`episode` are optional: without them the original torrent file
+    /// name is kept under `{library}/{anime}/`, which is still browsable and is
+    /// better than refusing to finish a download whose numbering is unknown.
+    ///
+    /// Returns the final path. The torrent is removed afterwards so the cache
+    /// does not keep a second copy, but a removal failure is logged rather than
+    /// propagated: the file IS in the library at that point, and reporting an
+    /// error would make a successful download look failed.
+    ///
+    /// `drop_torrent` exists because ONE torrent can back SEVERAL downloads: a
+    /// season pack is added once with every ticked file selected, then each file
+    /// becomes its own record. Dropping the torrent after the first file
+    /// finished would delete the transfer the remaining files are still reading
+    /// from, and they would sit at their current byte count forever. The caller
+    /// passes `false` while any sibling record still references this torrent.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_download(
+        &self,
+        torrent_id: usize,
+        file_idx: usize,
+        library_dir: &Path,
+        anime_title: &str,
+        season: Option<u32>,
+        episode: Option<u32>,
+        drop_torrent: bool,
+    ) -> Result<PathBuf> {
+        let session = self.session().await?;
+
+        let source = session
+            .engine
+            .file_disk_path(torrent_id, file_idx)
+            .ok_or_else(|| anyhow!("torrent {torrent_id} has no file at index {file_idx}"))?;
+
+        if !source.exists() {
+            return Err(anyhow!(
+                "expected the download at {} but nothing is there",
+                source.display()
+            ));
+        }
+
+        let file_name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("episode.mkv");
+        let ext = crate::downloads::extension_of(file_name);
+
+        let target = crate::downloads::library_path(
+            library_dir,
+            anime_title,
+            season,
+            episode,
+            file_name,
+            &ext,
+        );
+
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+
+        move_file(&source, &target)
+            .with_context(|| format!("failed to move {} into the library", source.display()))?;
+
+        // The file is in the library now, so the cached copy is dead weight --
+        // but ONLY once no sibling record is still pulling from this torrent.
+        // Best effort: a failure here leaves a duplicate on disk, not a broken
+        // download.
+        if drop_torrent {
+            if let Err(err) = session.engine.remove_torrent(torrent_id).await {
+                tracing::warn!("finish_download: could not drop torrent {torrent_id}: {err:#}");
+            }
+        }
+
+        tracing::info!(
+            "finish_download: torrent {torrent_id} file {file_idx} -> {}",
+            target.display()
+        );
+        Ok(target)
     }
 
     /// Drop a torrent from the session, deleting the pieces it cached.
@@ -661,6 +976,54 @@ impl PlayerState {
     ///
     /// `None` means either "no session" or "no such torrent"; both are simply
     /// "nothing to report yet" and are not errors.
+    /// Raw `.torrent` metadata for a live torrent, without starting a session.
+    pub fn torrent_bytes(&self, torrent_id: usize) -> Option<Vec<u8>> {
+        self.inner.session.get()?.engine.torrent_bytes(torrent_id)
+    }
+
+    /// The files a LIVE torrent resolved to, or an empty list.
+    ///
+    /// Reads the session cell rather than going through [`Self::session`] for
+    /// the same reason as the progress readers: the download poller asks about
+    /// a torrent it just added, and a missing session there means "gone", not
+    /// "start one".
+    pub fn torrent_files(&self, torrent_id: usize) -> Vec<TorrentFile> {
+        let Some(session) = self.inner.session.get() else {
+            return Vec::new();
+        };
+
+        session
+            .engine
+            .torrent_files(torrent_id)
+            .into_iter()
+            .map(|(idx, name, length_bytes)| TorrentFile {
+                idx,
+                name,
+                length_bytes,
+            })
+            .collect()
+    }
+
+    /// Progress and completion for one file, WITHOUT starting a session.
+    ///
+    /// The permanent-download poller calls this once a second per active
+    /// download. It reads the session cell directly for the same reason as
+    /// [`Self::torrent_progress`]: polling must never bind a bridge or join the
+    /// DHT for a torrent that was never added.
+    ///
+    /// The bool is "this file is fully on disk"; see
+    /// [`crate::torrent::TorrentEngine::file_complete`] for what counts.
+    pub fn download_snapshot(
+        &self,
+        torrent_id: usize,
+        file_idx: usize,
+    ) -> Option<(TorrentProgress, bool)> {
+        let session = self.inner.session.get()?;
+        let progress = session.engine.progress(torrent_id)?;
+        let done = session.engine.file_complete(torrent_id, file_idx);
+        Some((progress, done))
+    }
+
     pub fn torrent_progress(&self, torrent_id: usize) -> Option<TorrentProgress> {
         self.inner.session.get()?.engine.progress(torrent_id)
     }
@@ -702,7 +1065,6 @@ impl PlayerState {
 
         session.engine.set_only_files(id, &only).await
     }
-
 }
 
 impl Default for PlayerState {
@@ -829,8 +1191,6 @@ async fn warm_stream(url: &str, length: Option<u64>) {
     );
 }
 
-
-
 /// Issue one ranged request and READ the body, discarding it.
 ///
 /// This used to await only `send()` (headers) and drop the response. That was
@@ -849,11 +1209,7 @@ async fn warm_stream(url: &str, length: Option<u64>) {
 /// makes the tail index present before the player needs it. The drain is
 /// bounded by [`WARM_DRAIN_BYTES`] and by the client's timeout, so a torrent
 /// with no peers still cannot hang playback.
-async fn fetch_first_chunk(
-    client: &reqwest::Client,
-    url: &str,
-    range: &str,
-) -> Result<u64> {
+async fn fetch_first_chunk(client: &reqwest::Client, url: &str, range: &str) -> Result<u64> {
     let mut response = client
         .get(url)
         .header(reqwest::header::RANGE, range)
@@ -893,6 +1249,34 @@ async fn fetch_first_chunk(
     }
 
     Ok(drained)
+}
+
+/// Move `source` to `target`, across filesystems when necessary.
+///
+/// `std::fs::rename` fails with `CrossesDevices` when the library lives on a
+/// different mount from the download directory, which is exactly the layout a
+/// reader with a dedicated media drive has. Falling back to copy + delete keeps
+/// that working; the copy goes to a `.part` sibling first so an interrupted
+/// copy cannot leave a truncated file that looks like a finished download.
+fn move_file(source: &Path, target: &Path) -> Result<()> {
+    match std::fs::rename(source, target) {
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
+            tracing::info!(
+                "download crosses filesystems, copying {} instead of renaming",
+                source.display()
+            );
+        }
+        Err(err) => return Err(err).context("rename into the library"),
+    }
+
+    let partial = target.with_extension("part");
+    std::fs::copy(source, &partial)
+        .with_context(|| format!("failed to copy into {}", partial.display()))?;
+    std::fs::rename(&partial, target).context("failed to publish the copied file")?;
+    std::fs::remove_file(source)
+        .with_context(|| format!("failed to delete {}", source.display()))?;
+    Ok(())
 }
 
 async fn wait_for_files(engine: &TorrentEngine, id: usize) -> Result<Vec<TorrentFile>> {

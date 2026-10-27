@@ -149,7 +149,7 @@ Item {
             id: poster
             width: parent.width
             height: parent.width * 1.5
-            radius: 12
+            //radius: 12
             color: Theme.surfaceRaised
             clip: true
             border.width: 1

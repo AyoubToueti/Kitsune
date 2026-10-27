@@ -33,6 +33,23 @@ pub struct Settings {
     /// Where downloaded pieces are written, or `None` for the default temp
     /// directory. An explicit path wins over `KITSUNE_DOWNLOAD_DIR`.
     pub download_dir: Option<String>,
+    /// Where permanently downloaded episodes are stored, or `None` for the
+    /// default (`~/Videos/Kitsune`). Distinct from `download_dir`, which is
+    /// the torrent cache for streaming.
+    pub library_dir: Option<String>,
+    /// Download bandwidth cap in KiB/s, or `None` for unlimited.
+    ///
+    /// Applied when the torrent session starts, because librqbit exposes no
+    /// setter on a live session. 0 and absent both mean unlimited.
+    pub download_limit_kbps: Option<u32>,
+    /// Upload bandwidth cap in KiB/s, or `None` for unlimited.
+    pub upload_limit_kbps: Option<u32>,
+    /// How many downloads may transfer at once.
+    ///
+    /// This is the INSTANT bandwidth lever: capping concurrency limits total
+    /// throughput without rebuilding the session, which the byte-rate cap
+    /// cannot do. 0 means "use the default" (1).
+    pub max_concurrent_downloads: u32,
     /// Resolutions to prefer, in order. Mirrors `ReleasePreference`.
     pub preferred_resolutions: Vec<Resolution>,
     /// Releases below this many seeders are dropped when better ones exist.
@@ -100,6 +117,10 @@ impl Default for Settings {
             player: crate::player::DEFAULT_PLAYER.to_string(),
             player_args: Vec::new(),
             download_dir: None,
+            library_dir: None,
+            download_limit_kbps: None,
+            upload_limit_kbps: None,
+            max_concurrent_downloads: 1,
             // Matches `ReleasePreference::default`: 1080p then 720p, no floor.
             preferred_resolutions: vec![Resolution::R1080p, Resolution::R720p],
             min_seeders: 0,
@@ -280,6 +301,10 @@ mod tests {
             player: "flatpak".into(),
             player_args: vec!["run".into(), "io.mpv.Mpv".into()],
             download_dir: Some("/data/anime".into()),
+            library_dir: Some("/videos/kitsune".into()),
+            download_limit_kbps: Some(2048),
+            upload_limit_kbps: Some(128),
+            max_concurrent_downloads: 2,
             preferred_resolutions: vec![Resolution::R2160p],
             min_seeders: 5,
             ask_every_time: false,

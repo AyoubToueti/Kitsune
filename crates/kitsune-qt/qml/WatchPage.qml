@@ -1,13 +1,4 @@
 // The watch page: pick a release, pick a file, play it in the embedded libmpv.
-//
-// Three stages, mirroring the web app's flow:
-//   1. releases -- search the indexers for this work + episode.
-//   2. files    -- add the chosen magnet and pick which file is the episode.
-//   3. play     -- resolve the loopback stream URL and feed it to mpv.
-//
-// The player is a real QQuickFramebufferObject (MpvObject, C++), so libass
-// draws ASS/SSA subtitles natively -- the reason playback moved out of the
-// webview.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -16,45 +7,69 @@ import com.kitsune.app
 Item {
     id: page
 
-    // What to play. The numbers come from the detail page's episode grid.
     property int animeId: 0
-    /// The id's NAMESPACE ("anilist" / "kitsu"), so the title lookup asks the
-    /// source that issued `animeId` rather than assuming AniList.
     property string animeProvider: "anilist"
     property int malId: 0
     property int episodeNumber: 0
-    // The work-wide episode number, when it differs from `episodeNumber`.
     property int absoluteEpisode: 0
-    // The shared Backend, passed in by the window.
     property var backend: null
-
-    // Debug fallback: play a bare URL with no torrent behind it.
     property string streamUrl: ""
 
     signal back()
 
-    // --- state ---------------------------------------------------------------
+    // --- UI Visibility & Timers -----------------------------------------------
+    property bool fullUiVisible: true
+    property bool seekOnlyVisible: false
+    property bool peekLatched: false
 
-    // "releases", "files" or "play".
+    Timer {
+        id: fullUiTimer
+        interval: 3000
+        onTriggered: {
+            if (playerBar.hovered || playerBar.chapterMenuOpen || headerHover.hovered) {
+                fullUiTimer.restart()
+                return
+            }
+            page.fullUiVisible = false
+        }
+    }
+
+    Timer {
+        id: seekOnlyTimer
+        interval: 1500
+        onTriggered: page.seekOnlyVisible = false
+    }
+
+    function wakeUi() {
+        page.fullUiVisible = true
+        page.seekOnlyVisible = false
+        fullUiTimer.restart()
+    }
+
+    function seekRelative(seconds) {
+        if (player && page.stage === "play") {
+            player.command(["seek", String(seconds), "relative"])
+            watchOsd.trigger(seconds > 0 ? "forward" : "rewind", (seconds > 0 ? "+" : "") + seconds + "s")
+            
+            if (!page.fullUiVisible) {
+                page.peekLatched = true
+                page.seekOnlyVisible = true
+                seekOnlyTimer.restart()
+            }
+        }
+    }
+
+    // --- State ---------------------------------------------------------------
+
     property string stage: "releases"
     property var releases: []
     property bool searching: false
-    // Whether a search has COMPLETED for this open.
-    //
-    // The empty state is deliberately not shown until it is true: before the
-    // first search, `releases` is empty and `searching` is still false for the
-    // frame before `search()` runs, which painted the sleeping fox with a Retry
-    // button before anything had been asked. "Nothing yet" and "nothing found"
-    // are different states and need different art.
     property bool searched: false
     property string error: ""
 
-    // Which search a reply belongs to; the backend echoes it back. Bumped on
-    // every search so a slow answer for a previous one is dropped.
     property int searchGeneration: 0
     readonly property string searchTag: String(searchGeneration)
 
-    // The chosen release's magnet, for reference in the header.
     property string releaseTitle: ""
     property int torrentId: -1
     property var files: []
@@ -63,8 +78,6 @@ Item {
 
     property var progress: null
     property bool paused: false
-
-    // The title forms to search, derived from the work once it loads.
     property var titles: []
 
     function displayTitle(item) {
@@ -106,7 +119,6 @@ Item {
             page.torrentId = handle.id
             page.files = handle.files || []
             page.stage = "files"
-            // Auto-pick: the episode match, or the sole video. `-1` waits.
             const picked = page.backend.pickFile(
                 JSON.stringify(page.files), page.episodeNumber, page.offset())
             if (picked >= 0) {
@@ -123,8 +135,7 @@ Item {
             if (torrentId !== page.torrentId || fileIdx !== page.chosenIdx) return
             page.playingUrl = url
             page.stage = "play"
-            // Hold BEFORE loading, so leaving the page cannot remove the torrent
-            // out from under the player that is reading it.
+            page.wakeUi()
             page.backend.holdTorrent(page.torrentId)
             player.command(["loadfile", url, "replace"])
         }
@@ -138,14 +149,10 @@ Item {
         }
     }
 
-    // The offset from an episode's own number to the work's absolute number.
-    // Mirrors `absoluteOffset` in the core; here it is only non-zero for a
-    // later cour, which the detail page already folded into absoluteEpisode.
     function offset() {
         return Math.max(0, page.absoluteEpisode - page.episodeNumber)
     }
 
-    // `force` skips the backend's cache; the Retry button passes it.
     function search(force) {
         if (!backend || titles.length === 0) {
             page.error = "No title to search with."
@@ -171,10 +178,6 @@ Item {
         backend.addMagnet(release.magnetUri)
     }
 
-    // The buffering overlay's second line: the numbers that tell "the swarm is
-    // slow" apart from "the player is blocked on a range". `cacheForwardBytes`
-    // is mpv's own read-ahead, so zero here with a climbing file percentage
-    // means the player is waiting on a specific piece, not merely on bandwidth.
     function bufferDetail(p) {
         if (!p) return ""
         const parts = []
@@ -195,27 +198,28 @@ Item {
     function play(idx) {
         if (torrentId < 0) return
         page.chosenIdx = idx
-        // ONE call: it narrows the download to this file, waits until the
-        // engine has accepted that, warms the head and tail, and only then
-        // answers with the URL. Split into two calls the selection raced the
-        // torrent's initial hash and was dropped, so the engine downloaded
-        // files nobody was watching.
         backend.prepareStream(torrentId, idx)
     }
 
     function togglePause() {
-        if (torrentId < 0) return
-        if (paused) {
-            backend.resumeTorrent(torrentId)
-            paused = false
-        } else {
-            backend.pauseTorrent(torrentId)
-            paused = true
+        if (torrentId < 0 && page.stage !== "play") return
+        if (player) {
+            const willPause = !player.paused
+            player.command(["cycle", "pause"])
+            watchOsd.trigger(willPause ? "pause" : "play", willPause ? "Paused" : "Playing")
+        }
+        keyScope.forceActiveFocus()
+        if (torrentId >= 0) {
+            if (paused) {
+                backend.resumeTorrent(torrentId)
+                paused = false
+            } else {
+                backend.pauseTorrent(torrentId)
+                paused = true
+            }
         }
     }
 
-    // Release the torrent on the way out. The hold taken at play time means a
-    // still-playing torrent is not removed until playback stops.
     function teardown() {
         if (torrentId >= 0) {
             backend.releaseTorrent(torrentId)
@@ -224,7 +228,6 @@ Item {
         }
     }
 
-    // Poll the download while a torrent is active, for the status strip.
     Timer {
         interval: 500
         running: page.torrentId >= 0
@@ -232,69 +235,49 @@ Item {
         onTriggered: page.backend.getTorrentStats(page.torrentId)
     }
 
-    // Load the work (for its titles) or, in debug mode, play the bare URL.
     Component.onCompleted: {
         if (streamUrl.length > 0) {
             page.playingUrl = streamUrl
             page.stage = "play"
+            page.wakeUi()
             player.command(["loadfile", streamUrl, "replace"])
         } else if (animeId > 0) {
             backend.getAnime(animeId, page.animeProvider)
         }
     }
 
-    ColumnLayout {
+    onStageChanged: if (page.stage === "play") keyScope.forceActiveFocus()
+
+    FocusScope {
+        id: keyScope
         anchors.fill: parent
-        spacing: 0
+        focus: page.stage === "play"
 
-        // Header
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: 56
-            color: Theme.surface
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Theme.pad
-                anchors.rightMargin: Theme.pad
-                spacing: 12
-
-                NavButton {
-                    label: "Back"
-                    onClicked: {
-                        page.teardown()
-                        page.back()
-                    }
-                }
-                Text {
-                    Layout.fillWidth: true
-                    text: {
-                        if (page.stage === "play")
-                            return "Episode " + page.episodeNumber
-                        if (page.releaseTitle.length > 0)
-                            return page.releaseTitle
-                        return "Episode " + page.episodeNumber
-                    }
-                    color: Theme.inkMuted
-                    font.pixelSize: 13
-                    elide: Text.ElideMiddle
-                }
-
-                // Pause / resume, only meaningful while a torrent is active.
-                NavButton {
-                    visible: page.torrentId >= 0
-                    label: page.paused ? "Resume" : "Pause"
-                    onClicked: page.togglePause()
-                }
+        Keys.onSpacePressed: page.togglePause()
+        Keys.onLeftPressed: page.seekRelative(-5)
+        Keys.onRightPressed: page.seekRelative(5)
+        Keys.onUpPressed: {
+            if (player) {
+                const next = Math.min(200, player.volume + 5)
+                player.setProperty("volume", String(Math.round(next)))
+                watchOsd.trigger("volume", Math.round(next) + "%")
             }
         }
+        Keys.onDownPressed: {
+            if (player) {
+                const next = Math.max(0, player.volume - 5)
+                player.setProperty("volume", String(Math.round(next)))
+                watchOsd.trigger("volume", Math.round(next) + "%")
+            }
+        }
+    }
 
-        // The mpv surface. Hidden until playback starts so the picking UI has
-        // the whole window; kept alive (not destroyed) so the render context
-        // survives the stage changes.
+    Item {
+        anchors.fill: parent
+
+        // --- Video Playback View ---
         Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+            anchors.fill: parent
             visible: page.stage === "play"
 
             MpvObject {
@@ -302,16 +285,19 @@ Item {
                 anchors.fill: parent
             }
 
-            // Wheel over the video adjusts the volume, same gesture as the
-            // modal player. A plain MouseArea (not a HoverHandler) because the
-            // wheel event must be accepted to stop it scrolling anything
-            // underneath.
             MouseArea {
                 anchors.fill: parent
-                // No `z`: left at the default so the controls bar (declared
-                // later) sits above and keeps the wheel over its own sliders.
-                // Only the wheel is handled here; clicks belong to the chrome.
+                hoverEnabled: true
                 acceptedButtons: Qt.NoButton
+                property real lastX: -1
+                property real lastY: -1
+                onPositionChanged: function (mouse) {
+                    if (page.stage !== "play") return
+                    if (Math.abs(mouse.x - lastX) < 3 && Math.abs(mouse.y - lastY) < 3) return
+                    lastX = mouse.x
+                    lastY = mouse.y
+                    page.wakeUi()
+                }
                 onWheel: function (wheel) {
                     if (page.stage !== "play") return
                     const notches = wheel.angleDelta.y / 120
@@ -319,7 +305,6 @@ Item {
 
                     const next = Math.max(0, Math.min(200, player.volume + notches * 5))
                     player.setProperty("volume", String(Math.round(next)))
-                    // Wheeling up a muted player should give sound back.
                     if (next > 0 && player.muted)
                         player.setProperty("mute", false)
                     watchOsd.trigger("volume", Math.round(next) + "%")
@@ -327,9 +312,6 @@ Item {
                 }
             }
 
-            // Brief centred readout for the wheel gestures. The modal has its
-            // own; this page had no OSD at all, and a silent 5% volume step is
-            // indistinguishable from a broken wheel.
             Rectangle {
                 id: watchOsd
                 anchors.centerIn: parent
@@ -382,18 +364,11 @@ Item {
                 }
             }
 
-            // Buffering wears the same thinking fox as every other wait. It
-            // sits over the video, so it carries its own scrim.
             Item {
                 anchors.centerIn: parent
                 z: 15
                 width: Math.min(340, parent.width - 64)
                 height: watchBufferFox.implicitHeight + 24
-
-                // `bufferingDelayed`, not `buffering`: mpv's raw flag flickers
-                // on sub-second demuxer hiccups and would flash this panel over
-                // healthy video. The delayed flag only reports a stall that
-                // persisted. See the property's comment in mpvitem.h.
                 visible: player.bufferingDelayed === true
 
                 Rectangle {
@@ -417,29 +392,88 @@ Item {
                 }
             }
 
-            // The same OSD bar the modal uses -- chapter markers, the chapter
-            // dropdown, and skip-intro/ED all read `player.chapterList`, which
-            // is fed by the mpv chapter-list observation.
             PlayerControls {
+                id: playerBar
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
                 anchors.margins: 14
+                z: 25
                 player: player
                 playingUrl: page.playingUrl
                 fullscreen: false
+                opacity: (page.stage === "play" && (page.fullUiVisible || page.seekOnlyVisible)) ? 1.0 : 0.0
+                visible: opacity > 0.0
+                timelineOnly: page.peekLatched && !page.fullUiVisible
+                onVisibleChanged: if (!visible) page.peekLatched = false
+
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+
                 onOpenSettings: {}
                 onToggleFullscreen: {}
-                onTriggerOSD: (icon, label) => {}
-                onSkipIntro: {}
-                onSkipEnding: {}
+                onTriggerOSD: (icon, label) => watchOsd.trigger(icon, label)
+                onSkipIntro: page.seekRelative(85)
+                onSkipEnding: page.seekRelative(85)
             }
         }
 
-        // The picking UI: releases, then files.
+        // --- Top Floating Header Bar (Overlay) ---
+        Rectangle {
+            id: topHeader
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 56
+            z: 30
+            color: page.stage === "play" ? Qt.rgba(0.07, 0.07, 0.11, 0.75) : Theme.surface
+            opacity: (page.stage !== "play" || page.fullUiVisible) ? 1.0 : 0.0
+            visible: opacity > 0.0
+
+            Behavior on opacity { NumberAnimation { duration: 150 } }
+
+            HoverHandler { id: headerHover }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: Theme.pad
+                anchors.rightMargin: Theme.pad
+                spacing: 12
+
+                NavButton {
+                    label: "Back"
+                    onClicked: {
+                        page.teardown()
+                        page.back()
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: {
+                        if (page.stage === "play")
+                            return "Episode " + page.episodeNumber
+                        if (page.releaseTitle.length > 0)
+                            return page.releaseTitle
+                        return "Episode " + page.episodeNumber
+                    }
+                    color: Theme.inkMuted
+                    font.pixelSize: 13
+                    elide: Text.ElideMiddle
+                }
+
+                NavButton {
+                    visible: page.torrentId >= 0
+                    label: page.paused ? "Resume" : "Pause"
+                    onClicked: page.togglePause()
+                }
+            }
+        }
+
+        // --- Release & File Selection Views ---
         Item {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
+            anchors.top: topHeader.bottom
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
             visible: page.stage !== "play"
 
             ColumnLayout {
@@ -466,13 +500,7 @@ Item {
                     artWidth: 96
                 }
 
-                // Only while picking a release: `error` is shared with playback
-                // failures, where a re-search is not the fix. An empty result set
-                // counts as a failed search, so Retry means "search again".
                 ErrorState {
-                    // A search that found nothing is not a failure: `kind` is
-                    // left to `failureMessage`, which maps "No ... found" onto
-                    // the not-found fox rather than the error one.
                     readonly property bool noHits: page.error.toLowerCase().indexOf("no ") === 0
 
                     visible: page.stage === "releases" && !page.searching
@@ -492,7 +520,6 @@ Item {
                     onPrimaryClicked: page.search(true)
                 }
 
-                // Release list.
                 ListView {
                     visible: page.stage === "releases"
                     Layout.fillWidth: true
@@ -558,7 +585,6 @@ Item {
                     }
                 }
 
-                // File list.
                 ListView {
                     visible: page.stage === "files"
                     Layout.fillWidth: true
@@ -608,7 +634,6 @@ Item {
                     }
                 }
 
-                // Status strip while a torrent is downloading.
                 Text {
                     visible: page.progress !== null && page.torrentId >= 0
                     Layout.fillWidth: true

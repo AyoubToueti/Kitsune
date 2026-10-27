@@ -1,6 +1,11 @@
-// The global top bar: brand on the left, a search box in the centre, and the
-// My List / Filter pill plus the settings gear on the right. Rendered once by
-// the window above every page, so it never remounts on navigation.
+// The global top bar: brand on the left, a command/search field in the
+// centre, and icon buttons for My List / Filter / Downloads plus the settings
+// gear on the right. Rendered once by the window above every page, so it never
+// remounts on navigation.
+//
+// Design: "command bar" — a wide, launcher-style field in the middle with an
+// inline Go action, and a compact rail of icon buttons instead of the old
+// segmented text pill.
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -10,7 +15,7 @@ Rectangle {
     id: bar
     z: 1000
 
-    // Which segmented pill is active: "list", "filter", or "" for neither.
+    // Which section is active: "list", "filter", "downloads", or "" for none.
     property string activeRoute: ""
 
     // Whether the history chevrons are usable, derived by the window from its
@@ -18,10 +23,15 @@ Rectangle {
     property bool canGoBack: false
     property bool canGoForward: false
 
+    // How many downloads are waiting. The window sets this; the badge hides
+    // itself when the count is zero.
+    property int downloadCount: 0
+
     signal search(string term)
     signal openHome()
     signal openMyList()
     signal openFilter()
+    signal openDownloads()
     signal openSettings()
     signal goBack()
     signal goForward()
@@ -29,13 +39,45 @@ Rectangle {
     height: 60
     color: Theme.surfaceRaised
 
+    // Brand colours, kept in one place so they are trivial to swap for Theme
+    // tokens later.
+    QtObject {
+        id: brand
+        readonly property color red: "#F44949"     // Primary Fox Red
+        readonly property color orange: "#FF6B3D"
+        readonly property color yellow: "#FEC42D"  // Ear Yellow
+        readonly property color cream: "#FEF7E0"   // Cream Highlight
+        readonly property color white: "#FFFFFF"
+    }
+
+    // Icon geometry, as inline SVG path data. These become data URIs below, so
+    // they stay sharp at any DPI and can be tinted per state.
+    readonly property string pathSearch: "M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"
+    readonly property string pathBookmark: "M6 3h12a1 1 0 0 1 1 1v17l-7-4.6L5 21V4a1 1 0 0 1 1-1z"
+    readonly property string pathFilter: "M3 5h18l-7 8v6l-4 2v-8L3 5z"
+    readonly property string pathDownload: "M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 8 7-8z"
+
+    // Build a tinted icon as an inline SVG data URI. Needs the qtsvg
+    // image-format plugin at runtime (see flake.nix).
+    //
+    // The fill is written as "rgb(r,g,b)" rather than a hex string: a '#'
+    // inside a data URI starts the fragment and can truncate the SVG before
+    // the path is ever parsed.
+    function svgIcon(path, c) {
+        const r = Math.round(c.r * 255)
+        const g = Math.round(c.g * 255)
+        const b = Math.round(c.b * 255)
+        return "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='rgb("
+            + r + "," + g + "," + b + ")'><path d='" + path + "'/></svg>"
+    }
+
     // A full-window backdrop that clears the search field's focus when the
     // reader clicks anywhere else.
     Item {
         id: focusBackdrop
         parent: Overlay.overlay
         anchors.fill: parent
-        visible: searchField.activeFocus
+        visible: cmdInput.activeFocus
         z: 999
 
         MouseArea {
@@ -48,18 +90,18 @@ Rectangle {
         }
     }
 
-    // Focus the search box from anywhere.
+    // Focus the command field from anywhere.
     Shortcut {
         sequences: ["Ctrl+K", "Cmd+K"]
         onActivated: {
-            searchField.forceActiveFocus()
-            searchField.selectAll()
+            cmdInput.forceActiveFocus()
+            cmdInput.selectAll()
         }
     }
 
     // Escape clears the search focus.
     Shortcut {
-        enabled: searchField.activeFocus
+        enabled: cmdInput.activeFocus
         sequence: "Escape"
         onActivated: bar.forceActiveFocus()
     }
@@ -112,71 +154,71 @@ Rectangle {
                     }
                 }
 
-Item {
-    id: brandTextItem
-    anchors.verticalCenter: parent.verticalCenter
-    implicitWidth: brandText.implicitWidth
-    implicitHeight: brandText.implicitHeight
+                Item {
+                    id: brandTextItem
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitWidth: brandText.implicitWidth
+                    implicitHeight: brandText.implicitHeight
 
-    // Scale animation matching the logo hover effect
-    scale: brandMouse.containsMouse ? 1.05 : 1.0
-    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
+                    // Scale animation matching the logo hover effect
+                    scale: brandMouse.containsMouse ? 1.05 : 1.0
+                    Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
 
-    // 0 = gradient at rest, 1 = gradient fully slid to the right
-    property real slide: 0
+                    // 0 = gradient at rest, 1 = gradient fully slid to the right
+                    property real slide: 0
 
-    // Slide the gradient right while hovered — 700ms InOutCubic, silky
-    NumberAnimation {
-        target: brandTextItem
-        property: "slide"
-        to: 1
-        duration: 300
-        easing.type: Easing.InOutCubic
-        running: brandMouse.containsMouse
-    }
+                    // Slide the gradient right while hovered — 700ms InOutCubic, silky
+                    NumberAnimation {
+                        target: brandTextItem
+                        property: "slide"
+                        to: 1
+                        duration: 300
+                        easing.type: Easing.InOutCubic
+                        running: brandMouse.containsMouse
+                    }
 
-    // Ease it back when the mouse leaves
-    NumberAnimation {
-        target: brandTextItem
-        property: "slide"
-        to: 0
-        duration: 500
-        easing.type: Easing.InOutCubic
-        running: !brandMouse.containsMouse && brandTextItem.slide > 0
-    }
+                    // Ease it back when the mouse leaves
+                    NumberAnimation {
+                        target: brandTextItem
+                        property: "slide"
+                        to: 0
+                        duration: 500
+                        easing.type: Easing.InOutCubic
+                        running: !brandMouse.containsMouse && brandTextItem.slide > 0
+                    }
 
-    // 1. Text mask source
-    Text {
-        id: brandText
-        text: "Kitsune"
-        font.pixelSize: 22
-        font.bold: true
-        visible: false
-    }
+                    // 1. Text mask source
+                    Text {
+                        id: brandText
+                        text: "Kitsune"
+                        font.pixelSize: 22
+                        font.bold: true
+                        visible: false
+                    }
 
-    // 2. Gradient driven by `slide` — no Behaviors on the points needed
-    LinearGradient {
-        id: textGradient
-        anchors.fill: brandText
-        visible: false
+                    // 2. Gradient driven by `slide` — no Behaviors on the points needed
+                    LinearGradient {
+                        id: textGradient
+                        anchors.fill: brandText
+                        visible: false
 
-        start: Qt.point(brandText.width * 0.5 * brandTextItem.slide, 0)
-        end:   Qt.point(brandText.width + brandText.width * 0.5 * brandTextItem.slide, brandText.height)
+                        start: Qt.point(brandText.width * 0.5 * brandTextItem.slide, 0)
+                        end:   Qt.point(brandText.width + brandText.width * 0.5 * brandTextItem.slide, brandText.height)
 
-        gradient: Gradient {
-            GradientStop { position: 0.0; color: "#F44949" } // Primary Fox Red
-            GradientStop { position: 0.5; color: "#FEC42D" } // Ear Yellow
-            GradientStop { position: 1.0; color: "#FEF7E0" } // Cream Highlight
-        }
-    }
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: brand.red }    // Primary Fox Red
+                            GradientStop { position: 0.5; color: brand.yellow }  // Ear Yellow
+                            GradientStop { position: 1.0; color: brand.cream }   // Cream Highlight
+                        }
+                    }
 
-    // 3. Apply gradient mask
-    OpacityMask {
-        anchors.fill: brandText
-        source: textGradient
-        maskSource: brandText
-    }
-}
+                    // 3. Apply gradient mask
+                    OpacityMask {
+                        anchors.fill: brandText
+                        source: textGradient
+                        maskSource: brandText
+                    }
+                }
             }
 
             MouseArea {
@@ -254,75 +296,77 @@ Item {
         }
     }
 
-    // --- Centre: search -------------------------------------------------
+    // --- Centre: command bar --------------------------------------------
     Rectangle {
-        id: searchContainer
+        id: cmdContainer
         anchors.centerIn: parent
-        width: Math.min(420, parent.width - leftSection.width - rightSection.width - 48)
-        height: 36
-        radius: 18
-        color: searchField.activeFocus
-            ? Theme.surface
-            : (searchHover.hovered ? Theme.surfaceHover : Theme.fieldFill)
+        width: Math.min(560, parent.width - leftSection.width - rightSection.width - 48)
+        height: 40
+        radius: 12
+        color: Theme.surface
         border.width: 1
-        border.color: searchField.activeFocus
+        border.color: cmdInput.activeFocus
             ? Theme.accent
-            : (searchHover.hovered
+            : (cmdHover.hovered
                 ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.5)
                 : Theme.borderSubtle)
 
         Behavior on color { ColorAnimation { duration: 150 } }
         Behavior on border.color { ColorAnimation { duration: 150 } }
 
-        HoverHandler { id: searchHover }
+        HoverHandler { id: cmdHover }
 
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 12
+        // A magnifier glyph drawn inline as an SVG data URI. Needs the same
+        // qtsvg plugin as the crest.
+        Image {
+            id: cmdIcon
+            anchors.left: parent.left
+            anchors.leftMargin: 14
+            anchors.verticalCenter: parent.verticalCenter
+            width: 15
+            height: 15
+            source: bar.svgIcon(bar.pathSearch, Theme.inkMuted)
+            sourceSize.width: 30
+            sourceSize.height: 30
+            smooth: true
+            opacity: cmdInput.activeFocus ? 1.0 : (cmdHover.hovered ? 0.9 : 0.65)
+
+            Behavior on opacity { NumberAnimation { duration: 150 } }
+        }
+
+        TextField {
+            id: cmdInput
+            anchors.left: cmdIcon.right
+            anchors.leftMargin: 10
+            anchors.right: cmdActions.left
             anchors.rightMargin: 8
-            spacing: 8
-
-            // A magnifier glyph drawn inline as an SVG data URI. URL-encoded so
-            // the `#`/`<` cannot break the URI. Needs the same qtsvg plugin.
-            Image {
-                Layout.alignment: Qt.AlignVCenter
-                width: 14
-                height: 14
-                // Built from `Theme` rather than hard-coded white: the field is
-                // a light well in light mode, where a white glyph vanished.
-                source: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='"
-                    + Theme.hex(Theme.inkMuted)
-                    + "'><path d='M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z'/></svg>"
-                sourceSize.width: 28
-                sourceSize.height: 28
-                smooth: true
-                opacity: searchField.activeFocus ? 1.0 : (searchHover.hovered ? 0.85 : 0.65)
-
-                Behavior on opacity { NumberAnimation { duration: 150 } }
+            anchors.verticalCenter: parent.verticalCenter
+            verticalAlignment: Text.AlignVCenter
+            placeholderText: "Search anime, studios, genres…"
+            color: Theme.ink
+            placeholderTextColor: Theme.inkFaint
+            font.pixelSize: 13
+            selectByMouse: true
+            background: Item {}
+            onAccepted: {
+                const term = text.trim()
+                if (term.length > 0) bar.search(term)
             }
+            Keys.onEscapePressed: bar.forceActiveFocus()
+        }
 
-            TextField {
-                id: searchField
-                Layout.fillWidth: true
-                Layout.alignment: Qt.AlignVCenter
-                verticalAlignment: Text.AlignVCenter
-                placeholderText: "Search anime…"
-                color: Theme.ink
-                placeholderTextColor: Theme.inkFaint
-                font.pixelSize: 13
-                selectByMouse: true
-                background: Item {}
-                onAccepted: {
-                    const term = text.trim()
-                    if (term.length > 0) bar.search(term)
-                }
-                Keys.onEscapePressed: bar.forceActiveFocus()
-            }
+        // The right-hand cluster of the field: clear button, shortcut hint and
+        // the Go action.
+        Row {
+            id: cmdActions
+            anchors.right: parent.right
+            anchors.rightMargin: 5
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 6
 
             // Clear button, shown once there is text.
             Rectangle {
-                Layout.alignment: Qt.AlignVCenter
-                visible: searchField.text.length > 0
+                visible: cmdInput.text.length > 0
                 width: 20
                 height: 20
                 radius: 10
@@ -341,20 +385,19 @@ Item {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                        searchField.text = ""
-                        searchField.forceActiveFocus()
+                        cmdInput.text = ""
+                        cmdInput.forceActiveFocus()
                     }
                 }
             }
 
             // Shortcut hint, shown while the box is empty and unfocused.
             Rectangle {
-                Layout.alignment: Qt.AlignVCenter
-                visible: searchField.text.length === 0 && !searchField.activeFocus
+                visible: cmdInput.text.length === 0 && !cmdInput.activeFocus
                 implicitWidth: shortcutText.implicitWidth + 8
                 implicitHeight: 18
                 radius: 4
-                color: Theme.surface
+                color: Theme.fieldFill
                 border.width: 1
                 border.color: Theme.borderSubtle
 
@@ -367,102 +410,241 @@ Item {
                     font.bold: true
                 }
             }
+
+            // The Go action, styled as the brand gradient.
+            Rectangle {
+                width: 34
+                height: 28
+                radius: 7
+                opacity: cmdInput.text.trim().length > 0 ? 1.0 : 0.45
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: brand.red }
+                    GradientStop { position: 1.0; color: brand.orange }
+                }
+
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "Go"
+                    color: brand.white
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    enabled: cmdInput.text.trim().length > 0
+                    onClicked: {
+                        const term = cmdInput.text.trim()
+                        if (term.length > 0) bar.search(term)
+                    }
+                }
+            }
         }
     }
 
-    // --- Right: segmented pill + settings -------------------------------
+    // --- Right: icon rail + settings -------------------------------------
     Row {
         id: rightSection
         anchors.right: parent.right
         anchors.rightMargin: Theme.pad
         anchors.verticalCenter: parent.verticalCenter
-        spacing: 16
+        spacing: 8
 
-        // The My List / Filter pill, with an indicator that slides to the
-        // active half.
+        // My List.
         Rectangle {
-            width: 184
-            height: 36
-            radius: 18
-            color: Theme.surface
+            id: listBtn
+            width: 38
+            height: 38
+            radius: 12
+            color: bar.activeRoute === "list" ? "transparent" : Theme.surface
             border.width: 1
-            border.color: Theme.borderSubtle
+            border.color: bar.activeRoute === "list" ? "transparent" : Theme.borderSubtle
+            scale: listMouse.containsMouse ? 1.05 : 1.0
 
+            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on border.color { ColorAnimation { duration: 150 } }
+            Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
+
+            // Active state: the brand gradient.
             Rectangle {
-                id: indicator
-                visible: bar.activeRoute === "list" || bar.activeRoute === "filter"
-                width: (parent.width / 2) - 4
-                height: parent.height - 8
-                y: 4
-                x: bar.activeRoute === "filter" ? (parent.width / 2) : 4
-                radius: 14
-                color: Theme.accent
-
-                Behavior on x { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
-            }
-
-            Row {
                 anchors.fill: parent
-
-                Item {
-                    width: parent.width / 2
-                    height: parent.height
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "My List"
-                        color: bar.activeRoute === "list"
-                            ? "white"
-                            : (listMouse.containsMouse ? Theme.ink : Theme.inkMuted)
-                        font.pixelSize: 12
-                        font.bold: true
-
-                        Behavior on color { ColorAnimation { duration: 150 } }
-                    }
-
-                    MouseArea {
-                        id: listMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            bar.forceActiveFocus()
-                            bar.openMyList()
-                        }
-                    }
-                }
-
-                Item {
-                    width: parent.width / 2
-                    height: parent.height
-
-                    Text {
-                        anchors.centerIn: parent
-                        text: "Filter"
-                        color: bar.activeRoute === "filter"
-                            ? "white"
-                            : (filterMouse.containsMouse ? Theme.ink : Theme.inkMuted)
-                        font.pixelSize: 12
-                        font.bold: true
-
-                        Behavior on color { ColorAnimation { duration: 150 } }
-                    }
-
-                    MouseArea {
-                        id: filterMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            bar.forceActiveFocus()
-                            bar.openFilter()
-                        }
-                    }
+                radius: parent.radius
+                visible: bar.activeRoute === "list"
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: brand.red }
+                    GradientStop { position: 1.0; color: brand.orange }
                 }
             }
+
+            Image {
+                anchors.centerIn: parent
+                width: 18
+                height: 18
+                source: bar.svgIcon(bar.pathBookmark,
+                    bar.activeRoute === "list"
+                        ? brand.white
+                        : (listMouse.containsMouse ? Theme.ink : Theme.inkMuted))
+                sourceSize.width: 36
+                sourceSize.height: 36
+                smooth: true
+            }
+
+            MouseArea {
+                id: listMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    bar.forceActiveFocus()
+                    bar.openMyList()
+                }
+            }
+
+            ToolTip.visible: listMouse.containsMouse
+            ToolTip.text: "My List"
+            ToolTip.delay: 500
         }
 
-        // Settings gear.
+        // Filter.
+        Rectangle {
+            id: filterBtn
+            width: 38
+            height: 38
+            radius: 12
+            color: bar.activeRoute === "filter" ? "transparent" : Theme.surface
+            border.width: 1
+            border.color: bar.activeRoute === "filter" ? "transparent" : Theme.borderSubtle
+            scale: filterMouse.containsMouse ? 1.05 : 1.0
+
+            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on border.color { ColorAnimation { duration: 150 } }
+            Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
+
+            Rectangle {
+                anchors.fill: parent
+                radius: parent.radius
+                visible: bar.activeRoute === "filter"
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: brand.red }
+                    GradientStop { position: 1.0; color: brand.orange }
+                }
+            }
+
+            Image {
+                anchors.centerIn: parent
+                width: 18
+                height: 18
+                source: bar.svgIcon(bar.pathFilter,
+                    bar.activeRoute === "filter"
+                        ? brand.white
+                        : (filterMouse.containsMouse ? Theme.ink : Theme.inkMuted))
+                sourceSize.width: 36
+                sourceSize.height: 36
+                smooth: true
+            }
+
+            MouseArea {
+                id: filterMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    bar.forceActiveFocus()
+                    bar.openFilter()
+                }
+            }
+
+            ToolTip.visible: filterMouse.containsMouse
+            ToolTip.text: "Filter"
+            ToolTip.delay: 500
+        }
+
+        // Downloads, with a badge for anything waiting.
+        Rectangle {
+            id: downloadsBtn
+            width: 38
+            height: 38
+            radius: 12
+            color: bar.activeRoute === "downloads" ? "transparent" : Theme.surface
+            border.width: 1
+            border.color: bar.activeRoute === "downloads" ? "transparent" : Theme.borderSubtle
+            scale: downloadsMouse.containsMouse ? 1.05 : 1.0
+
+            Behavior on color { ColorAnimation { duration: 150 } }
+            Behavior on border.color { ColorAnimation { duration: 150 } }
+            Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
+
+            Rectangle {
+                anchors.fill: parent
+                radius: parent.radius
+                visible: bar.activeRoute === "downloads"
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: brand.red }
+                    GradientStop { position: 1.0; color: brand.orange }
+                }
+            }
+
+            Image {
+                anchors.centerIn: parent
+                width: 18
+                height: 18
+                source: bar.svgIcon(bar.pathDownload,
+                    bar.activeRoute === "downloads"
+                        ? brand.white
+                        : (downloadsMouse.containsMouse ? Theme.ink : Theme.inkMuted))
+                sourceSize.width: 36
+                sourceSize.height: 36
+                smooth: true
+            }
+
+            // Count badge, tucked into the top-right corner of the button.
+            Rectangle {
+                id: countBadge
+                visible: bar.downloadCount > 0
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.rightMargin: -5
+                anchors.topMargin: -5
+                width: Math.max(16, countText.implicitWidth + 6)
+                height: 16
+                radius: 8
+                color: brand.yellow
+                // Ring the badge in the bar colour so it reads as punched out
+                // of the button rather than floating above it.
+                border.width: 2
+                border.color: Theme.surfaceRaised
+
+                Text {
+                    id: countText
+                    anchors.centerIn: parent
+                    text: bar.downloadCount
+                    color: "#17191F"
+                    font.pixelSize: 10
+                    font.bold: true
+                }
+            }
+
+            MouseArea {
+                id: downloadsMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    bar.forceActiveFocus()
+                    bar.openDownloads()
+                }
+            }
+
+            ToolTip.visible: downloadsMouse.containsMouse
+            ToolTip.text: "Downloads"
+            ToolTip.delay: 500
+        }
+
+        // Settings gear. Kept round, so it still reads as a different kind of
+        // control from the navigation buttons next to it.
         Rectangle {
             width: 36
             height: 36

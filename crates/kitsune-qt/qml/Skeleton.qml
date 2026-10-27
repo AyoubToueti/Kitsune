@@ -20,7 +20,7 @@ Rectangle {
 
     // Rounded corners by default; a caller may pass a different radius (e.g. a
     // full circle for an avatar dot).
-    radius: 6
+    //radius: 6
 
     // Frozen at a steady 0.6 when animations are off, so the block is still
     // visible as a placeholder rather than vanishing.

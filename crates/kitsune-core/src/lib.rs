@@ -11,6 +11,7 @@
 
 pub mod auth;
 pub mod diagnostics;
+pub mod downloads;
 pub mod episodes;
 pub mod indexer;
 pub mod list;

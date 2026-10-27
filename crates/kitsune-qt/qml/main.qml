@@ -364,6 +364,7 @@ Window {
             onGoForward: root.goForward()
             onOpenMyList: root.goTo(myListComponent, "list", { "backend": root.backend })
             onOpenFilter: root.goTo(browseComponent, "filter", { "backend": root.backend })
+            onOpenDownloads: root.goTo(downloadsComponent, "downloads", { "backend": root.backend })
             onOpenSettings: settingsPopup.open()
             onSearch: (term) => root.openFilter(
                 { "backend": root.backend, "initialSearch": term },
@@ -526,6 +527,16 @@ Window {
         }
     }
 
+    Component {
+        id: downloadsComponent
+        DownloadsPage {
+            // Reuse the watch modal's player, but feed it this anime's
+            // completed local files instead of a release search.
+            onOpenDownloads: (payload) => watchModal.openDownloads(payload)
+            onOpenAnime: (id, provider) => root.openDetail(id, provider)
+        }
+    }
+
     SettingsPopup {
         id: settingsPopup
         backend: root.backend
@@ -558,6 +569,10 @@ Window {
         // Read the title-language preference once at startup. `settings_ready`
         // also fires after every save, so the handler below keeps it current.
         root.backend.getSettings()
+
+        // Reattach downloads left running when the app closed. Every torrent
+        // comes back PAUSED so a launch never silently resumes transfers.
+        root.backend.restoreDownloads()
 
         // Reconcile the local list with AniList exactly once per launch.
         //

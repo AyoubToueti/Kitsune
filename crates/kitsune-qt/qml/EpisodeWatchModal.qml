@@ -119,6 +119,9 @@ Popup {
     }
 
     property int torrentId: -1
+    // Local playback reuses the torrent file list and player stage, but every
+    // row is a completed download and no torrent/peer UI is shown.
+    property bool localPlayback: false
     property var files: []
     property int chosenIdx: -1
     property string playingUrl: ""
@@ -199,9 +202,63 @@ Popup {
         modal.requestFullscreen(modal.fullscreen)
     }
 
+    // Full UI (header + bottom bar). ONLY real pointer movement, fullscreen
+    // toggles and skip actions call this.
     function wakeChrome() {
         modal.chromeVisible = true
+        modal.seekOnlyVisible = false
         hideChrome.restart()
+    }
+
+    // A seek while the full UI is hidden peeks ONLY the timeline for 1.5 s.
+    // If the full UI is already showing there is nothing to do.
+    property bool seekOnlyVisible: false
+    // Stays true through the fade-out after a peek, so the bar does not snap
+    // back to its full layout while it is still visibly disappearing. Cleared
+    // once the bar is fully hidden (see bottomControls.onVisibleChanged).
+    property bool peekLatched: false
+    function seekPeek() {
+        if (modal.chromeVisible) return
+        modal.peekLatched = true
+        modal.seekOnlyVisible = true
+        seekOnlyTimer.restart()
+    }
+    Timer {
+        id: seekOnlyTimer
+        interval: 1500
+        onTriggered: modal.seekOnlyVisible = false
+    }
+
+    // --- Subtitles ride above the control bar -------------------------------
+    //
+    // mpv's `sub-margin-y` is measured as if the window were 720 px tall
+    // (sub-scale-by-window), so the bar's height in Qt pixels is rescaled by
+    // 720 / viewportHeight. Screen density cancels out because both numbers
+    // are in the same logical units, and fullscreen vs windowed is handled by
+    // reading the viewport's real height.
+    readonly property real subBarGap: 10          // breathing room above the bar
+    readonly property bool subBarShown:
+        modal.stage === "play" && (modal.chromeVisible || modal.seekOnlyVisible)
+    // How far to lift, as a PERCENT of the viewport height (what `sub-pos`
+    // takes). Reading the viewport's real height makes this correct in both
+    // windowed and fullscreen.
+    readonly property real subLiftTarget: {
+        const h = playerViewport.height
+        if (!modal.subBarShown || h <= 0) return 0
+        // 14 = the bar's bottom anchor margin.
+        const reserved = bottomControls.height + 14 + modal.subBarGap
+        return reserved / h * 100
+    }
+    property real subLift: subLiftTarget
+    Behavior on subLift { NumberAnimation { duration: 200; easing.type: Easing.OutQuad } }
+    onSubLiftChanged: modal.applySubMargin()
+
+    function applySubMargin() {
+        const p = playerLoader.item
+        if (!p) return
+        // `sub-pos` 100 = default bottom; lower values move subtitles up. Unlike
+        // `sub-margin-y`, mpv applies it to styled ASS subtitles as well.
+        p.setProperty("sub-pos", String(Math.round(100 - modal.subLift)))
     }
 
     function doSkipIntro() {
@@ -274,8 +331,8 @@ Popup {
         enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("playPause", "Space")
         onActivated: {
+            // Pause: OSD only (via onPausedChanged). Never wakes the chrome.
             if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
-            modal.wakeChrome()
         }
     }
 
@@ -305,7 +362,7 @@ Popup {
                 playerLoader.item.command(["seek", "-5", "relative"])
                 osdToast.trigger("rewind", "-5s")
             }
-            modal.wakeChrome()
+            modal.seekPeek()
         }
     }
 
@@ -317,7 +374,7 @@ Popup {
                 playerLoader.item.command(["seek", "5", "relative"])
                 osdToast.trigger("forward", "+5s")
             }
-            modal.wakeChrome()
+            modal.seekPeek()
         }
     }
 
@@ -331,7 +388,6 @@ Popup {
                 const currentVol = Math.round(playerLoader.item.volume || 100)
                 osdToast.trigger(nextMute ? "mute" : "volume", nextMute ? "Muted" : currentVol + "%")
             }
-            modal.wakeChrome()
         }
     }
 
@@ -344,7 +400,6 @@ Popup {
                 playerLoader.item.setProperty("volume", vol)
                 osdToast.trigger("volume", vol + "%")
             }
-            modal.wakeChrome()
         }
     }
 
@@ -357,7 +412,6 @@ Popup {
                 playerLoader.item.setProperty("volume", vol)
                 osdToast.trigger(vol === 0 ? "mute" : "volume", vol + "%")
             }
-            modal.wakeChrome()
         }
     }
 
@@ -476,6 +530,7 @@ Popup {
         // Per-open search state. The generation bump orphans any reply still
         // in flight from the previous open.
         modal.searchGeneration += 1
+        modal.localPlayback = false
         modal.animeProvider = provider || "anilist"
         modal.loadedAnimeId = 0
         modal.loadedEpisode = 0
@@ -513,9 +568,57 @@ Popup {
         modal.open()
     }
 
+    // Opened from the Downloads page. The payload is a JSON object containing
+    // the anime identity plus every completed file for that anime. Rows use the
+    // same shape as torrent files (idx/name/lengthBytes) so the existing player
+    // stage and list can be reused unchanged.
+    function openDownloads(payload) {
+        let data = null
+        try { data = JSON.parse(payload) } catch (e) { data = null }
+        if (!data || !data.files || data.files.length === 0) return
+
+        modal.teardown()
+        modal.searchGeneration += 1
+        modal.localPlayback = true
+        modal.animeProvider = data.provider || "anilist"
+        modal.animeId = data.animeId || 0
+        modal.malId = 0
+        modal.titles = []
+        modal.releases = []
+        modal.badges = ({})
+        modal.error = ""
+        modal.searching = false
+        modal.searched = false
+        modal.probing = false
+        modal.releaseTitle = data.title || "Downloads"
+        modal.releaseMagnet = ""
+        modal.releaseQuery = ""
+        modal.resolutionFilter = []
+        modal.releaseMode = "episodes"
+        modal.episodeThumbnail = data.coverImage || ""
+        modal.files = data.files
+        modal.loadedAnimeId = 0
+        modal.loadedEpisode = 0
+        modal.lastPlayedRecorded = false
+        modal.downloadStatus = ""
+
+        let selected = -1
+        for (let i = 0; i < modal.files.length; i++) {
+            if (String(modal.files[i].recordId) === String(data.selectedId)) {
+                selected = i
+                break
+            }
+        }
+        if (selected < 0) selected = 0
+        modal.playLocal(selected)
+        if (!modal.opened) modal.open()
+    }
+
     onOpened: {
         if (!backend || animeId <= 0) return
         backend.getSettings()
+        // The downloaded list is already complete; there is nothing to search.
+        if (modal.localPlayback) return
         if (modal.resumeLast) {
             modal.searching = true
             modal.stage = "releases"
@@ -685,6 +788,22 @@ Popup {
         return Theme.inkFaint
     }
 
+    // A broadcast/radar glyph: this control asks the trackers and swarm
+    // whether the release is actually reachable, rather than just opening it.
+    function availabilityIcon(fill) {
+        const path = "M12 11c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 2c0-3.31-2.69-6-6-6s-6 2.69-6 6c0 2.22 1.21 4.15 3 5.19l1-1.74c-1.19-.7-2-1.97-2-3.45 0-2.21 1.79-4 4-4s4 1.79 4 4c0 1.48-.81 2.75-2 3.45l1 1.74c1.79-1.04 3-2.97 3-5.19zm-6-10C6.48 3 2 7.48 2 13c0 3.7 2.01 6.92 4.99 8.65l1-1.73C5.61 18.53 4 15.96 4 13c0-4.42 3.58-8 8-8s8 3.58 8 8c0 2.96-1.61 5.53-4 6.92l1 1.73C19.99 19.92 22 16.7 22 13c0-5.52-4.48-10-10-10z"
+        const xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
+        return "data:image/svg+xml," + encodeURIComponent(xml)
+    }
+
+    function availabilityLabel(index) {
+        const b = modal.badges[index]
+        if (b === "green") return "Availability: healthy \u2014 click to re-check"
+        if (b === "yellow") return "Availability: uncertain \u2014 click to re-check"
+        if (b === "red") return "Availability: no confirmation \u2014 click to re-check"
+        return "Check availability"
+    }
+
     function resolutionOptions() {
         const order = ["2160p", "1080p", "720p", "480p", "360p"]
         const seen = {}
@@ -770,6 +889,19 @@ Popup {
         modal.resolutionFilter = next
     }
 
+    function releaseMatchesDownload(release, record) {
+        if (record === null || record === undefined) return false
+        const releaseTitle = String(release.title || "").trim().toLowerCase()
+        const recordTitle = String(record.releaseTitle || "").trim().toLowerCase()
+        if (releaseTitle.length > 0 && recordTitle.length > 0
+                && releaseTitle === recordTitle) return true
+        const magnet = String(record.magnet || "")
+        if (magnet.length > 0 && magnet === String(release.magnetUri || "")) return true
+        const torrent = String(record.torrentUrl || "")
+        if (torrent.length > 0 && torrent === String(release.torrentUrl || "")) return true
+        return false
+    }
+
     // `force` skips the backend's cache; the Retry button passes it.
     function search(force) {
         if (!modal.backend || titles.length === 0) return
@@ -799,6 +931,10 @@ Popup {
     }
 
     function play(idx) {
+        if (modal.localPlayback) {
+            modal.playLocal(idx)
+            return
+        }
         if (torrentId < 0) return
         chosenIdx = idx
         // ONE call: select the file, wait for the engine to accept it, warm
@@ -806,8 +942,41 @@ Popup {
         backend.prepareStream(torrentId, idx)
     }
 
+    function playLocal(idx) {
+        const file = modal.files[idx]
+        if (!file) return false
+        let path = file.path || ""
+        if (path.length === 0 && modal.backend
+                && file.recordId !== undefined && file.recordId !== null)
+            path = modal.backend.downloadPath(String(file.recordId)) || ""
+        if (path.length === 0) {
+            modal.chosenIdx = -1
+            modal.playingUrl = ""
+            modal.stage = "files"
+            modal.downloadStatus = "That downloaded file is no longer on disk."
+            return false
+        }
+        modal.localPlayback = true
+        modal.chosenIdx = file.idx !== undefined ? file.idx : idx
+        modal.episodeNumber = file.episode || 0
+        modal.absoluteEpisode = file.episode || 0
+        modal.lastPlayedRecorded = false
+        modal.playingUrl = path
+        modal.stage = "play"
+        if (playerLoader.item) modal.loadStream()
+        return true
+    }
+
+    function fileSubtitle(file) {
+        const size = modal.formatSize(file.lengthBytes)
+        if (!modal.localPlayback) return size
+        const name = file.name || ""
+        if (name.length === 0) return size
+        return size.length > 0 ? name + " \u00b7 " + size : name
+    }
+
     function togglePause() {
-        if (torrentId < 0) return
+        if (modal.localPlayback || torrentId < 0) return
         if (paused) { backend.resumeTorrent(torrentId); paused = false }
         else { backend.pauseTorrent(torrentId); paused = true }
     }
@@ -820,7 +989,18 @@ Popup {
         }
     }
 
+    function backToDownloads() {
+        stopPlayer()
+        chosenIdx = -1
+        playingUrl = ""
+        stage = "files"
+    }
+
     function backToReleases() {
+        if (modal.localPlayback) {
+            modal.backToDownloads()
+            return
+        }
         stopPlayer()
         if (torrentId >= 0) {
             backend.releaseTorrent(torrentId)
@@ -857,6 +1037,7 @@ Popup {
         resumePromptOpen = false
         resumeSeekTarget = -1
         pendingResume = null
+        localPlayback = false
     }
 
     function copyMagnet(release) {
@@ -868,12 +1049,96 @@ Popup {
     property bool copied: false
     Timer { id: copiedFlash; interval: 1200; onTriggered: modal.copied = false }
 
-    function saveTorrent(release) {
-        if (!release.torrentUrl) return
-        pendingTorrentUrl = release.torrentUrl
-        saveDialog.open()
+    // --- Permanent download ------------------------------------------------
+    //
+    // The download deliberately does NOT take `modal.torrentId`: that id is what
+    // `teardown` removes when the modal closes, and a download must survive the
+    // close. The backend adds its own torrent and owns it from then on.
+
+    // --- Include/exclude picker --------------------------------------------
+    //
+    // A release with several files is a pack, and guessing which episode the
+    // reader wants is how they end up with seven. The picker resolves the file
+    // list first, then starts the download for exactly what was ticked.
+    property var downloadPicker: null
+    property var availabilityPopup: null
+
+    function checkAvailability(release) {
+        if (!release) return
+        if (availabilityPopup === null) {
+            availabilityPopup = availabilityPopupComponent.createObject(modal, {
+                "backend": modal.backend
+            })
+        }
+        availabilityPopup.check(release)
     }
-    property string pendingTorrentUrl: ""
+
+    Component {
+        id: availabilityPopupComponent
+        AvailabilityPopup {}
+    }
+
+    function openDownloadPicker(release) {
+        if (!release || !release.magnetUri) return
+        if (downloadPicker === null) {
+            downloadPicker = filePickerComponent.createObject(modal, {
+                "backend": modal.backend
+            })
+            // Connected HERE, not with an inline `onAcceptedDownload` handler.
+            // `DownloadFilePicker` declares `modal: true` (the Popup property),
+            // which shadows this popup's `modal` id for anything inside that
+            // component's scope -- so an inline handler's `modal.startDownloadFor`
+            // resolved against the boolean `true` and threw "Property
+            // 'startDownloadFor' of object true is not a function". A closure
+            // created in this function resolves `modal` in THIS scope, where it
+            // is still the popup.
+            downloadPicker.acceptedDownload.connect(function (pickedRelease, fileIndices) {
+                modal.startDownloadFor(pickedRelease, fileIndices)
+            })
+            // A single-file release never opens the picker, so these are what
+            // report its progress. Both are needed: resolving can take a few
+            // seconds on a cold swarm, and silence would look like a dead click.
+            downloadPicker.resolving.connect(function () {
+                modal.downloadStatus = "Checking the release\u2026"
+            })
+            downloadPicker.failure.connect(function (message) {
+                modal.downloadStatus = message
+            })
+        }
+        downloadPicker.openFor(release, modal.episodeNumber, modal.offset())
+    }
+
+    function startDownloadFor(release, fileIndices) {
+        if (!release || !fileIndices || fileIndices.length === 0) return
+        downloadStatus = fileIndices.length > 1
+            ? ("Starting " + fileIndices.length + " episodes\u2026")
+            : "Starting\u2026"
+        backend.startEpisodeDownload(
+            modal.animeId,
+            modal.animeProvider,
+            modal.episodeNumber,
+            0,
+            modal.downloadTitle(),
+            "",
+            modal.episodeThumbnail,
+            JSON.stringify(release),
+            JSON.stringify(fileIndices))
+    }
+
+    Component {
+        id: filePickerComponent
+        DownloadFilePicker {}
+    }
+
+    // The title to file the download under. `titles[0]` is the preferred form
+    // the backend already resolved for this open; the fallback keeps a
+    // download from landing in a folder called "undefined".
+    function downloadTitle() {
+        for (let i = 0; i < modal.titles.length; i++) {
+            if (modal.titles[i]) return modal.titles[i]
+        }
+        return "Unknown anime"
+    }
 
     Connections {
         target: modal.backend
@@ -888,7 +1153,7 @@ Popup {
             if (!modal.resumeLast) modal.search()
         }
 
-        function onReleasesReady(tag, json) {
+                function onReleasesReady(tag, json) {
             // A reply for a previous open (or an abandoned search) must be
             // dropped, not painted: it would show the wrong episode's list.
             if (tag !== modal.searchTag) return
@@ -901,9 +1166,37 @@ Popup {
                     : "No episode releases found."
                 return
             }
-            modal.probing = true
-            modal.backend.probeReleases(
-                modal.searchTag, JSON.stringify(modal.releases))
+            // Episodes that already sit on disk are read from the store, not
+            // the UI: the release the reader kept then comes back here marked,
+            // even after a restart. The identity check is specific so an
+            // unrelated re-upload is not falsely marked too.
+            if (!modal.localPlayback && modal.backend && modal.animeId > 0
+                    && modal.releaseMode === "episodes" && modal.episodeNumber > 0) {
+                try {
+                    const rows = JSON.parse(
+                        modal.backend.downloadedForAnime(
+                            modal.animeId, modal.animeProvider)) || []
+                    const needle = String(modal.episodeNumber)
+                    const chosen = rows.filter(function (r) {
+                        return r.episode !== undefined && r.episode !== null
+                            && String(r.episode) === needle
+                    })
+                    if (chosen.length === 0) return
+                    for (const release of modal.releases) {
+                        if (chosen.some(function (r) {
+                            return modal.releaseMatchesDownload(release, r)
+                        })) {
+                            release.downloaded = true
+                        }
+                    }
+                } catch (_) {
+                    // A malformed payload must never block a normal search.
+                }
+            }
+            // No automatic probing. It used to fire here for the whole list,
+            // which delayed the release list by seconds and, worse, competed
+            // with the download for peers and bandwidth. Availability is now
+            // checked ON DEMAND: the dot on each release is a button.
             if (modal.autoPlay && modal.releases.length > 0) {
                 modal.pickRelease(modal.releases[0])
             }
@@ -930,6 +1223,7 @@ Popup {
         function onTorrentAdded(json) {
             modal.searching = false
             const handle = JSON.parse(json)
+
             if (modal.autoPlay) {
                 let best = -1
                 let bestSize = -1
@@ -985,8 +1279,13 @@ Popup {
             }
         }
         function onTorrentAddFailed(message) {
-            modal.error = message
             modal.searching = false
+            // A download borrowed this add: report it in the toast rather than
+            // replacing the release list with an error, which would suggest the
+            // whole search failed.
+            // A download started from the picker reports through
+            // `episodeDownloadFailed`; this handler is only for the play path.
+            modal.error = message
         }
 
         function onStreamUrlReady(torrentId, fileIdx, url) {
@@ -1045,28 +1344,43 @@ Popup {
 
         function onDownloadDone() { modal.downloadStatus = "Saved." }
         function onDownloadFailed(message) { modal.downloadStatus = message }
+
+        // Permanent-download answers. The record is echoed back so the toast
+        // can name the episode, not just say "started".
+        function onDownloadStarted(json) {
+            const record = JSON.parse(json)
+            if (record === null) {
+                modal.downloadStatus = "Could not start the download."
+                return
+            }
+            modal.downloadStatus = "Downloading episode " + record.episode
+                + "\u2026 (see Downloads)"
+        }
+
+        function onEpisodeDownloadFailed(id, message) {
+            modal.downloadStatus = message
+        }
     }
 
+    // A one-line answer for the download button. Lives beside the stage, not in
+    // the release list, so a reply still shows after the list has scrolled.
+    // Cleared on a timer rather than on the next click, because the message
+    // ("that release has several files...") is worth reading.
     property string downloadStatus: ""
+    Timer {
+        id: downloadStatusTimer
+        interval: 6000
+        onTriggered: modal.downloadStatus = ""
+    }
+    onDownloadStatusChanged: {
+        if (modal.downloadStatus !== "") downloadStatusTimer.restart()
+    }
 
     Timer {
         interval: 500
         running: modal.torrentId >= 0
         repeat: true
         onTriggered: modal.backend.getTorrentStats(modal.torrentId)
-    }
-
-    FileDialog {
-        id: saveDialog
-        title: "Save torrent file"
-        fileMode: FileDialog.SaveFile
-        defaultSuffix: "torrent"
-        nameFilters: ["Torrent files (*.torrent)"]
-        onAccepted: {
-            let p = selectedFile.toString()
-            if (p.startsWith("file://")) p = p.slice(7)
-            modal.backend.downloadTorrent(modal.pendingTorrentUrl, decodeURIComponent(p))
-        }
     }
 
     background: GlassPanel {
@@ -1076,6 +1390,31 @@ Popup {
 
     contentItem: Item {
         anchors.fill: parent
+
+        // Download feedback, floating over the release list's bottom edge so it
+        // never reflows the list the reader is scanning.
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 16
+            visible: modal.downloadStatus !== ""
+            z: 40
+            radius: 8
+            color: Theme.glassFillHover
+            border.width: 1
+            border.color: Theme.glassBorder
+            implicitWidth: statusText.implicitWidth + 28
+            implicitHeight: statusText.implicitHeight + 16
+            Text {
+                id: statusText
+                anchors.centerIn: parent
+                width: Math.min(implicitWidth, 520)
+                text: modal.downloadStatus
+                color: Theme.ink
+                font.pixelSize: 12
+                wrapMode: Text.WordWrap
+            }
+        }
 
         ColumnLayout {
             anchors.fill: parent
@@ -1117,9 +1456,11 @@ Popup {
                         Text {
                             // A pack search has no episode, so naming one
                             // would read as "EPISODE 0".
-                            text: modal.releaseMode === "packs"
-                                ? "SEASON PACKS"
-                                : ("EPISODE " + modal.episodeNumber)
+                            text: modal.localPlayback
+                                ? "DOWNLOADED EPISODES"
+                                : (modal.releaseMode === "packs"
+                                    ? "SEASON PACKS"
+                                    : ("EPISODE " + modal.episodeNumber))
                             color: Theme.accent
                             font.pixelSize: 11
                             font.bold: true
@@ -1389,16 +1730,26 @@ Popup {
                         model: modal.visibleReleases()
 
                         delegate: GlassPanel {
+                            id: releaseCard
                             required property var modelData
                             readonly property int realIndex: modal.releases.indexOf(modelData)
+                            readonly property bool downloaded: modelData.downloaded === true
 
                             width: ListView.view.width
                             height: 52
                             interactive: true
 
+                            border.color: releaseCard.downloaded
+                                ? Theme.healthGreen
+                                : (interactive && releaseMouse.containsMouse
+                                    ? Theme.accent
+                                    : Theme.glassBorder)
+
                             // Card-level click trigger placed FIRST so child MouseAreas take precedence
                             MouseArea {
+                                id: releaseMouse
                                 anchors.fill: parent
+                                hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: modal.pickRelease(modelData)
                             }
@@ -1410,9 +1761,104 @@ Popup {
                                 spacing: 10
 
                                 Rectangle {
+                                    id: downloadedMark
                                     Layout.alignment: Qt.AlignVCenter
-                                    width: 8; height: 8; radius: 4
-                                    color: modal.badgeColor(realIndex)
+                                    implicitWidth: downloadedMarkText.implicitWidth + 12
+                                    implicitHeight: 18
+                                    radius: 5
+                                    visible: releaseCard.downloaded
+                                    color: releaseCard.downloaded ? "#11000000" : "transparent"
+                                    border.color: Theme.healthGreen
+                                    Text {
+                                        id: downloadedMarkText
+                                        anchors.centerIn: parent
+                                        text: "Downloaded"
+                                        color: Theme.healthGreen
+                                        font.pixelSize: 9
+                                        font.weight: Font.DemiBold
+                                    }
+                                }
+
+                                Rectangle {
+                                    id: availabilityButton
+                                    Layout.alignment: Qt.AlignVCenter
+                                    implicitWidth: 28
+                                    implicitHeight: 28
+
+                                    readonly property color statusColor: modal.badgeColor(realIndex)
+                                    readonly property bool hovered: availabilityMouse.containsMouse
+
+                                    // Soft halo that blooms out on hover, so the
+                                    // control reads as a button rather than a
+                                    // status dot.
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        width: 28; height: 28; radius: 14
+                                        color: "transparent"
+                                        border.width: 1
+                                        border.color: availabilityButton.statusColor
+                                        opacity: availabilityButton.hovered ? 0.35 : 0
+                                        scale: availabilityButton.hovered ? 1.35 : 1
+                                        Behavior on opacity {
+                                            NumberAnimation { duration: Theme.animationsEnabled ? 160 : 0 }
+                                        }
+                                        Behavior on scale {
+                                            NumberAnimation { duration: Theme.animationsEnabled ? 220 : 0; easing.type: Easing.OutCubic }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: width / 2
+                                        color: availabilityButton.hovered ? Theme.glassFillHover : "transparent"
+                                        border.width: 1
+                                        border.color: availabilityButton.hovered
+                                            ? availabilityButton.statusColor
+                                            : Theme.glassBorder
+                                        scale: availabilityButton.hovered ? 1.08 : 1
+
+                                        Behavior on color {
+                                            ColorAnimation { duration: Theme.animationsEnabled ? 140 : 0 }
+                                        }
+                                        Behavior on border.color {
+                                            ColorAnimation { duration: Theme.animationsEnabled ? 140 : 0 }
+                                        }
+                                        Behavior on scale {
+                                            NumberAnimation { duration: Theme.animationsEnabled ? 160 : 0; easing.type: Easing.OutCubic }
+                                        }
+
+                                        Image {
+                                            anchors.centerIn: parent
+                                            width: 15
+                                            height: 15
+                                            fillMode: Image.PreserveAspectFit
+                                            smooth: true
+                                            source: modal.availabilityIcon(
+                                                Theme.hex(availabilityButton.statusColor))
+                                            opacity: availabilityButton.hovered ? 1 : 0.8
+                                            Behavior on opacity {
+                                                NumberAnimation { duration: Theme.animationsEnabled ? 140 : 0 }
+                                            }
+                                        }
+                                    }
+
+                                    // The release card still opens on its main
+                                    // surface click. This separate child target
+                                    // means checking availability does not also
+                                    // select the release.
+                                    MouseArea {
+                                        id: availabilityMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            mouse.accepted = true
+                                            modal.checkAvailability(modelData)
+                                        }
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.text: modal.availabilityLabel(realIndex)
+                                        ToolTip.delay: 300
+                                    }
                                 }
 
                                 ColumnLayout {
@@ -1485,6 +1931,11 @@ Popup {
                                     }
                                 }
 
+                                // Download the episode for keeps, rather than
+                                // saving the `.torrent` file: the torrent is
+                                // only a means to the video, and the reader who
+                                // wanted it has a torrent client of their own
+                                // (the magnet copy button is right beside this).
                                 Rectangle {
                                     Layout.alignment: Qt.AlignVCenter
                                     width: 28; height: 28; radius: 7
@@ -1492,18 +1943,20 @@ Popup {
                                     border.width: 1
                                     border.color: Theme.glassBorder
                                     z: 5
-                                    Text {
+                                    PlayerIcon {
                                         anchors.centerIn: parent
-                                        text: "\u2913"
-                                        color: saveMouse.containsMouse ? Theme.accent : Theme.inkMuted
-                                        font.pixelSize: 13
+                                        width: 15
+                                        height: 15
+                                        kind: "download"
+                                        color: saveMouse.containsMouse
+                                            ? Theme.accent : Theme.inkMuted
                                     }
                                     MouseArea {
                                         id: saveMouse
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: modal.saveTorrent(modelData)
+                                        onClicked: modal.openDownloadPicker(modelData)
                                     }
                                 }
                             }
@@ -1531,7 +1984,10 @@ Popup {
                             anchors.fill: parent
                             active: modal.stage === "play"
                             sourceComponent: playerComponent
-                            onLoaded: modal.loadStream()
+                            onLoaded: {
+                                modal.loadStream()
+                                modal.applySubMargin()
+                            }
                         }
 
                         MouseArea {
@@ -1540,9 +1996,19 @@ Popup {
                             hoverEnabled: true
                             acceptedButtons: Qt.LeftButton
                             cursorShape: (modal.stage === "play" && !modal.chromeVisible) ? Qt.BlankCursor : Qt.ArrowCursor
-                            onPositionChanged: modal.wakeChrome()
-                            onClicked: {
+                            // Qt re-sends hover events with the SAME coordinates
+                            // whenever an item (OSD, bars) appears or vanishes
+                            // under the cursor. Only a real move wakes the UI.
+                            property real lastX: -1
+                            property real lastY: -1
+                            onPositionChanged: function (mouse) {
+                                if (Math.abs(mouse.x - lastX) < 3 && Math.abs(mouse.y - lastY) < 3) return
+                                lastX = mouse.x
+                                lastY = mouse.y
                                 modal.wakeChrome()
+                            }
+                            onClicked: {
+                                // Click-to-pause must not reveal the UI.
                                 bottomControls.closeChapterMenu()
                                 if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
                             }
@@ -1555,7 +2021,6 @@ Popup {
                                 if (!playerLoader.item || modal.stage !== "play") return
                                 const notches = wheel.angleDelta.y / 120
                                 if (notches === 0) return
-                                modal.wakeChrome()
 
                                 const cur = playerLoader.item.volume
                                 const next = Math.max(0, Math.min(200, cur + notches * 5))
@@ -1611,7 +2076,10 @@ Popup {
                             anchors.margins: 14
                             z: 10
                             visible: opacity > 0.0
-                            opacity: (modal.stage === "play" && modal.chromeVisible) ? 1.0 : 0.0
+                            opacity: (modal.stage === "play"
+                                && (modal.chromeVisible || modal.seekOnlyVisible)) ? 1.0 : 0.0
+                            timelineOnly: modal.peekLatched && !modal.chromeVisible
+                            onVisibleChanged: if (!visible) modal.peekLatched = false
 
                             Behavior on opacity { NumberAnimation { duration: 200 } }
 
@@ -1946,7 +2414,9 @@ Popup {
                                 kind: "loading"
                                 showActions: false
                                 title: "Buffering\u2026"
-                                message: modal.percent(modal.fileFraction()) + "%"
+                                message: modal.localPlayback
+                                    ? ""
+                                    : (modal.percent(modal.fileFraction()) + "%")
                                 artWidth: 88
                             }
                         }
@@ -1954,7 +2424,7 @@ Popup {
 
                     GlassPanel {
                         Layout.fillWidth: true
-                        visible: !modal.fullscreen
+                        visible: !modal.fullscreen && !modal.localPlayback
                         implicitHeight: torrentStatsCol.implicitHeight + 16
                         strong: true
 
@@ -2085,7 +2555,9 @@ Popup {
                         Layout.fillWidth: true
                         visible: !modal.fullscreen
                         Text {
-                            text: "\u2190 Back to releases"
+                            text: modal.localPlayback
+                                ? "\u2190 Back to downloads"
+                                : "\u2190 Back to releases"
                             color: backMouse.containsMouse ? Theme.accent : Theme.inkMuted
                             font.pixelSize: 11
                             MouseArea {
@@ -2093,12 +2565,19 @@ Popup {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: modal.backToReleases()
+                                onClicked: modal.localPlayback
+                                    ? modal.backToDownloads()
+                                    : modal.backToReleases()
                             }
                         }
                         Item { Layout.fillWidth: true }
                         Text {
-                            text: modal.files.length + (modal.files.length === 1 ? " file" : " files")
+                            text: modal.localPlayback
+                                ? modal.files.length
+                                    + (modal.files.length === 1
+                                        ? " downloaded file" : " downloaded files")
+                                : modal.files.length
+                                    + (modal.files.length === 1 ? " file" : " files")
                             color: Theme.inkFaint
                             font.pixelSize: 11
                         }
@@ -2145,15 +2624,19 @@ Popup {
                                     spacing: 1
                                     Text {
                                         Layout.fillWidth: true
-                                        text: modelData.name
+                                        text: modal.localPlayback
+                                            ? (modelData.episodeLabel || modelData.name)
+                                            : modelData.name
                                         color: Theme.ink
                                         font.pixelSize: 11
                                         elide: Text.ElideRight
                                     }
                                     Text {
-                                        text: modal.formatSize(modelData.lengthBytes)
+                                        text: modal.fileSubtitle(modelData)
                                         color: Theme.inkFaint
                                         font.pixelSize: 10
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
                                     }
                                 }
                                 Rectangle {

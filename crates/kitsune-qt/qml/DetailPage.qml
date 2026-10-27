@@ -23,6 +23,12 @@ Item {
     property bool loadFailed: false
     property string loadError: ""
 
+    // The work's episode numbers that currently have a downloaded,
+    // on-disk record. Keys are the record's release expression (episode
+    // number as a decimal string), values are one or more wire rows for that
+    // episode: a reader can keep more than one source per episode.
+    property var downloadedEpisodeReleases: ({})
+
     // The shared Backend, passed in explicitly by the window when it pushes this page.
     property var backend: null
 
@@ -193,6 +199,7 @@ Item {
                 page.anime = parsed
                 page.loadFailed = false
                 page.loadError = ""
+                page.refreshDownloadedEpisodes()
                 // Only fetch the episodes ONCE per work.
                 //
                 // `animeReady` is a signal on the shared Backend object, not
@@ -223,6 +230,7 @@ Item {
             page.airedEpisodes = payload.aired || 0
             page.episodesLoading = false
             page.rebuildEpisodes()
+            page.refreshDownloadedEpisodes()
         }
         function onEpisodesFailed(message) {
             // No catalogue: fall back to the previous behaviour, which
@@ -263,6 +271,13 @@ Item {
         }
         function onLibraryChanged() {
             if (page.backend) page.backend.getWatchPositions()
+        }
+        function onDownloadCompleted(json) {
+            const parsed = JSON.parse(json) || null
+            if (!parsed) return
+            if (parsed.animeId !== page.animeId) return
+            if (String(parsed.provider || "") !== page.animeProvider) return
+            page.refreshDownloadedEpisodes()
         }
         function onAuthError(message) {
             page.statusError = message
@@ -345,6 +360,33 @@ Item {
         if (backend && page.signedIn && page.anime) {
             backend.getListEntry(page.anime.id)
         }
+    }
+
+    // Refreshed whenever the downloaded-episode cache can plausibly have
+    // changed. It reads the store synchronously, so it is intentionally not
+    // reactive on every download event.
+    function refreshDownloadedEpisodes() {
+        if (!backend || !animeId) {
+            page.downloadedEpisodeReleases = ({}); return
+        }
+        const target = animeProvider || "anilist"
+        let rows = []
+        try { rows = JSON.parse(backend.downloadedForAnime(page.animeId, target)) || [] } catch (_) { rows = [] }
+
+        const next = ({})
+        for (const row of rows) {
+            const key = String(row.episode !== undefined && row.episode !== null ? row.episode : 0)
+            if (key === "0") continue
+            if (!next[key]) next[key] = []
+            next[key].push(row)
+        }
+        page.downloadedEpisodeReleases = next
+    }
+
+    function episodeIsDownloaded(epNum) {
+        const key = String(epNum)
+        const rows = page.downloadedEpisodeReleases[key]
+        return Array.isArray(rows) && rows.length > 0
     }
 
     function chooseStatus(value) {
@@ -473,7 +515,7 @@ Item {
                         Layout.preferredWidth: 190
                         Layout.preferredHeight: 285
                         Layout.alignment: Qt.AlignVCenter
-                        radius: Theme.radius
+                        //radius: Theme.radius
                         color: Theme.surfaceRaised
                         clip: true
 
@@ -943,6 +985,7 @@ Item {
                                 && epNumber < page.watchedThrough
                             readonly property bool current: !upcoming && page.watchedThrough > 0
                                 && epNumber === page.watchedThrough
+                            readonly property bool downloaded: page.episodeIsDownloaded(epNumber)
 
                             width: 200
                             height: 134
@@ -958,7 +1001,7 @@ Item {
                                 Rectangle {
                                     id: epCard
                                     anchors.fill: parent
-                                    radius: 10
+                                    //radius: 10
                                     color: Theme.surfaceHover
                                     border.width: (page.highlightedIndex === index || current) ? 2 : 1
                                     border.color: page.highlightedIndex === index
@@ -1006,7 +1049,7 @@ Item {
                                         anchors.margins: 6
                                         width: 24
                                         height: 24
-                                        radius: 12
+                                        //radius: 12
                                         color: "#cc0b0d12"
                                         border.width: 1
                                         border.color: Theme.borderSubtle
@@ -1034,6 +1077,27 @@ Item {
                                             anchors.centerIn: parent
                                             text: "LAST WATCHED"
                                             color: "white"
+                                            font.pixelSize: 9
+                                            font.bold: true
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        visible: downloaded
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.rightMargin: 6
+                                        anchors.topMargin: 32
+                                        radius: 4
+                                        color: Theme.healthGreen
+                                        implicitWidth: downloadedText.implicitWidth + 10
+                                        implicitHeight: downloadedText.implicitHeight + 4
+
+                                        Text {
+                                            id: downloadedText
+                                            anchors.centerIn: parent
+                                            text: "DOWNLOADED"
+                                            color: "#ffffff"
                                             font.pixelSize: 9
                                             font.bold: true
                                         }
@@ -1153,7 +1217,7 @@ Item {
                             && (page.episodesLoading || page.episodes.length === 0)
                         width: parent.width
                         implicitHeight: 260
-                        radius: 14
+                        //radius: 14
                         color: Theme.surfaceRaised
                         border.width: 1
                         border.color: Theme.borderSubtle
@@ -1198,7 +1262,7 @@ Item {
                         Rectangle {
                             width: parent.width
                             height: parent.width * 9 / 16
-                            radius: 10
+                            //radius: 10
                             color: Theme.surfaceHover
                             border.width: 1
                             border.color: trailerMouse.containsMouse ? Theme.accent : Theme.borderSubtle
@@ -1270,7 +1334,7 @@ Item {
                                     Rectangle {
                                         width: 48
                                         height: 72
-                                        radius: 6
+                                        //radius: 6
                                         color: Theme.surfaceHover
                                         clip: true
 

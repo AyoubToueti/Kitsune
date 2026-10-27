@@ -109,7 +109,7 @@ Item {
             Rectangle {
                 id: poster
                 anchors.fill: parent
-                radius: 12
+                //radius: 12
                 color: Theme.surfaceRaised
                 clip: true
                 border.width: 1

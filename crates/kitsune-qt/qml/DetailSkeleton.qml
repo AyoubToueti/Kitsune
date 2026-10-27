@@ -47,7 +47,7 @@ Item {
                         Layout.preferredWidth: 190
                         Layout.preferredHeight: 285
                         Layout.alignment: Qt.AlignVCenter
-                        radius: Theme.radius
+                        //radius: Theme.radius
                     }
 
                     // Info column: title, genre chips, action bar, metadata,
@@ -107,7 +107,11 @@ Item {
                     Layout.fillWidth: true
                     spacing: 12
 
-                    Skeleton { width: 120; height: 20; radius: 4 }
+                    Skeleton { 
+                        width: 120;
+                         height: 20; 
+                        //radius: 4 
+                    }
 
                     Grid {
                         Layout.fillWidth: true
@@ -118,7 +122,7 @@ Item {
                             delegate: Skeleton {
                                 width: (parent.width - 36) / 4
                                 height: 84
-                                radius: Theme.radius
+                                //radius: Theme.radius
                             }
                         }
                     }
@@ -129,7 +133,12 @@ Item {
                     Layout.preferredWidth: 300
                     spacing: 16
 
-                    Skeleton { Layout.fillWidth: true; height: 160; radius: Theme.radius }
+                    // Trailer tile
+                    Skeleton { 
+                        Layout.fillWidth: true; 
+                        height: 160; 
+                        //radius: Theme.radius 
+                    }
 
                     Skeleton { width: 120; height: 18; radius: 4 }
 
@@ -138,7 +147,11 @@ Item {
                         delegate: RowLayout {
                             Layout.fillWidth: true
                             spacing: 12
-                            Skeleton { Layout.preferredWidth: 48; Layout.preferredHeight: 68; radius: 8 }
+                            Skeleton { 
+                                Layout.preferredWidth: 48;
+                                Layout.preferredHeight: 68; 
+                                //radius: 8 
+                            }
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 spacing: 8

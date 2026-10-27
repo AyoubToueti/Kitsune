@@ -12,6 +12,7 @@ Item {
     property bool fullscreen: false
     property var chapterList: []
     property bool showRemainingTime: false
+    property bool timelineOnly: false
 
     signal openSettings()
     signal toggleFullscreen()
@@ -20,8 +21,15 @@ Item {
     signal skipEnding()
     signal openInfo()
 
-    implicitHeight: 80
+    // In timeline-only mode (a seek while the rest of the UI is hidden) just
+    // the seek row shows, so the bar is shorter.
+    implicitHeight: bar.timelineOnly ? 40 : 80
     property int tick: 0
+
+    // True while the pointer is anywhere over the bar, so the page can keep
+    // the UI awake instead of hiding it from under the cursor.
+    readonly property bool hovered: barHover.hovered
+    HoverHandler { id: barHover }
 
     readonly property bool chapterMenuOpen: chapterMenuPopup.visible
 
@@ -428,6 +436,7 @@ Item {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 6
+                visible: !bar.timelineOnly
 
                 Rectangle {
                     width: 32

@@ -49,7 +49,7 @@ Column {
 
                         Skeleton {
                             anchors.fill: parent
-                            radius: 12
+                            //radius: 12
                         }
                         Skeleton {
                             width: 28

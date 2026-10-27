@@ -127,12 +127,52 @@ pub fn summarize(stats: &librqbit::TorrentStats) -> TorrentProgress {
 pub struct EngineConfig {
     /// Where downloaded pieces are written.
     pub download_dir: PathBuf,
+    /// Download cap in bytes per second, or `None` for unlimited.
+    ///
+    /// Set at session start because librqbit's live `Session.ratelimits` has
+    /// private fields and no setters -- the only way to change a cap is to
+    /// build a new session. The queue's concurrency limit is the lever that
+    /// takes effect without a restart.
+    pub download_bps: Option<u32>,
+    /// Upload cap in bytes per second, or `None` for unlimited.
+    pub upload_bps: Option<u32>,
 }
 
 impl EngineConfig {
+    /// Unlimited rates, which is the historical behaviour.
     pub fn new(download_dir: impl Into<PathBuf>) -> Self {
         Self {
             download_dir: download_dir.into(),
+            download_bps: None,
+            upload_bps: None,
+        }
+    }
+
+    /// The same config with bandwidth caps applied.
+    pub fn with_limits(mut self, download_bps: Option<u32>, upload_bps: Option<u32>) -> Self {
+        self.download_bps = download_bps;
+        self.upload_bps = upload_bps;
+        self
+    }
+
+    /// The `SessionOptions` these settings imply.
+    ///
+    /// Built with `..Default::default()` on purpose: `SessionOptions` has 21
+    /// fields covering the DHT, persistence, listeners and peer limits, and
+    /// naming them all here would silently change every one of those defaults
+    /// the moment librqbit added another.
+    ///
+    /// librqbit takes `NonZeroU32`, so a limit of zero means "unlimited" rather
+    /// than a dead transfer.
+    pub fn session_options(&self) -> librqbit::SessionOptions {
+        use std::num::NonZeroU32;
+
+        librqbit::SessionOptions {
+            ratelimits: librqbit::limits::LimitsConfig {
+                download_bps: self.download_bps.and_then(NonZeroU32::new),
+                upload_bps: self.upload_bps.and_then(NonZeroU32::new),
+            },
+            ..Default::default()
         }
     }
 }
@@ -150,6 +190,26 @@ pub fn playback_options(output_folder: Option<String>) -> AddTorrentOptions {
         output_folder,
         // We intend to download and stream, so never list-only.
         list_only: false,
+        ..Default::default()
+    }
+}
+
+/// Options for a permanent episode download.
+///
+/// The output folder is the torrent's OWN cache directory, not the session
+/// root: stable per-info-hash paths are what let a restart find the pieces it
+/// left behind even after the reader changes the download setting.
+pub fn download_options(
+    output_folder: String,
+    only_files: Vec<usize>,
+    paused: bool,
+) -> AddTorrentOptions {
+    AddTorrentOptions {
+        paused,
+        only_files: Some(only_files),
+        overwrite: true,
+        list_only: false,
+        output_folder: Some(output_folder),
         ..Default::default()
     }
 }
@@ -199,7 +259,9 @@ impl TorrentEngine {
     pub async fn start(config: EngineConfig) -> Result<Self> {
         ensure_download_dir(&config.download_dir)?;
 
-        let session = Session::new(config.download_dir.clone())
+        // `new_with_opts` rather than `new`: the rate limits only exist on the
+        // options struct, so `new` would silently ignore the reader's cap.
+        let session = Session::new_with_opts(config.download_dir.clone(), config.session_options())
             .await
             .context("failed to start torrent session")?;
 
@@ -217,7 +279,21 @@ impl TorrentEngine {
         super::magnet::parse_info_hash(magnet_uri)
             .map_err(|e| anyhow!("invalid magnet URI: {e}"))?;
 
-        self.add_parsed(AddTorrent::from_url(magnet_uri)).await
+        self.add_parsed(AddTorrent::from_url(magnet_uri), playback_options(None))
+            .await
+    }
+
+    /// Add a magnet with caller-supplied options.
+    pub async fn add_magnet_with_options(
+        &self,
+        magnet_uri: &str,
+        options: AddTorrentOptions,
+    ) -> Result<usize> {
+        super::magnet::parse_info_hash(magnet_uri)
+            .map_err(|e| anyhow!("invalid magnet URI: {e}"))?;
+
+        self.add_parsed(AddTorrent::from_url(magnet_uri), options)
+            .await
     }
 
     /// Add a local `.torrent` file and return the engine's torrent id.
@@ -225,6 +301,16 @@ impl TorrentEngine {
     /// Used for side-loading a torrent the user already has, and for
     /// smoke tests that must not depend on a live swarm.
     pub async fn add_torrent_file(&self, path: &Path) -> Result<usize> {
+        self.add_torrent_file_with_options(path, playback_options(None))
+            .await
+    }
+
+    /// Add a cached `.torrent` file with caller-supplied options.
+    pub async fn add_torrent_file_with_options(
+        &self,
+        path: &Path,
+        options: AddTorrentOptions,
+    ) -> Result<usize> {
         let path_str = path
             .to_str()
             .ok_or_else(|| anyhow!("torrent path is not valid UTF-8"))?;
@@ -232,14 +318,14 @@ impl TorrentEngine {
         let add = AddTorrent::from_local_filename(path_str)
             .with_context(|| format!("failed to read torrent file {}", path.display()))?;
 
-        self.add_parsed(add).await
+        self.add_parsed(add, options).await
     }
 
     /// Shared add path for magnets and local torrent files.
-    async fn add_parsed(&self, add: AddTorrent<'_>) -> Result<usize> {
+    async fn add_parsed(&self, add: AddTorrent<'_>, options: AddTorrentOptions) -> Result<usize> {
         let response = self
             .session
-            .add_torrent(add, Some(playback_options(None)))
+            .add_torrent(add, Some(options))
             .await
             .context("failed to add torrent")?;
 
@@ -269,11 +355,7 @@ impl TorrentEngine {
         let mut files = Vec::new();
         let _ = handle.with_metadata(|meta| {
             for (idx, info) in meta.file_infos.iter().enumerate() {
-                files.push((
-                    idx,
-                    info.relative_filename.display().to_string(),
-                    info.len,
-                ));
+                files.push((idx, info.relative_filename.display().to_string(), info.len));
             }
         });
 
@@ -304,6 +386,78 @@ impl TorrentEngine {
     /// Path this session writes downloads to.
     pub fn download_dir(&self) -> &Path {
         &self.download_dir
+    }
+
+    /// On-disk path where librqbit writes file `file_idx` of torrent `id`.
+    ///
+    /// The handle's own output folder is authoritative. A torrent added with
+    /// an explicit `output_folder` writes `{output_folder}/{relative_name}`;
+    /// one added without it gets a session-generated subfolder that is already
+    /// baked into `output_folder`. Deriving the base from the session root was
+    /// wrong for per-torrent cache directories and for single-file torrents.
+    pub fn file_disk_path(&self, id: usize, file_idx: usize) -> Option<PathBuf> {
+        let handle = self.session.get(id.into())?;
+        let base = handle.output_folder().to_path_buf();
+        let relative = handle
+            .with_metadata(|meta| {
+                meta.file_infos
+                    .iter()
+                    .nth(file_idx)
+                    .map(|info| info.relative_filename.clone())
+            })
+            .ok()??;
+        Some(base.join(relative))
+    }
+
+    /// The raw `.torrent` bytes, once metadata has resolved.
+    ///
+    /// Saved beside the download store so a restart can reattach without
+    /// asking the swarm for metadata again.
+    pub fn torrent_bytes(&self, id: usize) -> Option<Vec<u8>> {
+        let handle = self.session.get(id.into())?;
+        handle
+            .with_metadata(|meta| meta.torrent_bytes.to_vec())
+            .ok()
+    }
+
+    /// Whether every byte of `file_idx` is on disk.
+    ///
+    /// Used by the permanent-download path, which waits for one FILE rather
+    /// than the whole torrent: a season pack restricted with
+    /// [`Self::set_only_files`] reports `finished` only after every selected
+    /// piece lands, and the selected set is normally this one file, but
+    /// checking the file directly is what makes the answer right even when the
+    /// restriction did not stick.
+    ///
+    /// An unknown torrent, unknown file, or unresolved metadata all read as
+    /// "not complete" rather than an error: the caller is polling.
+    pub fn file_complete(&self, id: usize, file_idx: usize) -> bool {
+        let Some(handle) = self.session.get(id.into()) else {
+            return false;
+        };
+
+        let stats = summarize(&handle.stats());
+
+        let Some((_, _, len)) = self
+            .torrent_files(id)
+            .into_iter()
+            .find(|(idx, _, _)| *idx == file_idx)
+        else {
+            return false;
+        };
+
+        // Deliberately does NOT shortcut on `stats.finished`. A torrent whose
+        // selected set is EMPTY reports `finished` immediately -- 0 needed, 0
+        // selected -- which is exactly the state a download sits in for the
+        // moment before `set_only_files` is accepted, and also the state it is
+        // stuck in if that call never lands. Trusting it marked downloads
+        // complete with no bytes written, and the finisher then failed with
+        // "nothing is there".
+        //
+        // `file_progress` is bytes ON DISK per file, so comparing it against
+        // the metadata length is the only check that answers the real question.
+        let got = stats.file_progress.get(file_idx).copied().unwrap_or(0);
+        len > 0 && got >= len
     }
 
     /// Drop a torrent from the session, KEEPING the pieces it downloaded.
@@ -553,10 +707,7 @@ mod tests {
         assert!(!selection_matches(&wanted, &[3]));
         assert!(!selection_matches(&wanted, &[3, 7, 9]));
         assert!(!selection_matches(&wanted, &[3, 8]));
-        assert!(selection_matches(
-            &std::collections::HashSet::new(),
-            &[]
-        ));
+        assert!(selection_matches(&std::collections::HashSet::new(), &[]));
     }
 
     #[test]
@@ -634,6 +785,17 @@ mod tests {
     #[test]
     fn playback_options_enable_overwrite() {
         assert!(playback_options(None).overwrite);
+    }
+
+    #[test]
+    fn download_options_pin_every_download_choice() {
+        let opts = download_options("/tmp/hash".into(), vec![2, 5], true);
+        assert!(opts.overwrite);
+        assert!(opts.paused);
+        assert!(!opts.list_only);
+        assert_eq!(opts.output_folder.as_deref(), Some("/tmp/hash"));
+        assert_eq!(opts.only_files, Some(vec![2, 5]));
+        assert!(opts.only_files_regex.is_none());
     }
 
     #[test]

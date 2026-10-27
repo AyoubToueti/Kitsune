@@ -21,7 +21,7 @@ Column {
         delegate: Rectangle {
             width: list.width
             height: 88
-            radius: Theme.radius
+            //radius: Theme.radius
             color: Theme.surfaceRaised
 
             RowLayout {
@@ -41,7 +41,7 @@ Column {
                 Skeleton {
                     Layout.preferredWidth: 50
                     Layout.preferredHeight: 72
-                    radius: 8
+                    //radius: 8
                 }
 
                 // Title + facts.

@@ -103,6 +103,17 @@ Popup {
             // save raised by another control would otherwise wipe whatever
             // the reader is halfway through typing here.
             if (!downloadField.activeFocus) downloadField.text = s.downloadDir || ""
+            if (!libraryField.activeFocus) libraryField.text = s.libraryDir || ""
+            if (!downloadLimitField.activeFocus) {
+                downloadLimitField.text = (s.downloadLimitKbps !== undefined
+                    && s.downloadLimitKbps !== null) ? String(s.downloadLimitKbps) : ""
+            }
+            if (!uploadLimitField.activeFocus) {
+                uploadLimitField.text = (s.uploadLimitKbps !== undefined
+                    && s.uploadLimitKbps !== null) ? String(s.uploadLimitKbps) : ""
+            }
+            concurrentBox.value = (s.maxConcurrentDownloads !== undefined
+                && s.maxConcurrentDownloads > 0) ? s.maxConcurrentDownloads : 1
             seedersBox.value = s.minSeeders !== undefined ? s.minSeeders : 0
             popup.themeValue = s.theme || "system"
             popup.shortcuts = s.shortcuts || ({})
@@ -220,6 +231,14 @@ Popup {
         // effect here. They ride along in `current` so the Tauri app's values
         // are not reset by a save made from this popup.
         s.downloadDir = downloadField.text.length > 0 ? downloadField.text : null
+        s.libraryDir = libraryField.text.length > 0 ? libraryField.text : null
+        // An empty field means unlimited, not zero: zero would be a dead
+        // transfer, and the backend treats both the same way anyway.
+        s.downloadLimitKbps = downloadLimitField.text.length > 0
+            ? parseInt(downloadLimitField.text) : null
+        s.uploadLimitKbps = uploadLimitField.text.length > 0
+            ? parseInt(uploadLimitField.text) : null
+        s.maxConcurrentDownloads = Math.max(1, Math.round(concurrentBox.value))
         s.minSeeders = Math.round(seedersBox.value)
         s.theme = popup.themeValue
         s.resumeRewindSeconds = popup.rewindValue
@@ -237,6 +256,17 @@ Popup {
             let p = selectedFolder.toString()
             if (p.startsWith("file://")) p = p.slice(7)
             downloadField.text = decodeURIComponent(p)
+            popup.save()
+        }
+    }
+
+    FolderDialog {
+        id: libraryPicker
+        title: "Choose library directory"
+        onAccepted: {
+            let p = selectedFolder.toString()
+            if (p.startsWith("file://")) p = p.slice(7)
+            libraryField.text = decodeURIComponent(p)
             popup.save()
         }
     }
@@ -772,6 +802,13 @@ Popup {
                         }
 
                         Text { text: "Download Directory"; color: Theme.ink; font.pixelSize: 12; font.bold: true }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Torrent pieces are cached here so incomplete downloads can resume after a restart. Defaults to the app data directory."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
@@ -780,7 +817,7 @@ Popup {
                                 id: downloadField
                                 Layout.fillWidth: true
                                 color: Theme.ink
-                                placeholderText: "(system temp directory)"
+                                placeholderText: "App data / kitsune / downloads"
                                 placeholderTextColor: Theme.inkFaint
                                 font.pixelSize: 12
                                 background: Rectangle {
@@ -827,6 +864,150 @@ Popup {
                                     onClicked: downloadField.text = ""
                                 }
                             }
+                        }
+
+                        // The PERMANENT library, distinct from the download
+                        // directory above: that one is the torrent cache and is
+                        // safe to empty, while this one is where the reader's
+                        // saved episodes actually live.
+                        Text { text: "Library Directory"; color: Theme.ink; font.pixelSize: 12; font.bold: true }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Where downloaded episodes are saved. Defaults to ~/Videos/Kitsune."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            TextField {
+                                id: libraryField
+                                Layout.fillWidth: true
+                                color: Theme.ink
+                                placeholderText: "(system videos directory)"
+                                placeholderTextColor: Theme.inkFaint
+                                font.pixelSize: 12
+                                background: Rectangle {
+                                    radius: 8; color: Theme.surface; border.width: 1
+                                    border.color: libraryField.activeFocus ? Theme.accent : Theme.borderSubtle
+                                }
+                                onEditingFinished: popup.save()
+                            }
+                            Rectangle {
+                                width: 80; height: 32; radius: 8
+                                color: libraryBrowseMouse.containsMouse ? Theme.surfaceHover : "transparent"
+                                border.width: 1
+                                border.color: libraryBrowseMouse.containsMouse ? Theme.accent : Theme.borderSubtle
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Browse…"
+                                    color: libraryBrowseMouse.containsMouse ? Theme.accent : Theme.ink
+                                    font.pixelSize: 12
+                                }
+                                MouseArea {
+                                    id: libraryBrowseMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: libraryPicker.open()
+                                }
+                            }
+                            Rectangle {
+                                width: 60; height: 32; radius: 8
+                                color: libraryResetMouse.containsMouse ? Theme.surfaceHover : "transparent"
+                                border.width: 1
+                                border.color: libraryResetMouse.containsMouse ? Theme.accent : Theme.borderSubtle
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: "Reset"
+                                    color: libraryResetMouse.containsMouse ? Theme.accent : Theme.ink
+                                    font.pixelSize: 12
+                                }
+                                MouseArea {
+                                    id: libraryResetMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: libraryField.text = ""
+                                }
+                            }
+                        }
+
+                        // --- Bandwidth ------------------------------------
+                        Text {
+                            Layout.topMargin: 8
+                            text: "BANDWIDTH"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Caps apply when the torrent engine next starts. "
+                                + "Until then, \"Downloads at once\" is the instant lever."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text { text: "Download limit (KiB/s)"; color: Theme.ink; font.pixelSize: 12; font.bold: true }
+                        TextField {
+                            id: downloadLimitField
+                            Layout.fillWidth: true
+                            color: Theme.ink
+                            placeholderText: "Unlimited"
+                            placeholderTextColor: Theme.inkFaint
+                            font.pixelSize: 12
+                            validator: IntValidator { bottom: 0; top: 10000000 }
+                            background: Rectangle {
+                                radius: 8; color: Theme.surface; border.width: 1
+                                border.color: downloadLimitField.activeFocus ? Theme.accent : Theme.borderSubtle
+                            }
+                            onEditingFinished: popup.save()
+                        }
+
+                        Text { text: "Upload limit (KiB/s)"; color: Theme.ink; font.pixelSize: 12; font.bold: true }
+                        TextField {
+                            id: uploadLimitField
+                            Layout.fillWidth: true
+                            color: Theme.ink
+                            placeholderText: "Unlimited"
+                            placeholderTextColor: Theme.inkFaint
+                            font.pixelSize: 12
+                            validator: IntValidator { bottom: 0; top: 10000000 }
+                            background: Rectangle {
+                                radius: 8; color: Theme.surface; border.width: 1
+                                border.color: uploadLimitField.activeFocus ? Theme.accent : Theme.borderSubtle
+                            }
+                            onEditingFinished: popup.save()
+                        }
+
+                        // The concurrency cap is the lever that works WITHOUT a
+                        // restart, so it sits next to the byte caps rather than
+                        // in a section of its own.
+                        Text {
+                            Layout.topMargin: 4
+                            text: "Downloads at once"
+                            color: Theme.ink
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: "1 keeps a whole queue from competing for the same pipe."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
+                        ThemedSpinBox {
+                            id: concurrentBox
+                            from: 1
+                            to: 10
+                            onEdited: popup.save()
                         }
 
                         Text {
