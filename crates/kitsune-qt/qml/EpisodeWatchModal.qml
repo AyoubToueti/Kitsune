@@ -796,6 +796,18 @@ Popup {
         return "data:image/svg+xml," + encodeURIComponent(xml)
     }
 
+    function copyIcon(fill) {
+        const path = "M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"
+        const xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
+        return "data:image/svg+xml," + encodeURIComponent(xml)
+    }
+
+    function downloadIcon(fill) {
+        const path = "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"
+        const xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
+        return "data:image/svg+xml," + encodeURIComponent(xml)
+    }
+
     function availabilityLabel(index) {
         const b = modal.badges[index]
         if (b === "green") return "Availability: healthy \u2014 click to re-check"
@@ -1738,6 +1750,7 @@ Popup {
                             width: ListView.view.width
                             height: 52
                             interactive: true
+                            strong: true
 
                             border.color: releaseCard.downloaded
                                 ? Theme.healthGreen
@@ -1767,7 +1780,7 @@ Popup {
                                     implicitHeight: 18
                                     radius: 5
                                     visible: releaseCard.downloaded
-                                    color: releaseCard.downloaded ? "#11000000" : "transparent"
+                                    color: releaseCard.downloaded ? Theme.glassFillHover : "transparent" 
                                     border.color: Theme.healthGreen
                                     Text {
                                         id: downloadedMarkText
@@ -1779,7 +1792,7 @@ Popup {
                                     }
                                 }
 
-                                Rectangle {
+                                Item {
                                     id: availabilityButton
                                     Layout.alignment: Qt.AlignVCenter
                                     implicitWidth: 28
@@ -1895,6 +1908,8 @@ Popup {
                                                 required property string modelData
                                                 radius: 5
                                                 color: Theme.glassFillHover
+                                                border.width: 1
+                                                border.color: Theme.glassBorder
                                                 implicitWidth: chipText.implicitWidth + 12
                                                 implicitHeight: 18
                                                 Text {
@@ -1909,6 +1924,7 @@ Popup {
                                     }
                                 }
 
+                                // --- Copy Magnet Button ---
                                 Rectangle {
                                     Layout.alignment: Qt.AlignVCenter
                                     width: 28; height: 28; radius: 7
@@ -1916,26 +1932,30 @@ Popup {
                                     border.width: 1
                                     border.color: Theme.glassBorder
                                     z: 5
-                                    Text {
+
+                                    Image {
                                         anchors.centerIn: parent
-                                        text: "\u29C9"
-                                        color: copyMouse.containsMouse ? Theme.accent : Theme.inkMuted
-                                        font.pixelSize: 12
+                                        width: 13; height: 13
+                                        fillMode: Image.PreserveAspectFit
+                                        smooth: true
+                                        source: modal.copyIcon(
+                                            Theme.hex(copyMouse.containsMouse ? Theme.accent : Theme.inkMuted))
+                                        opacity: copyMouse.containsMouse ? 1 : 0.8
                                     }
+
                                     MouseArea {
                                         id: copyMouse
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: modal.copyMagnet(modelData)
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.text: "Copy magnet link"
+                                        ToolTip.delay: 300
                                     }
                                 }
 
-                                // Download the episode for keeps, rather than
-                                // saving the `.torrent` file: the torrent is
-                                // only a means to the video, and the reader who
-                                // wanted it has a torrent client of their own
-                                // (the magnet copy button is right beside this).
+                                // --- Download Button ---
                                 Rectangle {
                                     Layout.alignment: Qt.AlignVCenter
                                     width: 28; height: 28; radius: 7
@@ -1943,20 +1963,26 @@ Popup {
                                     border.width: 1
                                     border.color: Theme.glassBorder
                                     z: 5
-                                    PlayerIcon {
+
+                                    Image {
                                         anchors.centerIn: parent
-                                        width: 15
-                                        height: 15
-                                        kind: "download"
-                                        color: saveMouse.containsMouse
-                                            ? Theme.accent : Theme.inkMuted
+                                        width: 14; height: 14
+                                        fillMode: Image.PreserveAspectFit
+                                        smooth: true
+                                        source: modal.downloadIcon(
+                                            Theme.hex(saveMouse.containsMouse ? Theme.accent : Theme.inkMuted))
+                                        opacity: saveMouse.containsMouse ? 1 : 0.8
                                     }
+
                                     MouseArea {
                                         id: saveMouse
                                         anchors.fill: parent
                                         hoverEnabled: true
                                         cursorShape: Qt.PointingHandCursor
                                         onClicked: modal.openDownloadPicker(modelData)
+                                        ToolTip.visible: containsMouse
+                                        ToolTip.text: "Download"
+                                        ToolTip.delay: 300
                                     }
                                 }
                             }
