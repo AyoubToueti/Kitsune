@@ -81,15 +81,9 @@ Item {
 
         if (status === "" || id <= 0) return
 
-        // Signed out: the write would be rejected, so offer the same sign-in
-        // `QuickAddButton` does rather than failing silently.
-        if (!ListStatusStore.signedIn) {
-            if (ListStatusStore.backend) {
-                const url = ListStatusStore.backend.beginLogin()
-                if (url && url.length > 0) Qt.openUrlExternally(url)
-            }
-            return
-        }
+        // No sign-in gate. The list is local, so the drop is written and
+        // pushed on the next sync; the old check here is what made dragging
+        // silently do nothing for a reader without an AniList account.
 
         // Dropping on the list the work is already on is a no-op: re-writing
         // the same status only costs a round trip.

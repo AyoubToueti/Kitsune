@@ -143,15 +143,12 @@ Item {
 
         function onAuthStatusReady(signedInNow) {
             page.signedIn = signedInNow
-            if (signedInNow) {
-                page.loading = true
-                page.backend.userList()
-            } else {
-                page.entries = []
-                page.loading = false
-                page.loadFailed = false
-                page.errorText = ""
-            }
+            // Read the list EITHER WAY. It is a local file, so a reader who
+            // has never connected AniList -- or is offline -- still has one.
+            // Clearing it here is what made the page claim an empty library
+            // and demand a sign-in just to look at their own collection.
+            page.loading = true
+            page.backend.userList()
         }
 
         function onUserListReady(json) {
@@ -216,31 +213,78 @@ Item {
         }
 
         // --- Signed out banner --------------------------------------------
+        //
+        // A NOTE, not a gate. The list below is local, so a reader without an
+        // account can still browse, search and organise it; signing in only
+        // adds syncing, which this strip is what offers.
         Item {
             Layout.fillWidth: true
-            Layout.fillHeight: true
+            Layout.preferredHeight: page.signedIn ? 0 : 120
             visible: !page.signedIn
 
             Rectangle {
                 anchors.centerIn: parent
-                width: 440
-                height: 300
-                radius: 16
+                width: parent.width - Theme.pad * 2
+                height: 96
+                radius: 12
                 color: Theme.surfaceRaised
                 border.width: 1
                 border.color: Theme.borderSubtle
 
-                ErrorState {
+                Row {
                     anchors.fill: parent
                     anchors.margins: 16
-                    kind: "sleeping"
-                    artWidth: 110
-                    title: page.errorText !== "" ? "Sign-in failed" : "Sign in to sync your list"
-                    message: page.errorText !== ""
-                        ? "We couldn't complete the sign-in. Please try again."
-                        : "Connect your AniList account to track episodes, sync watch states, and organize your collection."
-                    primaryText: "Sign in with AniList"
-                    onPrimaryClicked: page.signIn()
+                    spacing: 16
+
+                    Column {
+                        width: parent.width - signInBtn.width - 16
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 4
+
+                        Text {
+                            text: page.errorText !== "" ? "Sign-in failed" : "Not connected to AniList"
+                            color: Theme.ink
+                            font.pixelSize: 14
+                            font.bold: true
+                        }
+                        Text {
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            text: page.errorText !== ""
+                                ? "We couldn't complete the sign-in. Please try again."
+                                : "Your list is saved on this device and works offline. Sign in to sync it with AniList."
+                            color: Theme.inkMuted
+                            font.pixelSize: 12
+                        }
+                    }
+
+                    Rectangle {
+                        id: signInBtn
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: signInLabel.implicitWidth + 28
+                        height: 34
+                        radius: 17
+                        color: signInMouse.containsMouse ? Theme.accentHover : Theme.accent
+
+                        Behavior on color { ColorAnimation { duration: 120 } }
+
+                        Text {
+                            id: signInLabel
+                            anchors.centerIn: parent
+                            text: "Sign in"
+                            color: "white"
+                            font.pixelSize: 12
+                            font.bold: true
+                        }
+
+                        MouseArea {
+                            id: signInMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: page.signIn()
+                        }
+                    }
                 }
             }
         }
@@ -251,7 +295,6 @@ Item {
             Layout.leftMargin: Theme.pad
             Layout.rightMargin: Theme.pad
             Layout.topMargin: Theme.gap
-            visible: page.signedIn
             spacing: 6
 
             Repeater {
@@ -315,7 +358,7 @@ Item {
             Layout.leftMargin: Theme.pad
             Layout.rightMargin: Theme.pad
             Layout.topMargin: Theme.gap
-            visible: page.signedIn && page.entries.length > 0
+            visible: page.entries.length > 0
             spacing: 8
 
             Rectangle {
@@ -448,7 +491,6 @@ Item {
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            visible: page.signedIn
 
             // Error case: server error fox, message classified from page.errorText.
             ErrorState {

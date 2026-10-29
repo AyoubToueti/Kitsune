@@ -295,16 +295,16 @@ Item {
 
         function onAuthStatusReady(signedInNow) {
             page.signedIn = signedInNow
-            if (signedInNow && page.anime) {
+            // The list is LOCAL, so the chip is seeded either way. Signing out
+            // (or never having signed in) is not a reason to claim the work is
+            // not on a list the reader curated on this device.
+            if (page.anime) {
                 // Re-assert what the shared store already knows before the
-                // read comes back, so the chip cannot flash signed-out.
+                // read comes back, so the chip cannot flash empty.
                 page.listStatus = ListStatusStore.statusFor(page.animeId)
                 page.listEntryId = ListStatusStore.entryIdFor(page.animeId)
-                page.fetchListEntry()
-            } else if (!signedInNow) {
-                page.listStatus = ""
-                page.listEntryId = 0
             }
+            page.fetchListEntry()
         }
         function onListEntryReady(mediaId, json) {
             // Another work's entry would move this page's status chip AND its
@@ -445,7 +445,9 @@ Item {
     }
 
     function fetchListEntry() {
-        if (backend && page.signedIn && page.anime) {
+        // Not gated on `signedIn`: `getListEntry` answers from the local
+        // store, which exists whether or not AniList is connected.
+        if (backend && page.anime) {
             backend.getListEntry(page.anime.id)
         }
     }
@@ -812,7 +814,9 @@ Item {
                                     Text {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: {
-                                            if (!page.signedIn) return "Sign in to AniList"
+                                            // The list is local, so a signed-out reader
+                                            // can still add. The label says so rather than
+                                            // sending them to a sign-in wall.
                                             if (page.listStatus === "") return "Add to list"
                                             const found = page.listStatuses.find(
                                                 function (s) { return s.value === page.listStatus })
@@ -830,10 +834,7 @@ Item {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     enabled: !page.statusBusy
-                                    onClicked: {
-                                        if (!page.signedIn) page.signIn()
-                                        else statusPopup.open()
-                                    }
+                                    onClicked: statusPopup.open()
                                 }
                             }
 
@@ -1674,6 +1675,43 @@ Item {
 
         contentItem: Column {
             spacing: 2
+
+            // Signed out: the choices below still write the LOCAL list, so
+            // this is an offer to sync, not a gate in front of them.
+            Rectangle {
+                visible: !page.signedIn
+                width: statusPopup.width - 12
+                height: 32
+                radius: 8
+                color: signInRowMouse.containsMouse ? Theme.surfaceHover : "transparent"
+
+                Text {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Sign in to sync with AniList"
+                    color: Theme.accent
+                    font.pixelSize: 12
+                }
+
+                MouseArea {
+                    id: signInRowMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        statusPopup.close()
+                        page.signIn()
+                    }
+                }
+            }
+
+            Rectangle {
+                visible: !page.signedIn
+                width: statusPopup.width - 12
+                height: 1
+                color: Theme.borderSubtle
+            }
 
             Repeater {
                 model: page.listStatuses

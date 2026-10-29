@@ -31,8 +31,12 @@ Item {
         }
     }
 
+    // The reader's list is a LOCAL file, so it is read whether or not an
+    // AniList account is connected. Gating this on `signedIn` was what made an
+    // offline reader see an empty library and a "sign in to add" prompt: the
+    // store never asked the backend, so every card said "not on your list".
     function refresh() {
-        if (backend && signedIn) backend.userList()
+        if (backend) backend.userList()
     }
 
     // The status wire value for a work, or "" when not on the list.
@@ -123,8 +127,10 @@ Item {
         target: store.backend
         function onAuthStatusReady(signedInNow) {
             store.signedIn = signedInNow
-            if (signedInNow) store.refresh()
-            else store.statuses = ({})
+            // Read either way. The list is local, so a signed-out reader still
+            // has one -- clearing it here made the whole library disappear the
+            // moment AniList was unreachable or never connected.
+            store.refresh()
         }
         function onUserListReady(json) {
             const entries = JSON.parse(json) || []

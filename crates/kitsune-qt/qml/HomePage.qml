@@ -128,7 +128,10 @@ Item {
 
         function onAuthStatusReady(signedInNow) {
             page.signedIn = signedInNow
-            if (signedInNow) page.backend.continueWatching(12)
+            // The row comes from the LOCAL list + watch positions, so it is
+            // read whether or not AniList is connected. Gating it on a token
+            // is what hid a signed-out reader's own history from them.
+            page.backend.continueWatching(12)
         }
         function onContinueWatchingReady(json) {
             page.continueItems = page.sortedContinue(JSON.parse(json) || [])
@@ -154,7 +157,7 @@ Item {
             if (!page.backend) return
             page.backend.getLastPlayed()
             page.backend.getWatchPositions()
-            if (page.signedIn) page.backend.continueWatching(12)
+            page.backend.continueWatching(12)
         }
 
         // An AniList LIST write -- a status change, or a removal from this
@@ -166,7 +169,7 @@ Item {
         // until the page was left and re-entered, because nothing told the row
         // to re-read.
         function onListChanged() {
-            if (!page.backend || !page.signedIn) return
+            if (!page.backend) return
             page.backend.continueWatching(12)
         }
     }
@@ -327,7 +330,7 @@ Item {
                 }
             }
 
-            // --- Continue watching (signed in only) ---------------------
+            // --- Continue watching --------------------------------------
             Column {
                 width: parent.width
                 visible: page.continueItems.length > 0
