@@ -56,6 +56,28 @@ Item {
         return "plus"
     }
 
+    // Write a status and collapse the stack.
+    //
+    // A ROOT function, not inline handler code: the delegates call it as
+    // `menu.applyStatus(...)`, so nothing inside a delegate or an inline
+    // component has to touch the enclosing object's properties directly.
+    //
+    // Not gated on `signedIn`: the list is local, so an offline reader can
+    // organise it and have the change pushed on the next sync.
+    function applyStatus(value) {
+        if (value !== "" && animeId > 0) {
+            ListStatusStore.setStatus(animeId, value)
+        }
+        expanded = false
+    }
+
+    function removeFromList() {
+        if (animeId > 0) {
+            ListStatusStore.remove(animeId)
+        }
+        expanded = false
+    }
+
     HoverHandler {
         id: stackHover
         onHoveredChanged: {
@@ -108,15 +130,19 @@ Item {
             rotation: itemAngle - 270.0
             iconRotation: 270.0 - itemAngle
 
+            // The glyph is built HERE, in the delegate, where `menu` resolves.
+            // The inline component below used to call `menu.getSvgIcon(...)`
+            // from inside itself, and a type defined with `component` does not
+            // reliably see the enclosing id at run time -- that is what raised
+            // "Value is undefined and could not be converted to an object".
+            iconSource: menu.getSvgIcon(iconName)
+
             isActive: menu.currentStatus === itemStatus
             menuExpanded: menu.expanded
 
-            onClicked: {
-                if (itemStatus !== "") {
-                    ListStatusStore.setStatus(menu.animeId, itemStatus)
-                }
-                menu.expanded = false
-            }
+            // The write goes through a ROOT function rather than touching
+            // `menu.expanded` from the delegate's handler.
+            onClicked: menu.applyStatus(itemStatus)
         }
     }
 
@@ -156,10 +182,7 @@ Item {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             onClicked: {
-                if (mainBtn.showRemoveX) {
-                    ListStatusStore.remove(menu.animeId)
-                    menu.expanded = false
-                }
+                if (mainBtn.showRemoveX) menu.removeFromList()
             }
         }
 
@@ -188,6 +211,11 @@ Item {
         property string itemStatus: ""
         property string iconName: ""
         property string tipText: ""
+        // The ready-made image URL, supplied by the delegate. The component
+        // must not reach for `menu` itself: an inline `component` cannot
+        // reliably see the enclosing id at run time, and the resulting
+        // `undefined` base is what made setting a property throw.
+        property url iconSource: ""
         property bool isActive: false
         property bool menuExpanded: false
         property real iconRotation: 0.0
@@ -233,7 +261,7 @@ Item {
                 width: 13
                 height: 13
                 rotation: actPill.iconRotation
-                source: menu.getSvgIcon(actPill.iconName)
+                source: actPill.iconSource
                 sourceSize.width: 26
                 sourceSize.height: 26
                 smooth: true
