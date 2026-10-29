@@ -4231,18 +4231,45 @@ impl qobject::Backend {
         let existing = anime.as_ref().and_then(|a| store.get(a.provider, media_id));
 
         let Some(anime) = anime.or_else(|| existing.as_ref().map(|e| e.anime.clone())) else {
-            // No snapshot anywhere: there is nothing to render a row from, and
-            // fetching one would be a network round trip the UI is waiting on.
-            self.auth_error(QString::from(
-                "could not add to the list: the work is not loaded yet",
-            ));
+            // No snapshot anywhere. This used to give up with an error, which
+            // made the write silently disappear: a card whose work was never
+            // cached (a My List row, a Continue Watching row, a card evicted
+            // from the partial cache) could not be added, and because the
+            // function returned before `spawn_sync` no sync request was ever
+            // issued either. The detail page worked only because opening it
+            // had already cached the work.
+            //
+            // Fetch the work instead and finish the write when it lands.
+            self.defer_list_entry(media_id, parsed, progress);
             return;
         };
 
-        let record = kitsune_core::list::local_change(anime, parsed, progress, existing);
+        self.apply_list_entry(media_id, parsed, progress, anime);
+    }
+
+    /// Finish a list write once the work's snapshot is known.
+    ///
+    /// Shared by the fast path (the work was cached) and the deferred one (it
+    /// had to be fetched), so the two cannot drift: both upsert the record and
+    /// then emit `listChanged` and start a sync. Skipping either of those was
+    /// what made a card's add button look dead -- the entry never reached
+    /// AniList, because no sync was ever requested.
+    fn apply_list_entry(
+        mut self: Pin<&mut Self>,
+        media_id: i64,
+        status: ListStatus,
+        progress: Option<u32>,
+        anime: kitsune_core::types::Anime,
+    ) {
+        let store = Arc::clone(&self.rust().media_list);
+        // Re-read the record: on the deferred path the store may have changed
+        // while the fetch was in flight.
+        let existing = store.get(anime.provider, media_id);
+
+        let record = kitsune_core::list::local_change(anime, status, progress, existing);
         if let Err(err) = store.upsert(record) {
             let message = format!("could not save to your list: {err}");
-            self.auth_error(QString::from(&message));
+            self.as_mut().auth_error(QString::from(&message));
             return;
         }
 
@@ -4250,6 +4277,43 @@ impl qobject::Backend {
         // waiting for the network would only make the menu feel broken.
         self.as_mut().list_changed();
         self.as_mut().spawn_sync();
+    }
+
+    /// Fetch the work a list write named, then finish the write.
+    ///
+    /// Needed because a record carries a snapshot: the list pages render a
+    /// cover and title with no network at all, so an entry without one would
+    /// be a blank row. Every surface that shows a card warms the partial cache
+    /// (browse, home shelves, recommendations, the detail page), but a My List
+    /// row or a Continue Watching row was built from the local store, so a
+    /// write from those had no snapshot and used to be dropped.
+    fn defer_list_entry(
+        mut self: Pin<&mut Self>,
+        media_id: i64,
+        status: ListStatus,
+        progress: Option<u32>,
+    ) {
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let provider = Arc::clone(&self.rust().provider);
+
+        runtime.spawn(async move {
+            let fetched = provider.by_id(media_id).await;
+            let _ = qt_thread.queue(move |mut qobject| match fetched {
+                Ok(Some(anime)) => qobject
+                    .as_mut()
+                    .apply_list_entry(media_id, status, progress, anime),
+                // The id exists but no source could answer for it. Say so on
+                // the write signal rather than on the read one.
+                Ok(None) => qobject.as_mut().auth_error(QString::from(
+                    "could not add to the list: that work was not found",
+                )),
+                Err(err) => {
+                    let message = format!("could not add to the list: {err}");
+                    qobject.as_mut().auth_error(QString::from(&message))
+                }
+            });
+        });
     }
 
     fn delete_list_entry(mut self: Pin<&mut Self>, media_id: i64) {
@@ -4285,6 +4349,14 @@ impl qobject::Backend {
     /// leaves the dirty entries queued for the next attempt, which is the
     /// intended behaviour offline.
     fn spawn_sync(self: Pin<&mut Self>) {
+        // Signed out: there is no token to push with and the pull needs one, so
+        // a pass would be pure overhead. `sync_media_list` has always guarded
+        // this; the write paths reach `spawn_sync` directly and did not, which
+        // meant every offline add fired a doomed request.
+        if !self.rust().tokens.has_token() {
+            return;
+        }
+
         // Collapse overlapping requests into one pass.
         //
         // `authStatus()` is called by the home page, My List and the detail
