@@ -1,12 +1,16 @@
-// A small add-to-list control for a poster card's hover overlay.
+// The add-to-list stack on a trending card's poster.
 //
-// Shows a "+" when the work is not on the reader's list, and -- when it is --
-// the icon of the list it is saved to (play for Watching, a check for
+// One circular button in the card's bottom-right corner expands upward into
+// the list choices (Watching / Completed / Plan to watch) and, when the work is
+// already listed, shows WHERE it is saved -- play for Watching, a check for
 // Completed, a calendar for Plan to watch, pause for On hold, a minus for
-// Dropped). Clicking either opens a tiny menu of the main lists (Watching /
-// Completed / Plan to watch); when the work is already listed the menu also
-// offers Remove. The status comes from the shared `ListStatusStore`, so many
-// cards do not each issue their own lookup.
+// Dropped. Hovering a listed work turns it into a red "x" that removes it.
+//
+// This is the control the trending rail used to hand-roll inline; it lives here
+// so every card overlay agrees about the glyphs, the expansion animation and --
+// most importantly -- which store the write goes through. All reads and writes
+// go to the shared `ListStatusStore`, so a change made on one card is visible
+// on the next repaint of any other.
 import QtQuick
 import QtQuick.Controls
 import com.kitsune.app
@@ -16,29 +20,23 @@ Item {
 
     // The work this control adds.
     property int animeId: 0
-    // The Backend, so a click can sign the reader in when needed.
-    property var backend: null
     // The work's airing status ("RELEASING", "FINISHED", ...), or "" when
-    // unknown. A still-airing work cannot be marked Completed, so that menu
-    // row is dropped for it.
+    // unknown. A still-airing work cannot be marked Completed, so that row is
+    // dropped for it.
     property string animeStatus: ""
 
-    // The menu rows, minus Completed when the work is still airing.
-    readonly property var offeredStatuses: {
-        if (animeStatus === "RELEASING") {
-            return ListStatusStore.menuStatuses.filter(function (s) {
-                return s.value !== "completed"
-            })
-        }
-        return ListStatusStore.menuStatuses
-    }
+    // A work still airing cannot sensibly be marked Completed.
+    readonly property bool canComplete: animeStatus !== "RELEASING"
 
     // The current status wire value ("current" / "completed" / ...) or "".
     readonly property string status: ListStatusStore.statusFor(animeId)
     readonly property bool listed: status !== ""
 
-    implicitWidth: 30
-    implicitHeight: 30
+    // Set by hovering the trigger; the stack animates open from it.
+    property bool expanded: false
+
+    implicitWidth: 40
+    implicitHeight: stackCol.implicitHeight + mainBtn.height + 12
 
     // Resolution-independent SVG icons as data URIs, so the glyph stays sharp
     // at any scale and the two states (unlisted / listed) never depend on a
@@ -74,154 +72,181 @@ Item {
         return "plus"
     }
 
-    // The pencil turns into a filled badge when the work is on a list.
-    Rectangle {
-        id: face
-        anchors.fill: parent
-        radius: 8
-        color: control.listed
-            ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.9)
-            : Qt.rgba(0, 0, 0, 0.55)
-        border.width: 1
-        border.color: mouse.containsMouse ? Theme.accent : Theme.glassBorder
+    // Write a list status for this work.
+    //
+    // Deliberately NOT gated on being signed in: the list is a local file, so
+    // an offline reader can organise their library and have it pushed on the
+    // next sync. Refusing the click is what used to send every add straight to
+    // a sign-in prompt.
+    function applyStatus(value) {
+        if (animeId <= 0 || value === "") return
+        ListStatusStore.setStatus(animeId, value)
+        expanded = false
+    }
 
-        Behavior on color { ColorAnimation { duration: 140 } }
+    function removeFromList() {
+        if (animeId <= 0) return
+        ListStatusStore.remove(animeId)
+        expanded = false
+    }
 
-        // The glyph: "+" when not listed; when listed, the icon of the list
-        // the work is saved to, so the button says WHERE it is rather than
-        // merely that it is somewhere.
-        Image {
-            anchors.centerIn: parent
-            width: 16
-            height: 16
-            visible: !control.listed
-            source: control.getSvgIcon("plus")
-            sourceSize.width: 32
-            sourceSize.height: 32
-            smooth: true
-        }
-        Image {
-            anchors.centerIn: parent
-            width: 15
-            height: 15
-            visible: control.listed
-            source: control.getSvgIcon(control.statusIconName(control.status))
-            sourceSize.width: 30
-            sourceSize.height: 30
-            smooth: true
-        }
-
-        // The status in words, so the glyph is never the only cue. Shown on
-        // hover, where the button would otherwise be ambiguous.
-        ToolTip.visible: control.listed && mouse.containsMouse
-        ToolTip.text: ListStatusStore.labelFor(control.status)
-        ToolTip.delay: 200
-
-        MouseArea {
-            id: mouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-                // Signed out: offer to sign in rather than a menu whose writes
-                // would all fail.
-                if (!ListStatusStore.signedIn) {
-                    if (control.backend) {
-                        const url = control.backend.beginLogin()
-                        if (url && url.length > 0) Qt.openUrlExternally(url)
-                    }
-                    return
-                }
-                menu.open()
-            }
+    HoverHandler {
+        id: stackHover
+        onHoveredChanged: {
+            if (!hovered) control.expanded = false
         }
     }
 
-    // A tiny menu anchored under the button, drawn in the overlay so a card's
-    // own clipping cannot cut it off.
-    Popup {
-        id: menu
-        parent: face
-        x: -menu.width + face.width
-        y: face.height + 6
-        width: 150
-        padding: 6
-        modal: false
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+    // The list choices, stacked upward from the trigger.
+    Column {
+        id: stackCol
+        anchors.bottom: mainBtn.top
+        anchors.bottomMargin: 6
+        anchors.horizontalCenter: mainBtn.horizontalCenter
+        spacing: 6
+        opacity: control.expanded ? 1.0 : 0.0
+        scale: control.expanded ? 1.0 : 0.75
+        visible: opacity > 0
+        transformOrigin: Item.Bottom
 
-        background: Rectangle {
-            color: Theme.surfaceRaised
-            radius: 10
-            border.width: 1
-            border.color: Theme.borderSubtle
+        Behavior on opacity { NumberAnimation { duration: 150 } }
+        Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
+
+        ActionButton {
+            iconName: "play"
+            tipText: "Watching"
+            isActive: control.status === "current"
+            onClicked: control.applyStatus("current")
         }
 
-        contentItem: Column {
-            spacing: 2
+        ActionButton {
+            visible: control.canComplete
+            iconName: "check"
+            tipText: "Completed"
+            isActive: control.status === "completed"
+            onClicked: control.applyStatus("completed")
+        }
 
-            Repeater {
-                model: control.offeredStatuses
-                delegate: Rectangle {
-                    required property var modelData
-                    width: menu.width - 12
-                    height: 30
-                    radius: 7
-                    color: rowMouse.containsMouse ? Theme.surfaceHover : "transparent"
+        ActionButton {
+            iconName: "calendar"
+            tipText: "Plan to Watch"
+            isActive: control.status === "planning"
+            onClicked: control.applyStatus("planning")
+        }
+    }
 
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.label
-                        color: control.status === modelData.value ? Theme.accent : Theme.ink
-                        font.pixelSize: 12
-                        font.bold: control.status === modelData.value
-                    }
-                    MouseArea {
-                        id: rowMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            menu.close()
-                            ListStatusStore.setStatus(control.animeId, modelData.value)
-                        }
-                    }
-                }
+    // The trigger: "+" when unlisted, the glyph of the work's own list when
+    // listed, and a red "x" while hovered so removal is discoverable.
+    Rectangle {
+        id: mainBtn
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        width: 36
+        height: 36
+        radius: 18
+
+        property bool isHovered: mainHover.hovered
+        property bool showRemoveX: control.listed && (control.expanded || isHovered)
+
+        color: showRemoveX
+            ? "#ef4444"
+            : (control.expanded || control.listed
+                ? Theme.accent
+                : Qt.rgba(0.12, 0.14, 0.20, 0.92))
+        border.width: 1
+        border.color: showRemoveX ? "#f87171" : Theme.glassBorder
+
+        Behavior on color { ColorAnimation { duration: 150 } }
+
+        HoverHandler {
+            id: mainHover
+            onHoveredChanged: {
+                if (hovered) control.expanded = true
+            }
+        }
+
+        MouseArea {
+            id: mainClickArea
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                if (mainBtn.showRemoveX) control.removeFromList()
+            }
+        }
+
+        Image {
+            anchors.centerIn: parent
+            width: 14
+            height: 14
+            source: control.getSvgIcon(mainBtn.showRemoveX
+                ? "close"
+                : (control.listed ? control.statusIconName(control.status) : "plus"))
+            sourceSize.width: 28
+            sourceSize.height: 28
+            smooth: true
+        }
+
+        ToolTip.visible: mainClickArea.containsMouse && mainBtn.showRemoveX
+        ToolTip.text: "Remove from list"
+        ToolTip.delay: 200
+    }
+
+    // One circular choice in the stack. An inline component so the stack above
+    // reads as a list of intents rather than button plumbing.
+    component ActionButton: Item {
+        id: actBtn
+        property string iconName: ""
+        property string tipText: ""
+        property bool isActive: false
+        signal clicked()
+
+        width: 34
+        height: 34
+
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -3
+            radius: (parent.width / 2) + 3
+            color: "transparent"
+            border.width: 2
+            border.color: Theme.accent
+            opacity: actBtn.isActive ? 0.95 : 0.0
+
+            Behavior on opacity { NumberAnimation { duration: 180 } }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            color: actBtn.isActive
+                ? Theme.accent
+                : (actMouse.containsMouse ? Theme.accentHover : Qt.rgba(0.12, 0.14, 0.20, 0.92))
+            border.width: 1
+            border.color: actBtn.isActive ? "#ffffff" : Theme.glassBorder
+
+            Behavior on color { ColorAnimation { duration: 120 } }
+
+            Image {
+                anchors.centerIn: parent
+                width: 14
+                height: 14
+                source: control.getSvgIcon(actBtn.iconName)
+                sourceSize.width: 28
+                sourceSize.height: 28
+                smooth: true
             }
 
-            Rectangle {
-                visible: control.listed
-                width: menu.width - 12
-                height: 1
-                color: Theme.borderSubtle
+            MouseArea {
+                id: actMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: actBtn.clicked()
             }
-            Rectangle {
-                visible: control.listed
-                width: menu.width - 12
-                height: 30
-                radius: 7
-                color: removeMouse.containsMouse ? Theme.surfaceHover : "transparent"
 
-                Text {
-                    anchors.left: parent.left
-                    anchors.leftMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "Remove from list"
-                    color: Theme.danger
-                    font.pixelSize: 12
-                }
-                MouseArea {
-                    id: removeMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        menu.close()
-                        ListStatusStore.remove(control.animeId)
-                    }
-                }
-            }
+            ToolTip.visible: actMouse.containsMouse && actBtn.tipText.length > 0
+            ToolTip.text: actBtn.tipText
+            ToolTip.delay: 200
         }
     }
 }

@@ -18,14 +18,6 @@ Item {
     implicitHeight: 300
 
     readonly property int animeId: card.anime ? (card.anime.id || 0) : 0
-    readonly property string currentStatus: (typeof ListStatusStore !== "undefined" && ListStatusStore && ListStatusStore.getStatus && card.animeId > 0)
-                                             ? ListStatusStore.getStatus(card.animeId)
-                                             : ""
-    readonly property bool isOnList: currentStatus !== ""
-
-    // A work still airing cannot sensibly be marked Completed, so its
-    // Completed button is hidden.
-    readonly property bool canComplete: !card.anime || card.anime.status !== "RELEASING"
 
     function displayTitle(item) {
         return TitlePreference.title(item)
@@ -40,38 +32,6 @@ Item {
     // Zero-padded rank string
     function rankLabel() {
         return rank < 10 ? "0" + rank : String(rank)
-    }
-
-    // Base64 Data URI generator for resolution-independent SVG icons
-    function getSvgIcon(name, color) {
-        var fill = color === undefined ? "#ffffff" : Theme.hex(color)
-        var path = ""
-        if (name === "play")
-            path = "M8 5v14l11-7z"
-        else if (name === "check")
-            path = "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"
-        else if (name === "calendar")
-            path = "M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"
-        else if (name === "edit")
-            path = "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
-        else if (name === "close" || name === "x")
-            path = "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
-        else // "plus"
-            path = "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
-
-        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
-        return "data:image/svg+xml," + encodeURIComponent(xml)
-    }
-
-    // The glyph for a list status, so a listed work shows *where* it is saved
-    // (play / check / calendar / pause / minus) instead of a generic pencil.
-    function statusIconName(value) {
-        if (value === "current") return "play"
-        if (value === "completed") return "check"
-        if (value === "planning") return "calendar"
-        if (value === "paused") return "pause"
-        if (value === "dropped") return "minus"
-        return "plus"
     }
 
     HoverHandler { id: hover }
@@ -272,132 +232,18 @@ Item {
                     }
                 }
 
-                // --- Expandable Quick Action Stack (Bottom-Right) -------------
-                Item {
-                    id: quickStack
+                // --- Quick add / status stack (Bottom-Right) ------------
+                // The shared control, so the trending rail draws exactly the
+                // same glyphs and writes through the same `ListStatusStore`
+                // as every poster card.
+                QuickAddButton {
+                    id: quickAdd
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
                     anchors.margins: 8
-                    width: 40
-                    height: stackCol.implicitHeight + mainBtn.height + 12
+                    animeId: card.animeId
+                    animeStatus: card.anime ? (card.anime.status || "") : ""
                     z: 30
-
-                    property bool expanded: false
-
-                    HoverHandler {
-                        id: stackHover
-                        onHoveredChanged: {
-                            if (!hovered) {
-                                quickStack.expanded = false
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        anchors.fill: parent
-                        color: "transparent"
-                    }
-
-                    // Expanded Action Buttons
-                    Column {
-                        id: stackCol
-                        anchors.bottom: mainBtn.top
-                        anchors.bottomMargin: 6
-                        anchors.horizontalCenter: mainBtn.horizontalCenter
-                        spacing: 6
-                        opacity: quickStack.expanded ? 1.0 : 0.0
-                        scale: quickStack.expanded ? 1.0 : 0.75
-                        visible: opacity > 0
-                        transformOrigin: Item.Bottom
-
-                        Behavior on opacity { NumberAnimation { duration: 150 } }
-                        Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutBack } }
-
-                        ActionButton {
-                            iconName: "play"
-                            tipText: "Watching"
-                            isActive: card.currentStatus === "current"
-                            onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "current")
-                        }
-
-                        ActionButton {
-                            visible: card.canComplete
-                            iconName: "check"
-                            tipText: "Completed"
-                            isActive: card.currentStatus === "completed"
-                            onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "completed")
-                        }
-
-                        ActionButton {
-                            iconName: "calendar"
-                            tipText: "Plan to Watch"
-                            isActive: card.currentStatus === "planning"
-                            onClicked: if (card.animeId > 0) ListStatusStore.setStatus(card.animeId, "planning")
-                        }
-                    }
-
-                    // Main Bottom-Right Trigger Button (+ / Edit Pencil / Red X)
-                    Rectangle {
-                        id: mainBtn
-                        anchors.bottom: parent.bottom
-                        anchors.right: parent.right
-                        width: 36
-                        height: 36
-                        radius: 18
-
-                        property bool isHovered: mainHover.hovered
-                        property bool showRemoveX: card.isOnList && isHovered
-
-                        color: showRemoveX
-                            ? "#ef4444"
-                            : (quickStack.expanded || card.isOnList
-                                ? Theme.accent
-                                : Qt.rgba(0.12, 0.14, 0.20, 0.92))
-                        border.width: 1
-                        border.color: showRemoveX ? "#f87171" : Theme.glassBorder
-
-                        HoverHandler {
-                            id: mainHover
-                            onHoveredChanged: {
-                                if (hovered) {
-                                    quickStack.expanded = true
-                                }
-                            }
-                        }
-
-                        MouseArea {
-                            id: mainClickArea
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                                if (mainBtn.showRemoveX && card.animeId > 0) {
-                                    ListStatusStore.remove(card.animeId)
-                                    quickStack.expanded = false
-                                }
-                            }
-                        }
-
-                        Behavior on color { ColorAnimation { duration: 150 } }
-
-                        Image {
-                            anchors.centerIn: parent
-                            width: 14
-                            height: 14
-                            // Listed: the glyph of the list the work is saved
-                            // to, so the button says WHERE it is rather than
-                            // merely that it is somewhere.
-                            source: card.getSvgIcon(mainBtn.showRemoveX
-                                ? "close"
-                                : (card.isOnList ? card.statusIconName(card.currentStatus) : "plus"))
-                            sourceSize.width: 28
-                            sourceSize.height: 28
-                            smooth: true
-                        }
-
-                        ToolTip.visible: mainClickArea.containsMouse && mainBtn.showRemoveX
-                        ToolTip.text: "Remove from list"
-                        ToolTip.delay: 200
-                    }
                 }
 
                 // ── Border overlay — on top of everything ─────────────────
@@ -410,64 +256,6 @@ Item {
                     Behavior on border.color { ColorAnimation { duration: 180 } }
                 }
             }
-        }
-    }
-
-    component ActionButton: Item {
-        id: actBtn
-        property string iconName: ""
-        property string tipText: ""
-        property bool isActive: false
-        signal clicked()
-
-        width: 34
-        height: 34
-
-        Rectangle {
-            anchors.fill: parent
-            anchors.margins: -3
-            radius: (parent.width / 2) + 3
-            color: "transparent"
-            border.width: 2
-            border.color: Theme.accent
-            opacity: actBtn.isActive ? 0.95 : 0.0
-
-            Behavior on opacity { NumberAnimation { duration: 180 } }
-        }
-
-        Rectangle {
-            id: btnBody
-            anchors.fill: parent
-            radius: width / 2
-            color: actBtn.isActive 
-                ? Theme.accent 
-                : (actMouse.containsMouse ? Theme.accentHover : Qt.rgba(0.12, 0.14, 0.20, 0.92))
-            border.width: 1
-            border.color: actBtn.isActive ? "#ffffff" : Theme.glassBorder
-
-            Behavior on color { ColorAnimation { duration: 120 } }
-
-            Image {
-                anchors.centerIn: parent
-                width: 14
-                height: 14
-                source: card.getSvgIcon(actBtn.iconName)
-                sourceSize.width: 28
-                sourceSize.height: 28
-                smooth: true
-            }
-
-            MouseArea {
-                id: actMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: actBtn.clicked()
-            }
-
-            ToolTip.visible: actMouse.containsMouse && tipText.length > 0
-            ToolTip.text: tipText
-            ToolTip.delay: 200
         }
     }
 }
