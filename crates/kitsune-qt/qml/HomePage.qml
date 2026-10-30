@@ -20,7 +20,7 @@ Item {
     // shelf's own status/sort, rather than a generic browse.
     signal openBrowseFiltered(string status, string sort, bool reversed)
     signal openGenre(string genre)
-    signal openWatch(int animeId, int episodeNumber)
+    signal openWatch(int animeId, int episodeNumber, string provider)
     // Declared for the window's wiring even though the navbar now owns these
     // two routes: an unwired signal is harmless, a missing one is a load error.
     signal openMyList()
@@ -359,7 +359,8 @@ Item {
                         entry: modelData
                         position: page.positionFor(modelData.anime.id)
                         onOpenAnime: (id, provider) => page.openAnime(id, provider)
-                        onOpenWatch: (animeId, episode) => page.openWatch(animeId, episode)
+                        onOpenWatch: (animeId, episode, provider) =>
+                            page.openWatch(animeId, episode, provider)
                     }
                 }
             }

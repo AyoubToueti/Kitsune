@@ -13,7 +13,10 @@ Item {
 
     // `provider` is the id's namespace, forwarded from the entry's own `Anime`.
     signal openAnime(int id, string provider)
-    signal openWatch(int animeId, int episode)
+    // The namespace travels WITH the id: the card only has `anime.provider`,
+    // and without it a resume of a Kitsu work would open whatever AniList work
+    // owns that number.
+    signal openWatch(int animeId, int episode, string provider)
 
     readonly property var anime: entry ? entry.anime : null
     readonly property string title: TitlePreference.title(anime)
@@ -77,7 +80,8 @@ Item {
             // Remove-from-list button (Top-Left)
             Rectangle {
                 id: removeBtn
-                visible: card.anime && ListStatusStore.isListed(card.anime.id)
+                visible: card.anime && ListStatusStore.isListed(card.anime.id,
+                    card.anime.provider || "anilist")
                 anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.margins: 8
@@ -108,7 +112,8 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: ListStatusStore.remove(card.anime.id)
+                    onClicked: ListStatusStore.remove(card.anime.id,
+                        card.anime.provider || "anilist")
                 }
             }
 
@@ -190,7 +195,8 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: card.openWatch(card.anime ? card.anime.id : 0, card.episode)
+                    onClicked: card.openWatch(card.anime ? card.anime.id : 0, card.episode,
+                        (card.anime && card.anime.provider) ? card.anime.provider : "anilist")
                 }
             }
 
