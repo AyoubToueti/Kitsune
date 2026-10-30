@@ -39,6 +39,13 @@ Item {
     // Emitted when an episode is chosen: pushes the watch page with the
     // numbers it needs to search a release and match a torrent file.
     signal openWatch(int animeId, int malId, int episodeNumber, int absoluteEpisode)
+    // Emitted when the reader asks to CONTINUE: the same identity, but the
+    // watch modal replays the remembered release instead of searching.
+    //
+    // A separate signal rather than a fifth argument on `openWatch`: an extra
+    // argument that nobody wired is silently dropped, and this codebase has
+    // already been bitten by invokable arity mismatches.
+    signal openResume(int animeId, int malId, int episodeNumber, int absoluteEpisode)
     // Season packs are a work-level search, so they get their own entry rather
     // than being buried behind a specific episode.
     signal openPacks(int animeId, int malId)
@@ -182,9 +189,18 @@ Item {
         return lowest > list.length ? lowest - 1 : 0
     }
 
-    function triggerWatch(epNum) {
+    function triggerWatch(epNum, resume) {
         const malId = page.anime && page.anime.idMal ? page.anime.idMal : 0
-        page.openWatch(page.animeId, malId, epNum, epNum + page.episodeOffset)
+        const absolute = epNum + page.episodeOffset
+        // `resume` asks the modal to replay the remembered release instead of
+        // searching again. It is a SEPARATE signal rather than a fifth argument
+        // on `openWatch`: an unwired extra argument is silently dropped, and
+        // this codebase has already been bitten by arity mismatches.
+        if (resume === true) {
+            page.openResume(page.animeId, malId, epNum, absolute)
+            return
+        }
+        page.openWatch(page.animeId, malId, epNum, absolute)
     }
 
     function toggleEpisodeSort() {
@@ -301,8 +317,8 @@ Item {
             if (page.anime) {
                 // Re-assert what the shared store already knows before the
                 // read comes back, so the chip cannot flash empty.
-                page.listStatus = ListStatusStore.statusFor(page.animeId)
-                page.listEntryId = ListStatusStore.entryIdFor(page.animeId)
+                page.listStatus = ListStatusStore.statusFor(page.animeId, page.animeProvider)
+                page.listEntryId = ListStatusStore.entryIdFor(page.animeId, page.animeProvider)
             }
             page.fetchListEntry()
         }
@@ -318,7 +334,7 @@ Item {
             // the store still knows this work is listed, keep the chip rather
             // than degrading to the signed-out CTA. A genuine removal goes
             // through `listChanged`, which updates the store first.
-            if (!entry && ListStatusStore.isListed(page.animeId)) return
+            if (!entry && ListStatusStore.isListed(page.animeId, page.animeProvider)) return
 
             page.listStatus = entry ? (entry.status || "") : ""
             page.listEntryId = entry ? (entry.id || 0) : 0
@@ -447,8 +463,11 @@ Item {
     function fetchListEntry() {
         // Not gated on `signedIn`: `getListEntry` answers from the local
         // store, which exists whether or not AniList is connected.
+        //
+        // The provider travels WITH the id, for the same reason `getAnime`
+        // takes it: a Kitsu id and an AniList id can be the same number.
         if (backend && page.anime) {
-            backend.getListEntry(page.anime.id)
+            backend.getListEntry(page.anime.id, page.anime.provider || page.animeProvider)
         }
     }
 
@@ -485,19 +504,25 @@ Item {
         page.listStatus = value
         page.statusBusy = true
         page.statusError = ""
-        backend.setListEntry(page.anime.id, value, 0)
+        backend.setListEntry(page.anime.id, value, 0,
+                             page.anime.provider || page.animeProvider)
         statusBusyTimer.restart()
         if (previous === value) return
     }
 
     function removeFromList() {
-        if (!backend || page.listEntryId === 0) return
-        const previousId = page.listEntryId
+        if (!backend || !page.anime) return
         page.listStatus = ""
         page.listEntryId = 0
         page.statusBusy = true
         page.statusError = ""
-        backend.deleteListEntry(previousId)
+        // `deleteListEntry` takes the WORK id plus its namespace, not
+        // AniList's list-entry id: an entry added while AniList was
+        // unreachable has no entry id at all, and gating on one left it
+        // impossible to remove. `page.listEntryId` is still tracked for the
+        // status payload, but it is not an acceptable target here.
+        backend.deleteListEntry(page.anime.id,
+                                page.anime.provider || page.animeProvider)
         statusBusyTimer.restart()
     }
 
@@ -539,8 +564,8 @@ Item {
                 // with nothing to retry it. `ListStatusStore` already holds
                 // every entry and survives page rebuilds, so read it directly.
                 page.signedIn = ListStatusStore.signedIn
-                page.listStatus = ListStatusStore.statusFor(page.animeId)
-                page.listEntryId = ListStatusStore.entryIdFor(page.animeId)
+                page.listStatus = ListStatusStore.statusFor(page.animeId, page.animeProvider)
+                page.listEntryId = ListStatusStore.entryIdFor(page.animeId, page.animeProvider)
 
                 // The side effects `onAnimeReady` would have run: without
                 // these the status chip and the retry overlay go stale.
@@ -565,8 +590,8 @@ Item {
             // that `navigate()` re-pushes, and without this the chip would
             // still hold the PREVIOUS work's status.
             page.signedIn = ListStatusStore.signedIn
-            page.listStatus = ListStatusStore.statusFor(page.animeId)
-            page.listEntryId = ListStatusStore.entryIdFor(page.animeId)
+            page.listStatus = ListStatusStore.statusFor(page.animeId, page.animeProvider)
+            page.listEntryId = ListStatusStore.entryIdFor(page.animeId, page.animeProvider)
 
             // No full work cached. Paint the partial if we have one, so the
             // hero and title appear immediately instead of the skeleton, then
@@ -781,7 +806,10 @@ Item {
                                     cursorShape: Qt.PointingHandCursor
                                     onClicked: {
                                         const targetEp = page.watchedThrough > 0 ? page.watchedThrough : 1
-                                        page.triggerWatch(targetEp)
+                                        // The button already says "Resume", so it
+                                        // must resume: replay the remembered
+                                        // release rather than search again.
+                                        page.triggerWatch(targetEp, page.watchedThrough > 0)
                                     }
                                 }
                             }
@@ -1364,7 +1392,15 @@ Item {
                                     anchors.fill: parent
                                     enabled: !upcoming
                                     cursorShape: upcoming ? Qt.ArrowCursor : Qt.PointingHandCursor
-                                    onClicked: page.triggerWatch(epNumber)
+                                    // A finished episode resumes its remembered
+                                    // release; an unwatched one searches.
+                                    //
+                                    // `current` is the LAST WATCHED card and
+                                    // `watched` is every episode before it --
+                                    // they are MUTUALLY EXCLUSIVE, so testing
+                                    // only `watched` sent the resume card down
+                                    // the search path.
+                                    onClicked: page.triggerWatch(epNumber, watched || current)
                                 }
                             }
                         }

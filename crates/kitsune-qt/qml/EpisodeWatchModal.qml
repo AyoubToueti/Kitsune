@@ -587,8 +587,8 @@ Popup {
         modal.releases = []
         modal.badges = ({})
         modal.error = ""
-        modal.searching = false
-        modal.searched = false
+        modal.searching = true
+        modal.searched = true
         modal.probing = false
         modal.releaseTitle = ""
         modal.releaseMagnet = ""
@@ -672,7 +672,10 @@ Popup {
             modal.searching = true
             modal.stage = "releases"
             modal.backend.getAnime(animeId, modal.animeProvider)
-            modal.backend.getLastRelease(animeId)
+            // Not `getLastRelease`: the answer depends on what is still on
+            // disk, so the backend picks between a finished file, cached
+            // `.torrent` metadata and the remembered magnet.
+            modal.backend.playResume(animeId, modal.animeProvider, modal.episodeNumber)
             return
         }
         // Guard on BOTH ids: a different episode of the same work needs its own
@@ -685,7 +688,7 @@ Popup {
             releases = []
             badges = ({})
             error = ""
-            searching = false
+            searching = true
             backend.getAnime(animeId, modal.animeProvider)
         }
     }
@@ -1301,11 +1304,27 @@ Popup {
             modal.torrentId = handle.id
             modal.files = handle.files || []
             modal.stage = "files"
-            if (modal.resumeLast && modal.resumeFileIdx >= 0
-                    && modal.resumeFileIdx < modal.files.length) {
-                modal.resumeLast = false
-                modal.play(modal.resumeFileIdx)
-                return
+            // Consume the resume flag HERE, before any branch can return.
+            //
+            // It used to be cleared only on a successful match, so a resume
+            // whose remembered file was not in the re-added torrent left it
+            // set -- and the NEXT ordinary search then jumped to that stale
+            // index instead of calling `pickFile`, parking the reader on the
+            // file list with nothing playing.
+            const resuming = modal.resumeLast
+            modal.resumeLast = false
+            // `resumeFileIdx` is a TORRENT file idx, not an array position.
+            // Comparing it against `files.length` and indexing with it picked
+            // the wrong file (or none) whenever the torrent's indices did not
+            // happen to line up with the array order.
+            if (resuming && modal.resumeFileIdx >= 0) {
+                const target = modal.resumeFileIdx
+                for (let i = 0; i < modal.files.length; i++) {
+                    if (modal.files[i].idx === target) {
+                        modal.play(target)
+                        return
+                    }
+                }
             }
             // A pack has no episode to match on, and `pickFile(..., 0, ...)`
             // falls through to the first video file -- which would silently
@@ -1317,26 +1336,62 @@ Popup {
             if (picked >= 0) modal.play(picked)
         }
 
-        function onLastReleaseReady(json) {
+        // The backend has already picked the cheapest source that still
+        // exists: a finished file on disk, cached `.torrent` metadata, or the
+        // remembered magnet. `null` means nothing is remembered, and the only
+        // honest answer is a fresh search.
+        function onResumeReady(json) {
             if (!modal.resumeLast) return
-            const release = JSON.parse(json)
-            if (release && release.magnet) {
-                modal.resumeFileIdx = (release.fileIdx === undefined
-                    || release.fileIdx === null) ? -1 : release.fileIdx
-                modal.releaseMagnet = release.magnet
-                modal.releaseTitle = release.name || ""
-                modal.searching = true
-                modal.backend.addMagnet(release.magnet)
-            } else {
+            const source = JSON.parse(json)
+            if (source && source.kind === "local" && source.path) {
+                // Played straight off disk: no torrent, so `teardown` has
+                // nothing to remove. `playLocal` needs the same file shape the
+                // Downloads page hands it.
                 modal.resumeLast = false
-                modal.searching = false
-                if (loadedAnimeId !== modal.animeId) {
-                    loadedAnimeId = modal.animeId
-                    titles = []
-                    releases = []
-                    badges = ({})
-                    modal.backend.getAnime(modal.animeId, modal.animeProvider)
-                }
+                modal.searching = true
+                modal.localPlayback = true
+                modal.files = [{
+                    idx: 0,
+                    name: modal.downloadTitle(),
+                    path: source.path,
+                    episode: modal.episodeNumber
+                }]
+                modal.playLocal(0)
+                return
+            }
+            if (source && source.kind === "torrent" && source.path) {
+                modal.resumeFileIdx = (source.fileIdx === undefined
+                    || source.fileIdx === null) ? -1 : source.fileIdx
+                modal.releaseTitle = source.name || ""
+                // A cached `.torrent` carries no magnet, so this release cannot
+                // be re-recorded this once. Clearing it (rather than leaving the
+                // PREVIOUS episode's magnet) stops `onStreamUrlReady` writing a
+                // stale magnet against this episode.
+                modal.releaseMagnet = ""
+                modal.searching = true
+                modal.backend.addTorrentFile(source.path)
+                return
+            }
+            if (source && source.kind === "magnet" && source.magnet) {
+                modal.resumeFileIdx = (source.fileIdx === undefined
+                    || source.fileIdx === null) ? -1 : source.fileIdx
+                modal.releaseMagnet = source.magnet
+                modal.releaseTitle = source.name || ""
+                modal.searching = true
+                modal.backend.addMagnet(source.magnet)
+                return
+            }
+            // Nothing remembered: fall through to a normal search silently, so
+            // the reader sees a release list rather than an error about a
+            // resume that was never possible.
+            modal.resumeLast = false
+            modal.searching = false
+            if (loadedAnimeId !== modal.animeId) {
+                loadedAnimeId = modal.animeId
+                titles = []
+                releases = []
+                badges = ({})
+                modal.backend.getAnime(modal.animeId, modal.animeProvider)
             }
         }
         function onTorrentAddFailed(message) {
@@ -1360,10 +1415,21 @@ Popup {
                 // resolved, so there is no duration and playback may not start
                 // at all. The five-second timer writes it once `duration` is
                 // real. See `lastPlayedRecorded`.
-                modal.backend.setListEntry(modal.animeId, "current", modal.episodeNumber)
+                //
+                // `provider` is REQUIRED. Omitting it made this call throw a
+                // TypeError on the arity check, which aborted the rest of this
+                // handler -- and this is the only place list progress is ever
+                // written, so Continue Watching silently stopped updating
+                // (it filters `progress > 0`). The disc kept working because
+                // it is fed from the timer below, a different function.
+                modal.backend.setListEntry(
+                    modal.animeId, "current", modal.episodeNumber, modal.animeProvider)
                 if (modal.releaseMagnet.length > 0) {
+                    // Per-episode: the backend keys on (provider, id, episode)
+                    // and derives the info hash from the magnet itself.
                     modal.backend.recordLastRelease(
-                        modal.animeId, modal.releaseMagnet, modal.chosenIdx,
+                        modal.animeId, modal.animeProvider, modal.episodeNumber,
+                        modal.releaseMagnet, modal.chosenIdx,
                         modal.fileNameFor(modal.chosenIdx))
                 }
             }

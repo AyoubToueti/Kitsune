@@ -409,8 +409,9 @@ Window {
             (page) => page.applyGenre(genre))
         // A Continue Watching resume: play the remembered release for this
         // work rather than searching again.
-        onOpenWatch: (animeId, episodeNumber) => {
-            watchModal.openFor(animeId, 0, episodeNumber, episodeNumber, "episodes", true)
+        onOpenWatch: (animeId, episodeNumber, provider) => {
+            watchModal.openFor(animeId, 0, episodeNumber, episodeNumber, "episodes",
+                true, provider)
         }
     }
 
@@ -475,6 +476,13 @@ Window {
                 // so the watch modal fetches from the same source as the page.
                 watchModal.openFor(animeId, malId, episodeNumber, absoluteEpisode,
                     "episodes", false, animeProvider)
+            }
+            // The detail page's "Resume Ep N" CTA and its watched episode
+            // cards: `resumeLast` asks the modal to replay the remembered
+            // release instead of searching for one.
+            onOpenResume: (animeId, malId, episodeNumber, absoluteEpisode) => {
+                watchModal.openFor(animeId, malId, episodeNumber, absoluteEpisode,
+                    "episodes", true, animeProvider)
             }
             // Season packs are a work-level search, so no episode travels.
             onOpenPacks: (animeId, malId) => {
