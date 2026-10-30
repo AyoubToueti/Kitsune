@@ -133,6 +133,48 @@ Popup {
     property real lastBytes: 0
     property int staleSeconds: 0
 
+    // Slide-over drawer that lists every file of a multi-file release.
+    property bool filesDrawerOpen: false
+    property string fileFilter: ""
+
+    function visibleFiles() {
+        const needle = modal.fileFilter.trim().toLowerCase()
+        // Natural order: pad every number so "2" sorts before "10". The
+        // torrent's own order is arbitrary (episode 01 can sit after 23).
+        function key(f) {
+            return String(f.name || "").toLowerCase().replace(/\d+/g, function (d) {
+                return ("0000000000" + d).slice(-10)
+            })
+        }
+        const rows = modal.files.filter(function (f) {
+            if (needle === "") return true
+            const label = String(f.episodeLabel || "") + " " + String(f.name || "")
+            return label.toLowerCase().indexOf(needle) >= 0
+        })
+        return rows.sort(function (a, b) {
+            const ka = key(a), kb = key(b)
+            return ka < kb ? -1 : (ka > kb ? 1 : 0)
+        })
+    }
+
+    // Row of the playing file inside `visibleFiles()`, or -1.
+    function chosenFileRow() {
+        const rows = modal.visibleFiles()
+        for (let i = 0; i < rows.length; i++) {
+            if (rows[i].idx === modal.chosenIdx) return i
+        }
+        return -1
+    }
+
+    function chosenFileName() {
+        for (let i = 0; i < modal.files.length; i++) {
+            const f = modal.files[i]
+            if (f.idx === modal.chosenIdx)
+                return modal.localPlayback ? (f.episodeLabel || f.name || "") : (f.name || "")
+        }
+        return ""
+    }
+
     TextEdit {
         id: clipboard
         visible: false
@@ -349,6 +391,12 @@ Popup {
     }
 
     Shortcut {
+        enabled: modal.filesDrawerOpen && modal.opened
+        sequence: "Escape"
+        onActivated: modal.filesDrawerOpen = false
+    }
+
+    Shortcut {
         enabled: !modal.settingsOpen && modal.stage === "play" && modal.opened
         sequence: modal.sc("skip", "S")
         onActivated: modal.doSkipSection()
@@ -432,6 +480,7 @@ Popup {
 
     onStageChanged: {
         if (modal.stage === "play") modal.wakeChrome()
+        else modal.filesDrawerOpen = false
     }
 
     // Whether the Continue record has been written for this playback.
@@ -1396,7 +1445,7 @@ Popup {
     }
 
     background: GlassPanel {
-        radius: modal.fullscreen ? 0 : 16
+        radius: modal.fullscreen ? 0 : 8
         strong: true
     }
 
@@ -1545,7 +1594,7 @@ Popup {
                         Rectangle {
                             width: 150
                             height: 30
-                            radius: 15
+                            radius: 8
                             color: Theme.glassFillSubtle
                             border.width: 1
                             border.color: Theme.glassBorder
@@ -1555,7 +1604,7 @@ Popup {
                                 height: parent.height - 6
                                 y: 3
                                 x: modal.releaseMode === "packs" ? parent.width / 2 : 3
-                                radius: 12
+                                radius: 6
                                 color: Theme.accent
                                 Behavior on x { NumberAnimation { duration: 150 } }
                             }
@@ -1654,7 +1703,7 @@ Popup {
                             placeholderTextColor: Theme.inkFaint
                             font.pixelSize: 12
                             background: Rectangle {
-                                radius: 16; color: Theme.glassFillSubtle; border.width: 1
+                                radius: 8; color: Theme.glassFillSubtle; border.width: 1
                                 border.color: releaseFilter.activeFocus ? Theme.accent : Theme.glassBorder
                             }
                             onTextChanged: modal.releaseQuery = text
@@ -1668,7 +1717,7 @@ Popup {
                                 model: modal.resolutionOptions()
                                 delegate: Rectangle {
                                     required property string modelData
-                                    radius: 12
+                                    radius: 6
                                     color: modal.resolutionFilter.indexOf(modelData) >= 0
                                         ? Theme.accent : Theme.glassFillSubtle
                                     border.width: 1
@@ -1927,7 +1976,7 @@ Popup {
                                 // --- Copy Magnet Button ---
                                 Rectangle {
                                     Layout.alignment: Qt.AlignVCenter
-                                    width: 28; height: 28; radius: 7
+                                    width: 28; height: 28; radius: 6
                                     color: copyMouse.containsMouse ? Theme.glassFillHover : "transparent"
                                     border.width: 1
                                     border.color: Theme.glassBorder
@@ -1958,7 +2007,7 @@ Popup {
                                 // --- Download Button ---
                                 Rectangle {
                                     Layout.alignment: Qt.AlignVCenter
-                                    width: 28; height: 28; radius: 7
+                                    width: 28; height: 28; radius: 6
                                     color: saveMouse.containsMouse ? Theme.glassFillHover : "transparent"
                                     border.width: 1
                                     border.color: Theme.glassBorder
@@ -2082,6 +2131,7 @@ Popup {
                                 anchors.fill: parent
                                 anchors.leftMargin: 16
                                 anchors.rightMargin: 16
+                                spacing: 12
 
                                 Text {
                                     text: "Episode " + modal.episodeNumber + " \u2014 " + modal.releaseTitle
@@ -2090,6 +2140,39 @@ Popup {
                                     font.bold: true
                                     Layout.fillWidth: true
                                     elide: Text.ElideRight
+                                }
+
+                                // Fullscreen mirror of the footer's
+                                // "Browse files" button. The whole footer is
+                                // hidden in fullscreen, so this is the only
+                                // way to reach the file drawer while playing.
+                                Rectangle {
+                                    visible: modal.files.length > 1
+                                    Layout.alignment: Qt.AlignVCenter
+                                    implicitWidth: topBrowseRow.implicitWidth + 22
+                                    implicitHeight: 28
+                                    radius: 8
+                                    color: topBrowseMouse.containsMouse ? Theme.accentHover : Theme.accent
+
+                                    Row {
+                                        id: topBrowseRow
+                                        anchors.centerIn: parent
+                                        spacing: 6
+                                        Text {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: "Browse files (" + modal.files.length + ")"
+                                            color: "white"
+                                            font.pixelSize: 11
+                                            font.bold: true
+                                        }
+                                    }
+                                    MouseArea {
+                                        id: topBrowseMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modal.filesDrawerOpen = true
+                                    }
                                 }
                             }
                         }
@@ -2132,7 +2215,7 @@ Popup {
                             anchors.right: parent.right
                             anchors.margins: 14
                             z: 15
-                            radius: 12
+                            radius: 8
                             width: 300
                             implicitHeight: infoCol.implicitHeight + 24
 
@@ -2211,7 +2294,7 @@ Popup {
                             anchors.top: parent.top
                             anchors.topMargin: 24
                             z: 25
-                            radius: 12
+                            radius: 8
                             implicitWidth: resumeRow.implicitWidth + 32
                             implicitHeight: 56
                             strong: true
@@ -2232,7 +2315,7 @@ Popup {
 
                                 Rectangle {
                                     height: 30
-                                    radius: 9
+                                    radius: 6
                                     color: contMouse.containsMouse ? Theme.accentHover : Theme.accent
                                     implicitWidth: contLabel.implicitWidth + 20
                                     Text {
@@ -2258,7 +2341,7 @@ Popup {
 
                                 Rectangle {
                                     height: 30
-                                    radius: 9
+                                    radius: 6
                                     color: startMouse.containsMouse ? Theme.glassFillHover : Theme.glassFillSubtle
                                     border.width: 1
                                     border.color: Theme.glassBorder
@@ -2292,7 +2375,7 @@ Popup {
                             anchors.bottomMargin: 104
                             anchors.rightMargin: 24
                             z: 12
-                            radius: 12
+                            radius: 8
                             implicitWidth: skipOverlayRow.implicitWidth + 24
                             implicitHeight: 38
                             
@@ -2350,7 +2433,7 @@ Popup {
                             anchors.centerIn: parent
                             z: 20
                             height: 64
-                            radius: 32
+                            radius: 10
                             implicitWidth: Math.max(64, osdRow.implicitWidth + 32)
                             color: Qt.rgba(0.07, 0.07, 0.11, 0.82)
                             border.width: 1.5
@@ -2426,7 +2509,7 @@ Popup {
 
                             Rectangle {
                                 anchors.fill: parent
-                                radius: 16
+                                radius: 8
                                 color: Qt.rgba(0, 0, 0, 0.55)
                                 border.width: 1
                                 border.color: Theme.glassBorder
@@ -2580,6 +2663,8 @@ Popup {
                     RowLayout {
                         Layout.fillWidth: true
                         visible: !modal.fullscreen
+                        Layout.bottomMargin: 16
+                        spacing: 16 
                         Text {
                             text: modal.localPlayback
                                 ? "\u2190 Back to downloads"
@@ -2596,8 +2681,18 @@ Popup {
                                     : modal.backToReleases()
                             }
                         }
-                        Item { Layout.fillWidth: true }
                         Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 16
+                            visible: modal.stage === "play"
+                            text: "\u25B8  " + modal.chosenFileName()
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            elide: Text.ElideRight
+                        }
+                        Item { Layout.fillWidth: true; visible: modal.stage !== "play" }
+                        Text {
+                            visible: modal.stage !== "play"
                             text: modal.localPlayback
                                 ? modal.files.length
                                     + (modal.files.length === 1
@@ -2607,17 +2702,50 @@ Popup {
                             color: Theme.inkFaint
                             font.pixelSize: 11
                         }
+
+                        Rectangle {
+                            visible: modal.stage === "play" && modal.files.length > 1
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.leftMargin: 16
+                            Layout.rightMargin: 4
+                            implicitWidth: browseRow.implicitWidth + 22
+                            implicitHeight: 28
+                            radius: 8
+                            color: browseMouse.containsMouse ? Theme.accentHover : Theme.accent
+
+                            Row {
+                                id: browseRow
+                                anchors.centerIn: parent
+                                spacing: 6
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Browse files (" + modal.files.length + ")"
+                                    color: "white"
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                }
+                            }
+                            MouseArea {
+                                id: browseMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: modal.filesDrawerOpen = true
+                            }
+                        }
                     }
 
+                    // Shown while picking a file. During playback the list
+                    // lives in the slide-over drawer, so the video keeps the
+                    // space the tiny list used to take.
                     ListView {
                         Layout.fillWidth: true
-                        Layout.fillHeight: modal.stage !== "play"
-                        Layout.preferredHeight: modal.stage === "play" ? 120 : 220
-                        Layout.maximumHeight: modal.stage === "play" ? 150 : -1
-                        visible: !modal.fullscreen
+                        Layout.fillHeight: true
+                        Layout.preferredHeight: 220
+                        visible: !modal.fullscreen && modal.stage !== "play"
                         clip: true
                         spacing: 6
-                        model: modal.files
+                        model: modal.visibleFiles()
 
                         delegate: GlassPanel {
                             required property var modelData
@@ -2684,6 +2812,215 @@ Popup {
                         }
                     }
                 }
+
+                // --- Files drawer (slide-over) -------------------------------------
+                Item {
+                    id: drawerLayer
+                    anchors.fill: parent
+                    z: 60
+                    clip: true
+                    visible: modal.filesDrawerOpen || drawerPanel.x < drawerLayer.width
+                    onVisibleChanged: {
+                        // The search box must NEVER keep keyboard focus on its own:
+                        // a focused TextField swallows Space and the arrow keys, which
+                        // are the player's pause and seek shortcuts. It only gets
+                        // focus when the reader clicks into it, and gives it back
+                        // whenever the drawer closes.
+                        fileSearch.focus = false
+                        modal.forceActiveFocus()
+                        if (visible) {
+                            if (fileList.count > 0)
+                                fileList.positionViewAtIndex(
+                                    Math.max(0, modal.chosenFileRow()), ListView.Center)
+                        } else {
+                            fileSearch.clear()
+                        }
+                    }
+
+                    Rectangle {
+                        anchors.fill: parent
+                        color: Qt.rgba(0, 0, 0, 0.55)
+                        opacity: modal.filesDrawerOpen ? 1 : 0
+                        Behavior on opacity {
+                            NumberAnimation { duration: Theme.animationsEnabled ? 180 : 0 }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: modal.filesDrawerOpen = false
+                        }
+                    }
+
+                    GlassPanel {
+                        id: drawerPanel
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 8
+                        width: Math.min(400, drawerLayer.width - 40)
+                        x: modal.filesDrawerOpen ? drawerLayer.width - width - 8 : drawerLayer.width
+                        radius: 8
+                        strong: true
+                        Behavior on x {
+                            NumberAnimation {
+                                duration: Theme.animationsEnabled ? 240 : 0
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+
+                        // Swallow clicks so they never reach the scrim behind.
+                        MouseArea { anchors.fill: parent }
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 12
+                            spacing: 8
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+
+                                Text {
+                                    text: modal.localPlayback ? "DOWNLOADED FILES" : "RELEASE FILES"
+                                    color: Theme.accent
+                                    font.pixelSize: 11
+                                    font.bold: true
+                                    font.letterSpacing: 1.2
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modal.files.length
+                                        + (modal.files.length === 1 ? " file" : " files")
+                                    color: Theme.inkFaint
+                                    font.pixelSize: 11
+                                }
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    Layout.preferredWidth: 26
+                                    Layout.preferredHeight: 26
+                                    radius: 6
+                                    color: drawerCloseMouse.containsMouse ? Theme.glassFillHover : "transparent"
+                                    border.width: 1
+                                    border.color: Theme.glassBorder
+                                    PlayerIcon {
+                                        anchors.centerIn: parent
+                                        kind: "close"
+                                        color: Theme.inkMuted
+                                        width: 11; height: 11
+                                    }
+                                    MouseArea {
+                                        id: drawerCloseMouse
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: modal.filesDrawerOpen = false
+                                    }
+                                }
+                            }
+
+                            TextField {
+                                id: fileSearch
+                                Layout.fillWidth: true
+                                focus: false
+                                placeholderText: "Search files\u2026"
+                                color: Theme.ink
+                                placeholderTextColor: Theme.inkFaint
+                                font.pixelSize: 12
+                                background: Rectangle {
+                                    radius: 8; color: Theme.glassFillSubtle; border.width: 1
+                                    border.color: fileSearch.activeFocus ? Theme.accent : Theme.glassBorder
+                                }
+                                onTextChanged: modal.fileFilter = text
+                                // Enter or Escape hands the keyboard back to the player.
+                                Keys.onReturnPressed: { fileSearch.focus = false; modal.forceActiveFocus() }
+                            }
+
+                            ListView {
+                                id: fileList
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                spacing: 6
+                                boundsBehavior: Flickable.StopAtBounds
+                                model: modal.visibleFiles()
+                                ScrollBar.vertical: ScrollBar {}
+
+                                delegate: GlassPanel {
+                                    required property var modelData
+                                    readonly property bool chosen: modelData.idx === modal.chosenIdx
+
+                                    width: ListView.view.width - 10
+                                    height: 48
+                                    interactive: true
+                                    border.color: chosen ? Theme.accent : Theme.glassBorder
+
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            modal.filesDrawerOpen = false
+                                            if (!chosen) modal.play(modelData.idx)
+                                        }
+                                    }
+
+                                    RowLayout {
+                                        anchors.fill: parent
+                                        anchors.leftMargin: 10
+                                        anchors.rightMargin: 10
+                                        spacing: 10
+
+                                        Text {
+                                            text: "\u25B8"
+                                            color: Theme.accent
+                                            font.pixelSize: 11
+                                        }
+                                        ColumnLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 1
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: modal.localPlayback
+                                                    ? (modelData.episodeLabel || modelData.name)
+                                                    : modelData.name
+                                                color: Theme.ink
+                                                font.pixelSize: 11
+                                                elide: Text.ElideRight
+                                            }
+                                            Text {
+                                                Layout.fillWidth: true
+                                                text: modal.fileSubtitle(modelData)
+                                                color: Theme.inkFaint
+                                                font.pixelSize: 10
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                        Rectangle {
+                                            visible: chosen
+                                            radius: 6
+                                            color: Theme.accent
+                                            implicitWidth: drawerPlayingText.implicitWidth + 16
+                                            implicitHeight: 20
+                                            Text {
+                                                id: drawerPlayingText
+                                                anchors.centerIn: parent
+                                                text: "Playing"
+                                                color: "white"
+                                                font.pixelSize: 10
+                                                font.bold: true
+                                            }
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    anchors.centerIn: parent
+                                    visible: fileList.count === 0
+                                    text: "No files match."
+                                    color: Theme.inkFaint
+                                    font.pixelSize: 12
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // --- Window Footer -----------------------------------
@@ -2717,7 +3054,7 @@ Popup {
                         Layout.alignment: Qt.AlignVCenter
                         implicitWidth: speedFooterRow.implicitWidth + 20
                         height: 26
-                        radius: 13
+                        radius: 8
                         color: speedFooterMouse.containsMouse
                             ? Theme.glassFillHover : Theme.glassFillSubtle
                         border.width: 1
