@@ -85,6 +85,32 @@ pub struct MediaListRecord {
     pub deleted: bool,
 }
 
+/// Find the local record a server entry refers to.
+///
+/// Two ways to match, and both are needed:
+///
+/// - the identity keys are equal, which is the ordinary AniList-to-AniList
+///   case;
+/// - the server entry's media id equals the local record's resolved
+///   `anilist_id`. A work added through the Kitsu fallback is stored under
+///   `(Kitsu, kitsu_id)` and pushed through its resolved AniList id, so the
+///   pull that comes back is keyed `(AniList, anilist_id)`. Without this arm
+///   the pull would ADD a second row for the same work and My List would show
+///   it twice.
+fn find_local<'a>(
+    locals: &'a [MediaListRecord],
+    server: &MediaListRecord,
+) -> Option<&'a MediaListRecord> {
+    locals
+        .iter()
+        .find(|local| local.key() == server.key())
+        .or_else(|| {
+            locals
+                .iter()
+                .find(|local| local.anilist_id == Some(server.media_id))
+        })
+}
+
 impl MediaListRecord {
     /// A brand-new local entry: dirty, because nothing has been pushed.
     ///
@@ -303,11 +329,7 @@ impl MediaListStore {
         let mut merged: Vec<MediaListRecord> = Vec::with_capacity(incoming.len());
 
         for server_entry in incoming {
-            match stored
-                .entries
-                .iter()
-                .find(|local| local.key() == server_entry.key())
-            {
+            match find_local(&stored.entries, &server_entry) {
                 // A tombstone means the reader deleted this and the delete has
                 // not reached AniList yet. The server still lists it, so taking
                 // the server's copy would RESURRECT a work the reader removed.
@@ -330,15 +352,33 @@ impl MediaListStore {
                 // max would keep the garbage forever. The dirty arm above is
                 // what protects an unpushed local edit; once a change has been
                 // pushed, AniList's own `updatedAt` is the truth.
-                _ => merged.push(server_entry),
+                //
+                // The row keeps the LOCAL key, not the server's. When the match
+                // came from `anilist_id` the local record is Kitsu-keyed, and
+                // replacing it with the AniList-keyed copy would make one work
+                // appear twice -- the bug this arm exists to prevent. Only the
+                // fields the server owns are taken.
+                Some(local) => merged.push(MediaListRecord {
+                    status: server_entry.status,
+                    progress: server_entry.progress,
+                    anilist_id: Some(server_entry.media_id),
+                    anilist_entry_id: server_entry.anilist_entry_id.or(local.anilist_entry_id),
+                    updated_at: server_entry.updated_at,
+                    ..local.clone()
+                }),
+                None => merged.push(server_entry),
             }
         }
 
         // Local entries the server did not mention. A dirty one is a local
         // addition still waiting to be pushed, so it survives; a clean one was
         // deleted on AniList and goes.
+        //
+        // "Mentioned" is by identity OR by `anilist_id`, for the same reason
+        // the match above checks both: a Kitsu-keyed row is only ever mentioned
+        // by an AniList-keyed server entry through its resolved AniList id.
         for local in stored.entries {
-            if local.dirty && !merged.iter().any(|entry| entry.key() == local.key()) {
+            if local.dirty && !merged.iter().any(|entry| find_local(std::slice::from_ref(&local), entry).is_some()) {
                 kept_dirty += 1;
                 merged.push(local);
             }
@@ -556,6 +596,82 @@ mod tests {
         assert_eq!(
             store.get(ProviderId::AniList, 12).unwrap().status,
             ListStatus::Current
+        );
+    }
+
+    /// A Kitsu-keyed record knows its AniList id once a push has resolved it.
+    /// The pull that follows is keyed `(AniList, anilist_id)`, so a merge that
+    /// only compared `key()` would ADD a second row for the same work and My
+    /// List would show it twice.
+    #[test]
+    fn reconcile_merges_the_anilist_pull_into_a_kitsu_record() {
+        let (_dir, store) = store();
+
+        let mut local = record(ProviderId::Kitsu, 12, ListStatus::Current);
+        local.anilist_id = Some(21);
+        local.anilist_entry_id = Some(77);
+        local.dirty = false;
+        local.progress = 3;
+        store.upsert(local).expect("local");
+
+        let mut server = record(ProviderId::AniList, 21, ListStatus::Completed);
+        server.progress = 11;
+        server.anilist_entry_id = Some(88);
+
+        store.reconcile(vec![server]).expect("reconcile");
+
+        let all = store.read_all();
+        assert_eq!(all.len(), 1, "one work, not two rows: {all:#?}");
+        // The LOCAL identity is kept: dropping it would orphan the Kitsu card
+        // that still asks the store about (Kitsu, 12).
+        let kept = &all[0];
+        assert_eq!(kept.provider, ProviderId::Kitsu);
+        assert_eq!(kept.media_id, 12);
+        // ...but the server owns the values it reported.
+        assert_eq!(kept.status, ListStatus::Completed);
+        assert_eq!(kept.progress, 11);
+        assert_eq!(kept.anilist_entry_id, Some(88));
+    }
+
+    /// The dirty arm still wins through an `anilist_id` match: an unsent local
+    /// edit must not be overwritten just because the row was found by a
+    /// different route.
+    #[test]
+    fn reconcile_keeps_a_dirty_kitsu_record_matched_by_anilist_id() {
+        let (_dir, store) = store();
+
+        let mut local = record(ProviderId::Kitsu, 12, ListStatus::Planning);
+        local.anilist_id = Some(21);
+        local.dirty = true;
+        store.upsert(local).expect("local");
+
+        let server = record(ProviderId::AniList, 21, ListStatus::Completed);
+        let kept_dirty = store.reconcile(vec![server]).expect("reconcile");
+
+        assert_eq!(kept_dirty, 1);
+        let all = store.read_all();
+        assert_eq!(all.len(), 1, "one work, not two rows: {all:#?}");
+        assert_eq!(all[0].provider, ProviderId::Kitsu);
+        assert_eq!(all[0].status, ListStatus::Planning);
+    }
+
+    /// A clean Kitsu row whose AniList twin the server no longer lists was
+    /// removed on AniList, so it goes -- the same rule as for an AniList row,
+    /// now applied through the mapping.
+    #[test]
+    fn reconcile_drops_a_clean_kitsu_record_the_anilist_pull_omitted() {
+        let (_dir, store) = store();
+
+        let mut local = record(ProviderId::Kitsu, 12, ListStatus::Current);
+        local.anilist_id = Some(21);
+        local.dirty = false;
+        store.upsert(local).expect("local");
+
+        store.reconcile(vec![]).expect("reconcile");
+
+        assert!(
+            store.read_all().is_empty(),
+            "a clean entry the server dropped must go"
         );
     }
 
