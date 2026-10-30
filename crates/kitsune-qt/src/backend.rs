@@ -499,19 +499,33 @@ pub mod qobject {
 
         /// Put a work on the reader's list / move it between lists.
         /// `status` is the wire string ("current", "completed", ...).
+        ///
+        /// `provider` is the id's namespace, exactly as `getAnime` takes it:
+        /// the store keys on `(provider, media_id)`, and a Kitsu id is not an
+        /// AniList id, so a bare number cannot say which work is meant.
         #[qinvokable]
         #[cxx_name = "setListEntry"]
-        fn set_list_entry(self: Pin<&mut Self>, media_id: i64, status: QString, progress: i32);
+        fn set_list_entry(
+            self: Pin<&mut Self>,
+            media_id: i64,
+            status: QString,
+            progress: i32,
+            provider: QString,
+        );
 
         /// Remove a work from the reader's list.
+        ///
+        /// Takes the WORK id plus its namespace, not AniList's list-entry id:
+        /// an entry added while AniList was unreachable has no list-entry id at
+        /// all, and gating on one would make it impossible to remove.
         #[qinvokable]
         #[cxx_name = "deleteListEntry"]
-        fn delete_list_entry(self: Pin<&mut Self>, entry_id: i64);
+        fn delete_list_entry(self: Pin<&mut Self>, media_id: i64, provider: QString);
 
         /// Where a work sits on the reader's list, or JSON `null`.
         #[qinvokable]
         #[cxx_name = "getListEntry"]
-        fn get_list_entry(self: Pin<&mut Self>, media_id: i64);
+        fn get_list_entry(self: Pin<&mut Self>, media_id: i64, provider: QString);
 
         // --- Local resume state ----------------------------------------------
 
@@ -544,22 +558,50 @@ pub mod qobject {
         #[cxx_name = "getWatchPositions"]
         fn get_watch_positions(self: Pin<&mut Self>);
 
-        /// Remember the release last played for a work, so a resume can
-        /// reselect it. `file_idx` is the torrent file index that played.
+        /// Remember the release last played for one EPISODE of a work, so a
+        /// resume can reselect it. `file_idx` is the torrent file index that
+        /// played.
+        ///
+        /// The info hash is parsed from the magnet here rather than passed in:
+        /// it keys the `.torrent` metadata cache, it is always derivable from
+        /// the magnet, and a caller that had to supply it would have to know
+        /// about the cache.
+        ///
+        /// Per-episode, not per-work: one record per work meant watching
+        /// episode 6 overwrote episode 3's release.
         #[qinvokable]
         #[cxx_name = "recordLastRelease"]
         fn record_last_release(
             self: Pin<&mut Self>,
             anime_id: i64,
+            provider: QString,
+            episode: i32,
             magnet: QString,
             file_idx: i32,
             name: QString,
         );
 
-        /// The remembered release for a work as JSON, or `null`.
+        /// The remembered release for one episode as JSON, or `null`.
         #[qinvokable]
         #[cxx_name = "getLastRelease"]
-        fn get_last_release(self: Pin<&mut Self>, anime_id: i64);
+        fn get_last_release(self: Pin<&mut Self>, anime_id: i64, provider: QString, episode: i32);
+
+        /// Resolve how a previously-watched episode should be replayed.
+        ///
+        /// Answers with the cheapest source that still exists, in this order:
+        /// a COMPLETE download already on disk, then cached `.torrent`
+        /// metadata, then the remembered magnet. Emits `resumeReady`.
+        #[qinvokable]
+        #[cxx_name = "playResume"]
+        fn play_resume(self: Pin<&mut Self>, anime_id: i64, provider: QString, episode: i32);
+
+        /// Add a cached `.torrent` FILE and wait for its file list.
+        ///
+        /// Emits the same `torrentAdded` / `torrentAddFailed` signals as
+        /// `addMagnet`, so a caller cannot tell the two apart.
+        #[qinvokable]
+        #[cxx_name = "addTorrentFile"]
+        fn add_torrent_file(self: Pin<&mut Self>, path: QString);
 
         // --- Settings --------------------------------------------------------
 
@@ -617,6 +659,15 @@ pub mod qobject {
         #[qsignal]
         #[cxx_name = "lastReleaseReady"]
         fn last_release_ready(self: Pin<&mut Self>, json: QString);
+
+        /// How a previously-watched episode should be replayed.
+        ///
+        /// One of `{kind:"local",path,title}`, `{kind:"torrent",path,fileIdx}`,
+        /// `{kind:"magnet",magnet,fileIdx}`, or JSON `null` when nothing is
+        /// remembered -- in which case the caller searches as usual.
+        #[qsignal]
+        #[cxx_name = "resumeReady"]
+        fn resume_ready(self: Pin<&mut Self>, json: QString);
 
         /// Emitted after any local resume-state write (last-played, position,
         /// or release), so the disc and the Continue Watching row re-read
@@ -1139,6 +1190,95 @@ fn group_records(records: &[DownloadRecord], group_key: &str) -> Vec<DownloadRec
         .filter(|record| record.group_key() == group_key)
         .cloned()
         .collect()
+}
+
+/// A completed download for one episode, if the file is still on disk.
+///
+/// The file, not the record, decides: a record whose `output_path` has been
+/// moved or deleted must not be reported as playable, or the modal opens a
+/// player on a path that does not exist.
+fn local_episode_file(
+    records: &[DownloadRecord],
+    anime_id: i64,
+    provider: &str,
+    episode: u32,
+) -> Option<String> {
+    records
+        .iter()
+        .filter(|record| {
+            record.anime_id == anime_id
+                && record.provider.eq_ignore_ascii_case(provider.trim())
+                && record.episode == Some(episode)
+                && record.status == DownloadStatus::Complete
+                && !record.output_path.is_empty()
+        })
+        .find(|record| std::path::Path::new(&record.output_path).is_file())
+        .map(|record| record.output_path.clone())
+}
+
+/// How a previously-watched episode should be replayed.
+///
+/// The order is cheapest-first: a file already on disk costs nothing, cached
+/// `.torrent` metadata skips the DHT round trip a magnet needs, and the magnet
+/// is the last resort that always works while the release still has peers.
+///
+/// Serialised with a `kind` tag so QML can branch without guessing which
+/// fields are present. `None` means "nothing remembered" and is reported as
+/// JSON `null`, which the caller treats as "just search".
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum ResumeSource {
+    /// A completed download that is still on disk.
+    Local { path: String },
+    /// Cached `.torrent` metadata, ready to hand to the engine.
+    Torrent {
+        path: String,
+        file_idx: u32,
+        #[serde(default)]
+        name: String,
+    },
+    /// Only the magnet survives; the file list has to be re-resolved.
+    Magnet {
+        magnet: String,
+        file_idx: u32,
+        #[serde(default)]
+        name: String,
+    },
+}
+
+fn resolve_resume(
+    local: Option<String>,
+    remembered: Option<&kitsune_core::player::LastRelease>,
+) -> Option<ResumeSource> {
+    if let Some(path) = local {
+        return Some(ResumeSource::Local { path });
+    }
+
+    let remembered = remembered?;
+    let file_idx = remembered.file_idx;
+
+    // `cached_torrent_path` answers only when the file exists, so this cannot
+    // hand the engine a path that is not there.
+    if let Some(path) = remembered
+        .info_hash
+        .as_deref()
+        .and_then(cached_torrent_path)
+    {
+        return Some(ResumeSource::Torrent {
+            path: path.display().to_string(),
+            file_idx,
+            name: remembered.name.clone(),
+        });
+    }
+
+    if remembered.magnet.is_empty() {
+        return None;
+    }
+    Some(ResumeSource::Magnet {
+        magnet: remembered.magnet.clone(),
+        file_idx,
+        name: remembered.name.clone(),
+    })
 }
 
 /// The group a row belongs to. `None` when the id no longer exists.
@@ -4202,7 +4342,14 @@ impl qobject::Backend {
         self.user_list_ready(QString::from(&json_or_empty(&entries)));
     }
 
-    fn set_list_entry(mut self: Pin<&mut Self>, media_id: i64, status: QString, progress: i32) {
+    fn set_list_entry(
+        mut self: Pin<&mut Self>,
+        media_id: i64,
+        status: QString,
+        progress: i32,
+        provider: QString,
+    ) {
+        let namespace = provider_id_from(&provider.to_string());
         let status = status.to_string();
         // `progress <= 0` means "leave progress alone"; sending 0 would reset a
         // tracked position. This is the status-change case (Watching ->
@@ -4225,10 +4372,19 @@ impl qobject::Backend {
         // The card the reader is looking at, so the new record carries a usable
         // snapshot. Absent for a write from a surface that has only the id, in
         // which case an existing record keeps its own snapshot.
-        let anime = self.rust().provider.cached_partial(media_id);
+        //
+        // CHECKED against the requested namespace. `cached_partial` is keyed on
+        // the bare id, so without the filter a Kitsu id could be answered by an
+        // AniList work that happens to share the number -- the exact collision
+        // this parameter exists to prevent.
+        let anime = self
+            .rust()
+            .provider
+            .cached_partial(media_id)
+            .filter(|partial| partial.provider == namespace);
         let store = Arc::clone(&self.rust().media_list);
 
-        let existing = anime.as_ref().and_then(|a| store.get(a.provider, media_id));
+        let existing = store.get(namespace, media_id);
 
         let Some(anime) = anime.or_else(|| existing.as_ref().map(|e| e.anime.clone())) else {
             // No snapshot anywhere. This used to give up with an error, which
@@ -4240,7 +4396,7 @@ impl qobject::Backend {
             // had already cached the work.
             //
             // Fetch the work instead and finish the write when it lands.
-            self.defer_list_entry(media_id, parsed, progress);
+            self.defer_list_entry(media_id, parsed, progress, namespace);
             return;
         };
 
@@ -4292,13 +4448,17 @@ impl qobject::Backend {
         media_id: i64,
         status: ListStatus,
         progress: Option<u32>,
+        namespace: ProviderId,
     ) {
         let qt_thread = self.qt_thread();
         let runtime = Arc::clone(&self.rust().runtime);
         let provider = Arc::clone(&self.rust().provider);
 
         runtime.spawn(async move {
-            let fetched = provider.by_id(media_id).await;
+            // `by_id_in`, not `by_id`: a bare id has no namespace, and the
+            // fallback decorator sends it to AniList. A Kitsu card would then
+            // resolve to whichever AniList work owns that number.
+            let fetched = provider.by_id_in(namespace, media_id).await;
             let _ = qt_thread.queue(move |mut qobject| match fetched {
                 Ok(Some(anime)) => qobject
                     .as_mut()
@@ -4316,7 +4476,7 @@ impl qobject::Backend {
         });
     }
 
-    fn delete_list_entry(mut self: Pin<&mut Self>, media_id: i64) {
+    fn delete_list_entry(mut self: Pin<&mut Self>, media_id: i64, provider: QString) {
         // `media_id`, not AniList's list-entry id: the store keys on
         // `(provider, media_id)`, and an entry that has never been pushed has
         // no list-entry id at all. It is marked deleted (a tombstone) rather
@@ -4324,14 +4484,10 @@ impl qobject::Backend {
         // resurrect the work.
         let store = Arc::clone(&self.rust().media_list);
 
-        let provider = self
-            .rust()
-            .provider
-            .cached_partial(media_id)
-            .map(|a| a.provider)
-            .or_else(|| store.get(ProviderId::AniList, media_id).map(|e| e.provider))
-            .or_else(|| store.get(ProviderId::Kitsu, media_id).map(|e| e.provider))
-            .unwrap_or(ProviderId::AniList);
+        // The namespace comes FROM THE CALLER. It used to be guessed, trying
+        // the partial cache and then AniList before Kitsu -- which deleted the
+        // wrong work whenever both sources had an entry with that number.
+        let provider = provider_id_from(&provider.to_string());
 
         if let Err(err) = store.mark_deleted(provider, media_id) {
             let message = format!("could not remove from your list: {err}");
@@ -4405,16 +4561,15 @@ impl qobject::Backend {
         });
     }
 
-    fn get_list_entry(self: Pin<&mut Self>, media_id: i64) {
+    fn get_list_entry(self: Pin<&mut Self>, media_id: i64, provider: QString) {
         // The STORE answers first: it is the reader's own list, and it is
         // current even when AniList has not heard about the latest change.
+        //
+        // The namespace comes from the CALLER, not from the partial cache: that
+        // cache is keyed on the bare id, so guessing here answered a Kitsu page
+        // with whichever AniList work shared the number.
         let store = Arc::clone(&self.rust().media_list);
-        let provider = self
-            .rust()
-            .provider
-            .cached_partial(media_id)
-            .map(|a| a.provider)
-            .unwrap_or(ProviderId::AniList);
+        let provider = provider_id_from(&provider.to_string());
 
         if let Some(entry) = store.get(provider, media_id) {
             let payload = if entry.deleted {
@@ -4427,6 +4582,16 @@ impl qobject::Backend {
                 })
             };
             let json = serde_json::to_string(&payload).unwrap_or_else(|_| "null".into());
+            self.list_entry_ready(media_id, QString::from(&json));
+            return;
+        }
+
+        // Everything below reads ANILIST's list, so it only applies to an
+        // AniList-namespaced id. A Kitsu id is meaningless there -- asking
+        // would fetch a different work's entry, or 404.
+        if provider != ProviderId::AniList {
+            let json = serde_json::to_string(&None::<kitsune_core::providers::anilist::ListEntry>)
+                .unwrap_or_else(|_| "null".into());
             self.list_entry_ready(media_id, QString::from(&json));
             return;
         }
@@ -4573,6 +4738,8 @@ impl qobject::Backend {
     fn record_last_release(
         self: Pin<&mut Self>,
         anime_id: i64,
+        provider: QString,
+        episode: i32,
         magnet: QString,
         file_idx: i32,
         name: QString,
@@ -4581,24 +4748,93 @@ impl qobject::Backend {
         if magnet.is_empty() {
             return;
         }
+        // No episode means there is nothing to key on: a resume is always "this
+        // episode", so a record without one could never be found again.
+        if episode <= 0 {
+            return;
+        }
+        let provider = provider.to_string();
+        // A magnet carries its own identity, so the hash needed to find the
+        // cached `.torrent` is always available without a second argument.
+        let info_hash = kitsune_core::torrent::parse_info_hash(&magnet)
+            .ok()
+            .map(|hash| hash.to_ascii_lowercase());
         let idx = if file_idx < 0 { 0 } else { file_idx as u32 };
-        let _ = self
-            .rust()
-            .last_releases
-            .write(anime_id, &magnet, idx, &name.to_string());
+        let _ = self.rust().last_releases.write(
+            &provider,
+            anime_id,
+            episode as u32,
+            &magnet,
+            info_hash.as_deref(),
+            idx,
+            &name.to_string(),
+        );
         // Any write to local resume state nudges the disc and home row to
         // re-read, so a just-watched work appears without a restart.
         self.library_changed();
     }
 
-    fn get_last_release(self: Pin<&mut Self>, anime_id: i64) {
+    fn get_last_release(self: Pin<&mut Self>, anime_id: i64, provider: QString, episode: i32) {
+        if episode <= 0 {
+            self.last_release_ready(QString::from("null"));
+            return;
+        }
         let json = self
             .rust()
             .last_releases
-            .read(anime_id)
+            .read(&provider.to_string(), anime_id, episode as u32)
             .and_then(|release| serde_json::to_string(&release).ok())
             .unwrap_or_else(|| "null".to_string());
         self.last_release_ready(QString::from(&json));
+    }
+
+    fn play_resume(self: Pin<&mut Self>, anime_id: i64, provider: QString, episode: i32) {
+        let provider = provider.to_string();
+        // `episode <= 0` cannot have a record: `record_last_release` refuses to
+        // write one.
+        let resume = if episode <= 0 {
+            None
+        } else {
+            let episode = episode as u32;
+            let local = self.rust().downloads.as_ref().and_then(|store| {
+                local_episode_file(&store.read_all(), anime_id, &provider, episode)
+            });
+            let remembered = self
+                .rust()
+                .last_releases
+                .read(&provider, anime_id, episode);
+            resolve_resume(local, remembered.as_ref())
+        };
+
+        let json = resume
+            .map(|resume| serde_json::to_string(&resume).unwrap_or_else(|_| "null".to_string()))
+            .unwrap_or_else(|| "null".to_string());
+        self.resume_ready(QString::from(&json));
+    }
+
+    fn add_torrent_file(self: Pin<&mut Self>, path: QString) {
+        let path = std::path::PathBuf::from(path.to_string());
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            // Same two signals as `add_magnet`, deliberately: the modal already
+            // handles them, and a caller must not have to know which source a
+            // torrent came from.
+            match player.add_torrent(&path).await {
+                Ok(handle) => {
+                    let json = serde_json::to_string(&handle).unwrap_or_else(|_| "null".into());
+                    let _ =
+                        qt_thread.queue(move |qobject| qobject.torrent_added(QString::from(&json)));
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = qt_thread
+                        .queue(move |qobject| qobject.torrent_add_failed(QString::from(&message)));
+                }
+            }
+        });
     }
 }
 

@@ -119,15 +119,22 @@ Item {
     // `animeId`, not the list-entry id: the list is now keyed on the work, so
     // an entry that was never pushed (it has no AniList entry id at all) can
     // still be removed.
-    function removeEntry(animeId) {
+    //
+    // `provider` is REQUIRED by both invokables. Omitting it threw a TypeError
+    // on the arity check and dropped the write entirely -- the same defect
+    // that silenced Continue Watching. The namespace is part of the record's
+    // identity, so it must travel with the id.
+    function removeEntry(animeId, provider) {
         if (!backend) return
+        const namespace = provider || "anilist"
         page.entries = page.entries.filter(function (e) {
             return !e.anime || e.anime.id !== animeId
+                || (e.anime.provider || "anilist") !== namespace
         })
-        backend.deleteListEntry(animeId)
+        backend.deleteListEntry(animeId, namespace)
     }
 
-    function moveEntry(entryId, animeId, status) {
+    function moveEntry(entryId, animeId, status, provider) {
         if (!backend) return
         page.entries = page.entries.map(function (e) {
             if (e.entryId !== entryId) return e
@@ -135,7 +142,7 @@ Item {
             copy.status = status
             return copy
         })
-        backend.setListEntry(animeId, status, 0)
+        backend.setListEntry(animeId, status, 0, provider || "anilist")
     }
 
     Connections {
@@ -166,8 +173,11 @@ Item {
             RetryState.reportFailure(message)
         }
 
+        // NOT gated on `signedIn`: the list is a local file, and a write made
+        // while signed out still changes it. Gating here left a local add or
+        // remove invisible until the page was left and re-entered.
         function onListChanged() {
-            if (page.signedIn) page.backend.userList()
+            page.backend.userList()
         }
 
         function onAuthError(message) {
@@ -540,6 +550,10 @@ Item {
                         width: 180
                         height: 336
                         animeId: cardRoot.animeId
+                        // Without this the card's own quick-add asked the
+                        // store about the AniList work sharing this number.
+                        animeProvider: modelData.anime && modelData.anime.provider
+                            ? modelData.anime.provider : "anilist"
                         title: page.displayTitle(modelData.anime)
                         score: (modelData.anime && modelData.anime.averageScore) || 0
                         cover: (modelData.anime && modelData.anime.coverImage) || ""

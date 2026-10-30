@@ -39,43 +39,59 @@ Item {
         if (backend) backend.userList()
     }
 
+    // The map key for a work: its NAMESPACE plus its id.
+    //
+    // The id alone is not an identity. Kitsu's `12` is One Piece; AniList's
+    // `12` is an unrelated work, and the fallback provider really does hand
+    // back Kitsu ids when AniList is unreachable. Keying on the number alone
+    // meant a Kitsu card read -- and OVERWROTE -- the AniList work with the
+    // same id, which is exactly the "my list and the data disagree" symptom.
+    //
+    // Matches `MediaListRecord::key()` in kitsune-core, which has keyed on the
+    // pair all along.
+    function keyFor(animeId, provider) {
+        return (provider || "anilist") + ":" + String(animeId)
+    }
+
     // The status wire value for a work, or "" when not on the list.
     //
     // Two names for one lookup: `statusFor` reads best in the store's own
     // code, while the poster cards ask for `getStatus`. Both exist so a card
     // never has to guess which spelling the store uses.
-    function statusFor(animeId) {
-        const entry = statuses[String(animeId)]
+    function statusFor(animeId, provider) {
+        const entry = statuses[keyFor(animeId, provider)]
         return entry ? (entry.status || "") : ""
     }
-    function getStatus(animeId) {
-        return statusFor(animeId)
+    function getStatus(animeId, provider) {
+        return statusFor(animeId, provider)
     }
 
     // The list entry's id for a work, or 0 when not on the list.
-    function entryIdFor(animeId) {
-        const entry = statuses[String(animeId)]
+    function entryIdFor(animeId, provider) {
+        const entry = statuses[keyFor(animeId, provider)]
         return entry ? (entry.entryId || 0) : 0
     }
 
     // Whether the work is on any list.
-    function isListed(animeId) {
-        return statusFor(animeId) !== ""
+    function isListed(animeId, provider) {
+        return statusFor(animeId, provider) !== ""
     }
 
     // Optimistically set a work's status, then write it. `status` is the wire
     // value ("current" | "completed" | "planning" | ...). Progress is left
     // alone (0), so moving a work between lists does not reset how far the
     // reader got.
-    function setStatus(animeId, status) {
+    function setStatus(animeId, status, provider) {
+        const namespace = provider || "anilist"
+        const key = keyFor(animeId, namespace)
         const next = Object.assign({}, statuses)
-        const existing = next[String(animeId)] || {}
-        next[String(animeId)] = {
+        const existing = next[key] || {}
+        next[key] = {
             status: status,
             entryId: existing.entryId || 0
         }
         statuses = next
-        if (backend) backend.setListEntry(animeId, status, 0)
+        if (backend) backend.setListEntry(animeId, status, 0, namespace)
     }
 
     // Remove a work from the reader's list.
@@ -83,11 +99,12 @@ Item {
     // Keyed on the WORK, not the list entry: a work added while AniList was
     // unreachable has no entry id, and gating on one would make it impossible
     // to remove.
-    function remove(animeId) {
+    function remove(animeId, provider) {
+        const namespace = provider || "anilist"
         const next = Object.assign({}, statuses)
-        delete next[String(animeId)]
+        delete next[keyFor(animeId, namespace)]
         statuses = next
-        if (backend) backend.deleteListEntry(animeId)
+        if (backend) backend.deleteListEntry(animeId, namespace)
     }
 
     // The statuses a quick-add offers, in the order shown. Labels are the
@@ -138,7 +155,10 @@ Item {
             for (let i = 0; i < entries.length; i++) {
                 const e = entries[i]
                 if (e && e.anime) {
-                    next[String(e.anime.id)] = {
+                    // The namespace rides in the payload (`anime.provider`);
+                    // dropping it here is what made a Kitsu-keyed row answer
+                    // for the AniList work that shares its number.
+                    next[keyFor(e.anime.id, e.anime.provider)] = {
                         status: e.status || "",
                         entryId: e.entryId || 0
                     }

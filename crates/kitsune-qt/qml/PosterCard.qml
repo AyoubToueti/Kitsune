@@ -8,6 +8,10 @@ Item {
     id: card
 
     property int animeId: 0
+    // The id's namespace. Cards are drawn from whichever source answered, so
+    // the list controls need this to name the right work: a Kitsu id and an
+    // AniList id can be the same number.
+    property string animeProvider: "anilist"
     property string title
     property real score
     property url cover
@@ -156,7 +160,7 @@ Item {
                     dragging = true
                     DragState.begin(card.animeId, card.title || "(untitled)",
                                     card.cover,
-                                    point.x, point.y)
+                                    point.x, point.y, card.animeProvider)
                 }
 
                 onReleased: function (mouse) {
@@ -194,6 +198,7 @@ Item {
                 anchors.bottom: parent.bottom
                 animeId: card.animeId
                 animeStatus: card.animeStatus
+                animeProvider: card.animeProvider
                 z: 30
             }
 

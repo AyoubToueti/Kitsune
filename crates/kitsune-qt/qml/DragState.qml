@@ -20,6 +20,9 @@ Item {
     // The work being dragged. `animeId` is what the write needs; the other two
     // only dress the ghost.
     property int animeId: 0
+    // The id's namespace. The drag only carries it so the write can name the
+    // right work: `animeId` alone collides across sources.
+    property string animeProvider: "anilist"
     property string title: ""
     property string cover: ""
 
@@ -45,8 +48,9 @@ Item {
     // Start a drag from a card. Coordinates are window-space: the caller
     // passes `mapToItem(null, ...)` because a card lives inside a GridView
     // delegate, so its own `mouse.x` is relative to the delegate.
-    function begin(id, workTitle, coverUrl, x, y) {
+    function begin(id, workTitle, coverUrl, x, y, provider) {
         state.animeId = id
+        state.animeProvider = provider || "anilist"
         state.title = workTitle
         state.cover = coverUrl
         state.cursorX = x
@@ -74,6 +78,7 @@ Item {
         if (!state.active) return
 
         const status = state.hoverStatus
+        const provider = state.animeProvider
         const id = state.animeId
         const label = labelFor(status)
 
@@ -87,12 +92,12 @@ Item {
 
         // Dropping on the list the work is already on is a no-op: re-writing
         // the same status only costs a round trip.
-        if (ListStatusStore.statusFor(id) === status) {
+        if (ListStatusStore.statusFor(id, provider) === status) {
             showToast(state.title + " is already in " + label)
             return
         }
 
-        ListStatusStore.setStatus(id, status)
+        ListStatusStore.setStatus(id, status, provider)
         showToast(state.title + " moved to " + label)
     }
 
@@ -103,6 +108,7 @@ Item {
 
     function reset() {
         state.active = false
+        state.animeProvider = "anilist"
         state.animeId = 0
         state.title = ""
         state.cover = ""

@@ -200,7 +200,8 @@ Item {
                         dragging = true
                         DragState.begin(card.animeId, card.title || card.displayTitle(card.anime),
                                         card.cover || (card.anime ? card.anime.coverImage : ""),
-                                        point.x, point.y)
+                                        point.x, point.y,
+                                        card.anime ? (card.anime.provider || "anilist") : "anilist")
                     }
 
                     onReleased: function (mouse) {
@@ -242,6 +243,7 @@ Item {
                     anchors.bottom: parent.bottom
                     anchors.margins: 8
                     animeId: card.animeId
+                    animeProvider: card.anime ? (card.anime.provider || "anilist") : "anilist"
                     animeStatus: card.anime ? (card.anime.status || "") : ""
                     z: 30
                 }

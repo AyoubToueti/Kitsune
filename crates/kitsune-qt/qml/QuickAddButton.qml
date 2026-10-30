@@ -20,6 +20,9 @@ Item {
 
     // The work this control adds.
     property int animeId: 0
+    // The id's namespace. `animeId` alone is not an identity: the Kitsu
+    // fallback hands back Kitsu ids, and the store keys on the pair.
+    property string animeProvider: "anilist"
     // The work's airing status ("RELEASING", "FINISHED", ...), or "" when
     // unknown. A still-airing work cannot be marked Completed, so that row is
     // dropped for it.
@@ -29,7 +32,7 @@ Item {
     readonly property bool canComplete: animeStatus !== "RELEASING"
 
     // The current status wire value ("current" / "completed" / ...) or "".
-    readonly property string status: ListStatusStore.statusFor(animeId)
+    readonly property string status: ListStatusStore.statusFor(animeId, animeProvider)
     readonly property bool listed: status !== ""
 
     // Set by hovering the trigger; the stack animates open from it.
@@ -80,13 +83,13 @@ Item {
     // a sign-in prompt.
     function applyStatus(value) {
         if (animeId <= 0 || value === "") return
-        ListStatusStore.setStatus(animeId, value)
+        ListStatusStore.setStatus(animeId, value, animeProvider)
         expanded = false
     }
 
     function removeFromList() {
         if (animeId <= 0) return
-        ListStatusStore.remove(animeId)
+        ListStatusStore.remove(animeId, animeProvider)
         expanded = false
     }
 

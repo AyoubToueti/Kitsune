@@ -26,8 +26,11 @@ Item {
 
     // Real-time watch status tracking
     readonly property string currentStatus: (typeof ListStatusStore !== "undefined" && ListStatusStore && ListStatusStore.getStatus && card.animeId > 0)
-                                             ? ListStatusStore.getStatus(card.animeId)
+                                             ? ListStatusStore.getStatus(card.animeId, card.animeProvider)
                                              : ""
+    // The recommended work's namespace, so the list controls name the right
+    // work even when the fallback provider supplied a Kitsu id.
+    readonly property string animeProvider: anime ? (anime.provider || "anilist") : "anilist"
     readonly property bool isOnList: currentStatus !== ""
 
     // A work still airing cannot sensibly be marked Completed, so its
@@ -255,7 +258,7 @@ Item {
                     const coverUrl = card.anime ? (card.anime.coverImage || "") : ""
                     DragState.begin(card.animeId, card.title || "(untitled)",
                                     coverUrl,
-                                    point.x, point.y)
+                                    point.x, point.y, card.animeProvider)
                 }
 
                 onReleased: function (mouse) {
@@ -297,6 +300,7 @@ Item {
                 anchors.bottom: parent.bottom
                 anchors.margins: 8
                 animeId: card.animeId
+                animeProvider: card.animeProvider
                 animeStatus: card.anime ? (card.anime.status || "") : ""
                 z: 30
             }

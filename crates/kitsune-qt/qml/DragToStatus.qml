@@ -36,7 +36,7 @@ Item {
     // against the same value. Recomputes automatically when `DragState.animeId`
     // changes, which is what makes a second drag show the right marker.
     readonly property string currentStatus: DragState.active
-        ? ListStatusStore.statusFor(DragState.animeId)
+        ? ListStatusStore.statusFor(DragState.animeId, DragState.animeProvider)
         : ""
 
     // --- Hit testing ------------------------------------------------------

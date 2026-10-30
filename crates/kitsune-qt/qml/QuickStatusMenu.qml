@@ -7,12 +7,15 @@ Item {
 
     property int animeId: 0
     property string animeStatus: ""
+    // The id's namespace. `animeId` alone is not an identity: the Kitsu
+    // fallback hands back Kitsu ids, and the store keys on the pair.
+    property string animeProvider: "anilist"
     readonly property bool canComplete: animeStatus !== "RELEASING"
     property real targetRadius: 70
 
     // Direct status check via ListStatusStore
     readonly property string currentStatus: (typeof ListStatusStore !== "undefined" && ListStatusStore)
-                                             ? ListStatusStore.getStatus(menu.animeId)
+                                             ? ListStatusStore.getStatus(menu.animeId, menu.animeProvider)
                                              : ""
     readonly property bool isOnList: currentStatus !== ""
 
@@ -66,14 +69,14 @@ Item {
     // organise it and have the change pushed on the next sync.
     function applyStatus(value) {
         if (value !== "" && animeId > 0) {
-            ListStatusStore.setStatus(animeId, value)
+            ListStatusStore.setStatus(animeId, value, animeProvider)
         }
         expanded = false
     }
 
     function removeFromList() {
         if (animeId > 0) {
-            ListStatusStore.remove(animeId)
+            ListStatusStore.remove(animeId, animeProvider)
         }
         expanded = false
     }

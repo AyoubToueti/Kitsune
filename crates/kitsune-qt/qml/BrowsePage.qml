@@ -687,6 +687,7 @@ Item {
                 width: 180
                 height: 336
                 animeId: model.id
+                animeProvider: model.provider || "anilist"
                 title: TitlePreference.title(JSON.parse(model.titlesJson))
                 score: model.score
                 cover: model.cover
