@@ -30,10 +30,19 @@ tracing = "0.1.44"
 # Session-bus single-instance + deep-link forwarding. Chosen over a C++ D-Bus
 # shim because cxx-qt-lib exposes no QDBus types, and over QLocalServer because
 # the bus is a natural name mutex with nothing to clean up after a crash.
+#
+# Unix only: Windows has no session bus. There, single_instance.rs uses a
+# loopback TCP listener instead (binding the port is the mutex), so zbus would
+# be dead weight in the Windows binary.
+[target.'cfg(unix)'.dependencies]
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [build-dependencies]
 # Generates and compiles the C++ side of every #[cxx_qt::bridge].
 cxx-qt-build = "0.10"
-# Locates libmpv's include/link flags for the embedded player.
+
+# Locates libmpv's include/link flags for the embedded player. Unix only: on
+# Windows there is no pkg-config in the MSVC toolchain, and the build script
+# resolves libmpv from MPV_DIR instead (see build.rs).
+[target.'cfg(not(windows))'.build-dependencies]
 pkg-config = "0.3"
