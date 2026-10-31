@@ -173,10 +173,35 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: ${{ matrix.qt_arch }}
-          # qtsvg supplies the SVG image-format plugin a QML Image needs to
-          # render assets/logo.svg at runtime (see build.rs).
-          modules: "qtsvg"
+          # No `modules:` line on purpose. QtSvg is NOT an optional module: it
+          # ships inside the desktop arch package (the same one that provides
+          # qtbase/qtdeclarative), which is why requesting `-m qtsvg` fails with
+          # "The packages ['qtsvg'] were not found while parsing XML". The SVG
+          # image-format plugin a QML Image needs comes with the base install;
+          # the next step asserts it is really there.
           cache: true
+
+      # The QtSvg image-format plugin is what lets a QML `Image` decode
+      # assets/logo.svg at runtime; build.rs embeds the SVG, so a missing plugin
+      # is invisible until the app runs and the logo/taskbar icon is blank.
+      # Checking here turns that into a one-line failure with a named cause.
+      #
+      # `shell: bash` on purpose: Git Bash is present on the Windows runners, so
+      # one script covers both platforms and the paths can use $QT_ROOT_DIR.
+      - name: Verify QtSvg is installed
+        shell: bash
+        run: |
+          set -eu
+          root="${QT_ROOT_DIR:?QT_ROOT_DIR not set by install-qt-action}"
+          echo "Qt root: $root"
+          lib=$(find "$root" -name 'libQt6Svg.*' -print -quit)
+          plugin=$(find "$root" -name '*qsvg.*' -print -quit)
+          echo "libQt6Svg : ${lib:-MISSING}"
+          echo "svg plugin: ${plugin:-MISSING}"
+          if [ -z "$lib" ] || [ -z "$plugin" ]; then
+            echo "::error::QtSvg is missing from the Qt kit; QML Image cannot render SVGs."
+            exit 1
+          fi
 
       # -------------------------------------------------------- Build & test
       - name: Run tests

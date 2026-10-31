@@ -73,7 +73,8 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: linux_gcc_64
-          modules: "qtsvg"
+          # QtSvg comes with the desktop arch package; it is not a module.
+          # Asking for `-m qtsvg` aborts aqt. See ci.yml.
           cache: true
 
       - name: Build
@@ -220,7 +221,8 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
-          modules: "qtsvg"
+          # QtSvg comes with the desktop arch package; it is not a module.
+          # Asking for `-m qtsvg` aborts aqt. See ci.yml.
           cache: true
 
       - name: Build
