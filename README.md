@@ -76,12 +76,40 @@ render. Suggested width: 1280px (the default window size).
 | :-------: | :------: |
 | ![List page](docs/screenshots/list.png) | ![Settings](docs/screenshots/settings.png) |
 
+## The Qt frontend
+
+`crates/kitsune-qt` is a second, native frontend built with
+[CXX-Qt](https://kdab.github.io/cxx-qt/): Qt6/QML for the interface and embedded
+[libmpv](https://mpv.io) for playback (replacing the webview's GStreamer stack).
+It shares `kitsune-core` with the Tauri build, so both apps have identical
+metadata, indexer, torrent, and progress behaviour.
+
+It builds on Linux and Windows. The setup differs enough per platform — libmpv
+has no Windows package manager story — that it has its own guide:
+
+    crates/kitsune-qt/README.md
+
+Quick start on Linux, from the Nix shell:
+
+    nix develop
+    cargo run -p kitsune-qt
+
+CI builds and tests it on both platforms (`.github/workflows/qt-ci.yml`), and a
+tag publishes installers alongside the Tauri assets
+(`.github/workflows/qt-release.yml`).
+
 ## Project structure
 
     src/                 SvelteKit frontend
       lib/               pure logic + Svelte components (each unit is tested)
       routes/            app routes: home, anime, filter, list, search, top, watch
       test/              Vitest setup and SvelteKit virtual-module stubs
+    crates/
+      kitsune-core/      shared, UI-free backend used by both frontends
+      kitsune-qt/        Qt6/QML frontend (CXX-Qt + embedded libmpv)
+        cpp/             C++ QML items: the mpv video surface, net cache, helpers
+        qml/             pages, controls, dialogs, singletons
+        packaging/       AppImage/deb/rpm and NSIS installer definitions
     src-tauri/           Rust backend
       src/
         commands.rs      IPC surface exposed to the frontend
