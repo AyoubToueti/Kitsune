@@ -1,5 +1,5 @@
 {
-  description = "Kitsune — Tauri + Svelte anime streaming app";
+  description = "Kitsune — Qt6/QML anime streaming app";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -19,69 +19,40 @@
           clippy
           rust-analyzer
 
-          # Node / frontend tooling
-          nodejs_22
-          pnpm
-
-          # Native build glue for Tauri
+          # Locates libmpv's include/link flags (build.rs probes it).
           pkg-config
-          gobject-introspection
 
-          # Qt6 build tooling (the migration target). CMake + Ninja drive the
-          # cxx-qt build; wrapQtAppsHook wires the runtime Qt plugin paths into
-          # any binary it wraps (without it, a Qt app cannot find its platform
-          # plugin and aborts with "could not find or load the Qt platform
-          # plugin").
+          # Runs scripts/sync-version.mjs. No package manager and no frontend
+          # toolchain: the QML is compiled into the binary by build.rs.
+          nodejs_22
+
+          # Qt6 build tooling. CMake + Ninja drive the cxx-qt build;
+          # wrapQtAppsHook wires the runtime Qt plugin paths into any binary it
+          # wraps (without it, a Qt app cannot find its platform plugin and
+          # aborts with "could not find or load the Qt platform plugin").
           cmake
           ninja
           qt6.wrapQtAppsHook
         ];
 
         buildInputs = with pkgs; [
-          # Tauri (WebKitGTK) system dependencies
-          webkitgtk_4_1
-          librsvg
-          gtk3
-          libsoup_3
+          # TLS for reqwest's default-tls feature (AniList, Jikan, Nyaa).
           openssl
-          glib
-          cairo
-          pango
-          gdk-pixbuf
-          atk
-          libayatana-appindicator
 
-          # Networking for WebKitGTK: it fetches remote <img> sources in its own
-          # network process via GIO, which resolves https:// through
-          # glib-networking's TLS module. Without it remote images fail
-          # silently, even though reqwest in Rust still works.
-          glib-networking
-          gsettings-desktop-schemas
-
-          # GStreamer: WebKitGTK loads these at runtime for media playback.
-          # Without them `tauri dev` aborts with
-          # "GStreamer element appsink not found. Please install it."
-          gst_all_1.gstreamer
-          gst_all_1.gst-plugins-base
-          gst_all_1.gst-plugins-good
-          gst_all_1.gst-plugins-bad
-          gst_all_1.gst-plugins-ugly
-          gst_all_1.gst-libav
-
-          # Media player used by the app. `mpv-unwrapped` ships the libmpv
-          # shared library and the mpv/render.h header the embedded player
-          # links against; the plain `mpv` wrapper does not expose them.
+          # The media player the app embeds. `mpv-unwrapped` ships the libmpv
+          # shared library and the mpv/render.h header the video surface links
+          # against; the plain `mpv` wrapper does not expose them.
           mpv
           mpv-unwrapped
 
-          # Qt6: the migration target. `qtdeclarative` is QML/Quick.
-          # `qtbase` gives QtCore/Gui/Widgets and the platform plugins.
-          # `qtsvg` supplies the SVG image-format PLUGIN, which is what lets a
-          # QML `Image` decode an SVG at runtime (the linked Qt6Svg library
-          # alone is not enough -- Qt loads the decoder as a plugin from
-          # `plugins/imageformats`).
-          # No QtMultimedia -- playback is embedded libmpv (render API), so
-          # Qt only needs to provide the window and the QML scene graph.
+          # Qt6. `qtdeclarative` is QML/Quick; `qtbase` gives QtCore/Gui plus the
+          # platform plugins; `qtsvg` supplies the SVG image-format PLUGIN, which
+          # is what lets a QML `Image` decode an SVG at runtime (the linked
+          # Qt6Svg library alone is not enough -- Qt loads the decoder as a
+          # plugin from `plugins/imageformats`).
+          #
+          # No QtMultimedia: playback is embedded libmpv through the render API,
+          # so Qt only provides the window and the QML scene graph.
           qt6.qtbase
           qt6.qtdeclarative
           qt6.qtsvg
@@ -89,28 +60,9 @@
           # Misc utilities
           git
           curl
-          wget
         ];
 
         shellHook = ''
-          # Point WebKitGTK at the GStreamer plugins from this shell, since
-          # they are not installed system-wide on NixOS.
-          # NOTE: `${pkgs.gst_all_1.gstreamer}` resolves to the `-bin` output,
-          # which holds no plugins. The CORE elements WebKitGTK needs --
-          # filesrc, typefind, fakesink, queue -- live in the `out` output, so
-          # `.out` must be named explicitly. Without it decodebin cannot build
-          # a pipeline and EVERY <video> playback fails, whatever the codec.
-          export GST_PLUGIN_SYSTEM_PATH_1_0="${pkgs.gst_all_1.gstreamer.out}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-ugly}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0"
-          export GST_PLUGIN_PATH_1_0="$GST_PLUGIN_SYSTEM_PATH_1_0"
-
-          # Same story for HTTPS: the GIO TLS module lives in the store, but
-          # NixOS puts no GIO module directory on the default search path, so
-          # point GIO at it explicitly.
-          export GIO_EXTRA_MODULES="${pkgs.glib-networking}/lib/gio/modules"
-          # WebKitGTK reads GSettings; without the schemas it warns and some
-          # proxy/locale resolution paths misbehave.
-          export XDG_DATA_DIRS="${pkgs.gsettings-desktop-schemas}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
-
           # --- Qt6 merged prefix (REQUIRED for the CXX-Qt build) ---------------
           # CXX-Qt's Cargo-only build (qt-build-utils) asks `qmake -query
           # QT_INSTALL_LIBS` for a single lib directory and then looks for each
@@ -181,8 +133,6 @@ QMAKEWRAP
           echo "Kitsune dev shell"
           echo "  rustc : $(rustc --version)"
           echo "  cargo : $(cargo --version)"
-          echo "  node  : $(node --version)"
-          echo "  pnpm  : $(pnpm --version)"
           echo "  mpv   : $(mpv --version | head -1)"
         '';
       };
