@@ -79,6 +79,12 @@ pub struct Settings {
     /// the reader gets a run-up into the scene instead of landing mid-line.
     /// A whole number; the UI accepts 0 and large values (e.g. 75).
     pub resume_rewind_seconds: u32,
+    /// Whether to show the elapsed/total and current-time pills in the
+    /// corners of a fullscreen video once the header and control bar have
+    /// hidden themselves. Windowed playback already shows the real controls,
+    /// so this only affects fullscreen. Defaults to `false`, matching the
+    /// historical behaviour.
+    pub fullscreen_timecode: bool,
     /// Whether the speed test reports download speed in binary units
     /// (MiB/s) rather than decimal megabits (Mbps).
     ///
@@ -136,6 +142,8 @@ impl Default for Settings {
             resume_behavior: "ask".to_string(),
             // 20s back by default: enough context without losing much.
             resume_rewind_seconds: 20,
+            // Off by default: the pills are a preference, not a correction.
+            fullscreen_timecode: false,
             // Mbps by default: it is how connections are sold, and what the
             // result has always read as. MiB/s is opt-in.
             use_binary_units: false,

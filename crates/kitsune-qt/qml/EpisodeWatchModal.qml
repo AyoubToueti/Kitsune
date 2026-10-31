@@ -188,6 +188,8 @@ Popup {
     }
 
     property bool fullscreen: false
+    // Persisted mirror of the user's "Show timecode in fullscreen" choice.
+    property bool fullscreenTimecode: false
     property bool chromeVisible: true
     property bool infoOpen: false
     property int infoTick: 0
@@ -552,6 +554,14 @@ Popup {
         if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
     }
 
+    function setFullscreenTimecode(enabled) {
+        const s = Object.assign({}, modal.appSettings)
+        s.fullscreenTimecode = enabled === true
+        modal.appSettings = s
+        modal.fullscreenTimecode = enabled === true
+        if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
+    }
+
     Connections {
         target: modal.backend
         function onSettingsReady(json) {
@@ -559,6 +569,7 @@ Popup {
             if (!s) return
             modal.appSettings = s
             modal.shortcutMap = s.shortcuts || ({})
+            modal.fullscreenTimecode = s.fullscreenTimecode === true
         }
     }
 
@@ -2176,6 +2187,88 @@ Popup {
                             }
                         }
 
+                        // ===== Fullscreen timecode HUD =========================
+                        //
+                        // Shown only when *all four* are true:
+                        //   - fullscreen (windowed already shows the popup header/footer)
+                        //   - the play stage
+                        //   - the chrome is hidden (header + bottom bar gone)
+                        //   - the user enabled it in Settings
+                        //
+                        // Two rounded pills, matching the OSD's look. `enabled:
+                        // false` guarantees the viewport's click-to-pause and
+                        // move-to-wake handlers keep working underneath.
+                        Item {
+                            id: timecodeOverlay
+                            anchors.fill: parent
+                            z: 11
+                            enabled: false
+                            visible: opacity > 0.0
+                            opacity: (modal.fullscreen
+                                      && modal.stage === "play"
+                                      && !modal.chromeVisible
+                                      && modal.fullscreenTimecode) ? 1.0 : 0.0
+                            Behavior on opacity {
+                                NumberAnimation {
+                                    duration: Theme.animationsEnabled ? 200 : 0
+                                }
+                            }
+
+                            // Top-left: elapsed / total
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.margins: 20
+                                radius: 8
+                                color: Qt.rgba(0.07, 0.07, 0.11, 0.72)
+                                border.width: 1
+                                border.color: Theme.glassBorder
+                                implicitWidth: elapsedTotalText.implicitWidth + 24
+                                implicitHeight: 34
+
+                                Text {
+                                    id: elapsedTotalText
+                                    anchors.centerIn: parent
+                                    // `position` and `duration` are properties
+                                    // of MpvObject, so the binding updates
+                                    // automatically as they tick.
+                                    text: modal.fmtTime(playerLoader.item
+                                                        ? (playerLoader.item.position || 0) : 0)
+                                        + "  /  "
+                                        + modal.fmtTime(playerLoader.item
+                                                        ? (playerLoader.item.duration || 0) : 0)
+                                    color: Theme.ink
+                                    font.pixelSize: 12
+                                    font.family: "monospace"
+                                    font.bold: true
+                                }
+                            }
+
+                            // Top-right: current position
+                            Rectangle {
+                                anchors.right: parent.right
+                                anchors.top: parent.top
+                                anchors.margins: 20
+                                radius: 8
+                                color: Qt.rgba(0.07, 0.07, 0.11, 0.72)
+                                border.width: 1
+                                border.color: Theme.glassBorder
+                                implicitWidth: currentTimeText.implicitWidth + 24
+                                implicitHeight: 34
+
+                                Text {
+                                    id: currentTimeText
+                                    anchors.centerIn: parent
+                                    text: modal.fmtTime(playerLoader.item
+                                                        ? (playerLoader.item.position || 0) : 0)
+                                    color: Theme.accent
+                                    font.pixelSize: 14
+                                    font.family: "monospace"
+                                    font.bold: true
+                                }
+                            }
+                        }
+
                         GlassPanel {
                             id: topBar
                             anchors.top: parent.top
@@ -3194,6 +3287,7 @@ Popup {
             shortcuts: modal.shortcutMap
             resumeBehavior: modal.resumeBehavior
             resumeRewind: modal.resumeRewind
+            fullscreenTimecode: modal.fullscreenTimecode
             open: modal.settingsOpen
             visible: modal.settingsOpen && modal.stage === "play"
             z: 100
@@ -3201,6 +3295,7 @@ Popup {
             onCloseRequested: modal.settingsOpen = false
             onShortcutChanged: (action, sequence) => modal.setShortcut(action, sequence)
             onResumeChanged: (behavior, rewind) => modal.setResume(behavior, rewind)
+            onFullscreenTimecodeToggled: (enabled) => modal.setFullscreenTimecode(enabled)
         }
     }
 }

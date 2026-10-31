@@ -16,6 +16,10 @@ Item {
     property string resumeBehavior: "ask"
     property int resumeRewind: 20
 
+    // Fullscreen HUD: show elapsed/total and current time at the corners
+    // while the header and control bar are hidden.
+    property bool fullscreenTimecode: false
+
     signal closeRequested()
     /// Emitted when the reader rebinds an action. An empty sequence clears the
     /// override so the action falls back to its default.
@@ -23,6 +27,7 @@ Item {
     /// Emitted when the reader changes the Continue Watching behaviour or the
     /// rewind delay from the in-player settings card.
     signal resumeChanged(string behavior, int rewind)
+    signal fullscreenTimecodeToggled(bool enabled)
 
     // The actions the reader can rebind, with their built-in defaults. Kept in
     // sync with the `sc(...)` calls in EpisodeWatchModal.
@@ -341,6 +346,29 @@ Item {
                             onClicked: card.resetPicture()
                         }
                         Item { Layout.fillWidth: true }
+                    }
+ 
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.glassBorder }
+ 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        SettingLabel {
+                            text: "Show timecode in fullscreen"
+                            Layout.fillWidth: true
+                        }
+                        ThemedSwitch {
+                            checked: card.fullscreenTimecode
+                            onToggled: card.fullscreenTimecodeToggled(checked)
+                        }
+                    }
+ 
+                    Text {
+                        Layout.fillWidth: true
+                        text: "When the controls hide in fullscreen, show elapsed / total time "  
+                              + "on the top left and the current time on the top right."
+                        color: Theme.inkFaint
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
                     }
                 }
 
