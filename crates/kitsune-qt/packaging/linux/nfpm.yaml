@@ -1,0 +1,72 @@
+# nfpm config for the Qt build's .deb and .rpm.
+#
+# Run from the repo root after `cargo build -p kitsune-qt --release` and after
+# the appimage/ step has populated ./dist/AppDir:
+#
+#   nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p deb
+#   nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p rpm
+#
+# The ${...} values are substituted from the environment by nfpm itself, so
+# the release workflow exports VERSION and DIST before invoking it.
+name: kitsune-qt
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: video
+priority: optional
+maintainer: Kitsune
+description: |
+  Anime streaming app with torrent playback.
+  Qt6/QML frontend. Metadata from AniList, releases from Nyaa, playback through
+  an embedded libmpv.
+vendor: Kitsune
+homepage: https://github.com/AyoubToueti/Kitsune
+license: MIT
+
+depends:
+  # libmpv is loaded at runtime through dlopen-free direct linking, so it has
+  # to be present as a shared library. Everything else is bundled by linuxdeploy.
+  - libmpv2
+  # GStreamer is NOT needed here: unlike the Tauri build, playback goes through
+  # libmpv rather than the WebKitGTK media stack.
+  - libc6
+
+contents:
+  # The launcher goes on PATH; the real binary and its Qt tree live under
+  # /usr/lib/kitsune-qt so the plugins and QML imports can sit next to it.
+  - src: crates/kitsune-qt/packaging/linux/kitsune-qt.sh
+    dst: /usr/bin/kitsune-qt
+    file_info:
+      mode: 0755
+
+  - src: dist/AppDir/usr/bin/kitsune-qt
+    dst: /usr/lib/kitsune-qt/kitsune-qt
+    file_info:
+      mode: 0755
+
+  # linuxdeploy lays the bundled Qt out as plugins/ and qml/ at the AppDir root.
+  - src: dist/AppDir/usr/plugins
+    dst: /usr/lib/kitsune-qt/plugins
+    type: tree
+  - src: dist/AppDir/usr/qml
+    dst: /usr/lib/kitsune-qt/qml
+    type: tree
+  # Shared libraries linuxdeploy decided to bundle (libmpv and friends, when it
+  # found them outside the base system).
+  - src: dist/AppDir/usr/lib
+    dst: /usr/lib/kitsune-qt/lib
+    type: tree
+
+  - src: crates/kitsune-qt/packaging/linux/com.kitsune.app.qt.desktop
+    dst: /usr/share/applications/com.kitsune.app.desktop
+
+  - src: dist/AppDir/usr/share/icons/hicolor
+    dst: /usr/share/icons/hicolor
+    type: tree
+
+# A wrapper is required because the Qt plugins and QML imports live under
+# /usr/lib/kitsune-qt, not beside the binary -- Qt only searches relative to the
+# executable, so the paths must be exported.
+scripts:
+  postinstall: crates/kitsune-qt/packaging/linux/postinstall.sh
+  preremove: crates/kitsune-qt/packaging/linux/preremove.sh
