@@ -2,11 +2,14 @@
 //!
 //! `new_qml_module` also embeds the QML files into a Qt resource under
 //! `qrc:/qt/qml/<uri-as-dirs>/...`, which is how `main.rs` loads them.
-
 use cxx_qt_build::{CppFile, CxxQtBuilder, QmlFile, QmlModule};
 
 fn main() {
-    CxxQtBuilder::new_qml_module(
+    // 1. Resolve the mpv include directory BEFORE building the C++ code.
+    // This ensures the include path is passed to the C++ compiler via .include_dir().
+    let mpv_include_dir = resolve_mpv_include_dir();
+
+    let mut builder = CxxQtBuilder::new_qml_module(
         QmlModule::new("com.kitsune.app")
             .qml_file("qml/main.qml")
             .qml_file("qml/HomePage.qml")
@@ -109,11 +112,43 @@ fn main() {
     // moc over the HEADER and compile the .cpp, so both files are listed.
     .cpp_file(CppFile::from("cpp/mpvitem.h"))
     .cpp_file(CppFile::from("cpp/mpvitem.cpp"))
-    .include_dir("cpp")
-    .build();
+    .include_dir("cpp");
 
-    // Link libmpv, which the mpv item calls directly.
+    // 2. Explicitly add the mpv include directory to the C++ compiler's search path
+    if let Some(include_dir) = mpv_include_dir {
+        builder = builder.include_dir(include_dir);
+    }
+
+    // 3. NOW build the C++ code (it will now successfully find mpv/client.h)
+    builder.build();
+
+    // 4. Finally, emit the linker flags for the Rust side
     link_libmpv();
+}
+
+/// Helper to get the include path for both Windows and Unix
+#[cfg(windows)]
+fn resolve_mpv_include_dir() -> Option<std::path::PathBuf> {
+    let root = std::env::var_os("MPV_DIR").unwrap_or_else(|| {
+        panic!("MPV_DIR is not set. Point it at a libmpv development tree containing `include/mpv/client.h` and `lib/mpv.lib` (see crates/kitsune-qt/README.md).");
+    });
+    let root = std::path::PathBuf::from(root);
+    let include = root.join("include");
+    
+    if !include.join("mpv").join("client.h").exists() {
+        panic!("MPV_DIR={} does not contain include/mpv/client.h", root.display());
+    }
+    Some(include)
+}
+
+#[cfg(not(windows))]
+fn resolve_mpv_include_dir() -> Option<std::path::PathBuf> {
+    // On Unix, pkg-config handles it, but we can explicitly grab the include path 
+    // if pkg-config provides it, otherwise rely on system defaults.
+    pkg_config::Config::new()
+        .probe("mpv")
+        .ok()
+        .and_then(|lib| lib.include_paths.into_iter().next())
 }
 
 /// Emit the link/include flags for libmpv.
@@ -126,7 +161,7 @@ fn main() {
 ///     paths Nix splits them across.
 ///   * Windows: there is no pkg-config in the default MSVC toolchain and the
 ///     libmpv builds available for Windows ship a bare `libmpv-2.dll`. The
-///     caller supplies a root directory in `MPV_DIR` containing `include/mpv/`
+///     caller supplies a root directory in `MPV_DIR` containing `include/mpv/` 
 ///     and `lib/mpv.lib`, and we point both the linker and the C++ compiler at
 ///     it.
 ///
@@ -159,21 +194,12 @@ fn link_libmpv() {
 fn link_libmpv() {
     let root = std::env::var_os("MPV_DIR").unwrap_or_else(|| {
         panic!(
-            "MPV_DIR is not set. Point it at a libmpv development tree containing \
-             `include/mpv/client.h` and `lib/mpv.lib` (see crates/kitsune-qt/README.md)."
+            "MPV_DIR is not set. Point it at a libmpv development tree containing `include/mpv/client.h` and `lib/mpv.lib` (see crates/kitsune-qt/README.md)."
         )
     });
     let root = std::path::PathBuf::from(root);
-
-    let include = root.join("include");
     let libdir = root.join("lib");
-
-    if !include.join("mpv").join("client.h").exists() {
-        panic!(
-            "MPV_DIR={} does not contain include/mpv/client.h",
-            root.display()
-        );
-    }
+    
     if !libdir.join("mpv.lib").exists() {
         panic!(
             "MPV_DIR={} does not contain lib/mpv.lib (see the dumpbin/lib recipe in \
@@ -182,12 +208,8 @@ fn link_libmpv() {
         );
     }
 
-    // `cargo:include` is honoured by cxx-qt-build's C++ compilation step, which
-    // is what makes `#include <mpv/client.h>` resolve in mpvitem.h.
-    println!("cargo:include={}", include.display());
+    // Emit linker flags (cargo:include is removed because we handled it in the builder)
     println!("cargo:rustc-link-search=native={}", libdir.display());
     println!("cargo:rustc-link-lib=dylib=mpv");
-
-    // Rebuild when the developer points MPV_DIR somewhere else.
     println!("cargo:rerun-if-env-changed=MPV_DIR");
 }
