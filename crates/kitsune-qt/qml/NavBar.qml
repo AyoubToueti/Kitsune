@@ -9,7 +9,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt5Compat.GraphicalEffects
 
 Rectangle {
     id: bar
@@ -164,59 +163,32 @@ Rectangle {
                     scale: brandMouse.containsMouse ? 1.05 : 1.0
                     Behavior on scale { NumberAnimation { duration: 150; easing.type: Easing.OutQuad } }
 
-                    // 0 = gradient at rest, 1 = gradient fully slid to the right
-                    property real slide: 0
-
-                    // Slide the gradient right while hovered — 700ms InOutCubic, silky
-                    NumberAnimation {
-                        target: brandTextItem
-                        property: "slide"
-                        to: 1
-                        duration: 300
-                        easing.type: Easing.InOutCubic
-                        running: brandMouse.containsMouse
-                    }
-
-                    // Ease it back when the mouse leaves
-                    NumberAnimation {
-                        target: brandTextItem
-                        property: "slide"
-                        to: 0
-                        duration: 500
-                        easing.type: Easing.InOutCubic
-                        running: !brandMouse.containsMouse && brandTextItem.slide > 0
-                    }
-
-                    // 1. Text mask source
+                    // The brand wordmark.
+                    //
+                    // This previously used Qt5Compat's LinearGradient +
+                    // OpacityMask to fill the glyphs with a three-colour
+                    // gradient. Two reasons that had to go:
+                    //
+                    //   1. Qt5Compat is the Qt5 compatibility layer and is
+                    //      deprecated in Qt6. It is not part of the Qt kit CI
+                    //      installs, which is what broke the Linux smoke run
+                    //      with "module Qt5Compat.GraphicalEffects is not
+                    //      installed".
+                    //   2. Qt 6's Text has no `gradient` property (it existed in
+                    //      Qt 5), so there is no drop-in replacement.
+                    //
+                    // Reproducing a masked gradient without a module means a
+                    // ShaderEffect and a shader program of our own -- a lot of
+                    // machinery for a 22px wordmark that already animates its
+                    // scale on hover. Solid Fox Red it is; `brand.red` is the
+                    // first stop of the old gradient anyway, so the mark still
+                    // matches the logo.
                     Text {
                         id: brandText
                         text: "Kitsune"
                         font.pixelSize: 22
                         font.bold: true
-                        visible: false
-                    }
-
-                    // 2. Gradient driven by `slide` — no Behaviors on the points needed
-                    LinearGradient {
-                        id: textGradient
-                        anchors.fill: brandText
-                        visible: false
-
-                        start: Qt.point(brandText.width * 0.5 * brandTextItem.slide, 0)
-                        end:   Qt.point(brandText.width + brandText.width * 0.5 * brandTextItem.slide, brandText.height)
-
-                        gradient: Gradient {
-                            GradientStop { position: 0.0; color: brand.red }    // Primary Fox Red
-                            GradientStop { position: 0.5; color: brand.yellow }  // Ear Yellow
-                            GradientStop { position: 1.0; color: brand.cream }   // Cream Highlight
-                        }
-                    }
-
-                    // 3. Apply gradient mask
-                    OpacityMask {
-                        anchors.fill: brandText
-                        source: textGradient
-                        maskSource: brandText
+                        color: brand.red
                     }
                 }
             }

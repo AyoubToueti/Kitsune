@@ -181,25 +181,32 @@ jobs:
           # the next step asserts it is really there.
           cache: true
 
-      # The QtSvg image-format plugin is what lets a QML `Image` decode
-      # assets/logo.svg at runtime; build.rs embeds the SVG, so a missing plugin
-      # is invisible until the app runs and the logo/taskbar icon is blank.
-      # Checking here turns that into a one-line failure with a named cause.
+      # The SVG image-format PLUGIN is what lets a QML `Image` decode
+      # assets/logo.svg at runtime. build.rs embeds the SVG, so a kit without
+      # this plugin still builds and links, then ships a binary whose logo and
+      # taskbar icon are blank -- with nothing in CI to say why.
       #
-      # `shell: bash` on purpose: Git Bash is present on the Windows runners, so
-      # one script covers both platforms and the paths can use $QT_ROOT_DIR.
-      - name: Verify QtSvg is installed
+      # Only the plugin is required. QtSvg's LINK LIBRARY (libQt6Svg.dll /
+      # libQt6Svg.so) is not: the app never links Qt6Svg, it just loads the
+      # imageformats plugin by name at runtime, and the Windows kit does not
+      # ship the DLL at all (install-qt-action unpacks runtime archives only).
+      # An earlier version of this step looked for both and failed a perfectly
+      # good kit on Windows -- hence the narrow check.
+      #
+      # `shell: bash` so one script covers both runners (Git Bash is on the
+      # Windows images) and paths can use $QT_ROOT_DIR.
+      - name: Verify the Qt SVG image plugin is present
         shell: bash
         run: |
           set -eu
           root="${QT_ROOT_DIR:?QT_ROOT_DIR not set by install-qt-action}"
           echo "Qt root: $root"
-          lib=$(find "$root" -name 'libQt6Svg.*' -print -quit)
-          plugin=$(find "$root" -name '*qsvg.*' -print -quit)
-          echo "libQt6Svg : ${lib:-MISSING}"
+          # qsvg.dll / libqsvg.so / libqsvg.dylib, under plugins/imageformats.
+          plugin=$(find "$root" -path '*imageformats*' -name '*qsvg*' -print -quit)
           echo "svg plugin: ${plugin:-MISSING}"
-          if [ -z "$lib" ] || [ -z "$plugin" ]; then
-            echo "::error::QtSvg is missing from the Qt kit; QML Image cannot render SVGs."
+          if [ -z "$plugin" ]; then
+            echo "::error::Qt's SVG image-format plugin is missing from the kit; QML Image cannot render SVGs."
+            find "$root" -name '*imageformats*' -maxdepth 6 -print || true
             exit 1
           fi
 
