@@ -21,17 +21,17 @@ ManifestDPIAware true
   !error "SRCDIR must be passed with /DSRCDIR=<windeployqt output directory>"
 !endif
 !ifndef OUTFILE
-  !define OUTFILE "Kitsune-Qt_x64-setup.exe"
+  !define OUTFILE "Kitsune_x64-setup.exe"
 !endif
 
 !define APP_NAME "Kitsune"
 !define APP_ID "com.kitsune.app"
-!define APP_EXE "kitsune-qt.exe"
+!define APP_EXE "kitsune.exe"
 !define PUBLISHER "Kitsune"
 ; Per-user install by default: no UAC prompt, and HKCU is where the deep-link
 ; registration goes anyway. Selecting "all users" is left out deliberately --
 ; it would need HKLM plus elevation, and the app has no machine-wide state.
-!define INSTALL_DIR "$LOCALAPPDATA\Programs\Kitsune-Qt"
+!define INSTALL_DIR "$LOCALAPPDATA\Programs\Kitsune"
 
 Name "${APP_NAME} ${VERSION}"
 OutFile "${OUTFILE}"
@@ -48,8 +48,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "MIT"
 
 !include "MUI2.nsh"
-!define MUI_ICON "${SRCDIR}\kitsune-qt.exe"
-!define MUI_UNICON "${SRCDIR}\kitsune-qt.exe"
+!define MUI_ICON "${SRCDIR}\kitsune.exe"
+!define MUI_UNICON "${SRCDIR}\kitsune.exe"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_UNPAGE_CONFIRM

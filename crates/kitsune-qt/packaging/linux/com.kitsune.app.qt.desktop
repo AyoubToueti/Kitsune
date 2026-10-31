@@ -2,7 +2,7 @@
 Type=Application
 Name=Kitsune
 Comment=Anime streaming from torrents
-Exec=kitsune-qt %u
+Exec=kitsune %u
 Icon=com.kitsune.app
 Terminal=false
 Categories=AudioVideo;Video;Player;

@@ -59,7 +59,7 @@ fn main() {
     // logging thread and truncates buffered lines.
     let _log_guard = kitsune_core::diagnostics::logging::init_logging();
     eprintln!(
-        "kitsune-qt: logging to {}",
+        "kitsune: logging to {}",
         kitsune_core::diagnostics::logging::log_file_path().display()
     );
 
@@ -90,7 +90,7 @@ fn main() {
     if let Some(url) = pending_url.clone() {
         // A running instance is the one that should apply this.
         if bus_runtime.block_on(single_instance::forward(&url)) {
-            eprintln!("kitsune-qt: forwarded a sign-in to the running instance");
+            eprintln!("kitsune: forwarded a sign-in to the running instance");
             return;
         }
 
@@ -99,13 +99,13 @@ fn main() {
             Some(token) => {
                 let store = kitsune_core::auth::TokenStore::new();
                 match store.write(&token) {
-                    Ok(()) => eprintln!("kitsune-qt: stored the AniList token from a deep link"),
-                    Err(err) => eprintln!("kitsune-qt: could not store the token: {err:#}"),
+                    Ok(()) => eprintln!("kitsune: stored the AniList token from a deep link"),
+                    Err(err) => eprintln!("kitsune: could not store the token: {err:#}"),
                 }
             }
             // Not our URL, or no usable token. Deep links arrive from
             // anywhere, so this is not an error worth stopping for.
-            None => eprintln!("kitsune-qt: ignored a deep link with no token"),
+            None => eprintln!("kitsune: ignored a deep link with no token"),
         }
     }
 
@@ -235,7 +235,7 @@ fn main() {
             // No session bus (a bare TTY, a broken environment). The app still
             // runs as a single window; only deep-link forwarding is lost, and
             // refusing to start over that would be a poor trade.
-            eprintln!("kitsune-qt: single-instance unavailable: {err}");
+            eprintln!("kitsune: single-instance unavailable: {err}");
             None
         }
     };
@@ -252,7 +252,7 @@ fn main() {
         // On failure Qt logs "QQmlApplicationEngine failed to load component"
         // to stderr, which is the signal the smoke run greps for.
         engine.load(&QUrl::from("qrc:/qt/qml/com/kitsune/app/qml/main.qml"));
-        eprintln!("kitsune-qt: load() returned");
+        eprintln!("kitsune: load() returned");
     }
 
     // Dev/CI aid: with KITSUNE_SCREENSHOT=<path> set, grab the window after the

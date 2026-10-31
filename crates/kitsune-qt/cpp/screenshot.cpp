@@ -98,18 +98,18 @@ kitsuneSaveScreenshot(rust::Str path, int delayMs)
     }
 
     if (window == nullptr) {
-      std::fprintf(stderr, "kitsune-qt: no QQuickWindow to screenshot\n");
+      std::fprintf(stderr, "kitsune: no QQuickWindow to screenshot\n");
     } else {
       const QImage image = window->grabWindow();
       if (image.isNull()) {
-        std::fprintf(stderr, "kitsune-qt: grabWindow returned a null image\n");
+        std::fprintf(stderr, "kitsune: grabWindow returned a null image\n");
       } else if (!image.save(target)) {
         std::fprintf(stderr,
-                     "kitsune-qt: could not write %s\n",
+                     "kitsune: could not write %s\n",
                      target.toUtf8().constData());
       } else {
         std::fprintf(stderr,
-                     "kitsune-qt: wrote %s (%dx%d)\n",
+                     "kitsune: wrote %s (%dx%d)\n",
                      target.toUtf8().constData(),
                      image.width(),
                      image.height());

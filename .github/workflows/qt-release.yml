@@ -231,14 +231,14 @@ jobs:
         run: |
           $stage = Join-Path $PWD "stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item target/release/kitsune-qt.exe $stage
+          Copy-Item target/release/kitsune.exe $stage
 
           # windeployqt copies the Qt DLLs and, crucially, the plugin and QML
           # directories. --qmldir makes it scan the QML sources so every module
           # actually imported is included.
           windeployqt --release --no-translations `
             --qmldir crates/kitsune-qt/qml `
-            (Join-Path $stage "kitsune-qt.exe")
+            (Join-Path $stage "kitsune.exe")
           if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 
           # libmpv and its ffmpeg dependency DLLs. The dev archive is not
@@ -263,7 +263,7 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ steps.ver.outputs.version }}"
-          $out = "Kitsune-Qt_${version}_x64-setup.exe"
+          $out = "Kitsune_${version}_x64-setup.exe"
           & "C:\Program Files (x86)\NSIS\makensis.exe" `
             "/DVERSION=$version" `
             "/DSRCDIR=$PWD\stage" `
@@ -284,4 +284,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          files: "Kitsune-Qt_*_x64-setup.exe"
+          files: "Kitsune_*_x64-setup.exe"

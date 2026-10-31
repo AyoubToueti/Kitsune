@@ -26,7 +26,7 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
          "$APPDIR/usr/share/metainfo"
 
-install -m 0755 target/release/kitsune-qt "$APPDIR/usr/bin/kitsune-qt"
+install -m 0755 target/release/kitsune "$APPDIR/usr/bin/kitsune"
 
 # The icon the window/taskbar uses. The same PNG is embedded in the binary via
 # the Qt resource system, but the desktop entry needs a file on disk.
@@ -57,7 +57,7 @@ XML
 export QML_SOURCES_PATHS="$ROOT/crates/kitsune-qt/qml"
 export EXTRA_QT_MODULES="svg"
 export EXTRA_PLATFORM_PLUGINS="libqsvg.so"
-export OUTPUT="$ROOT/$OUT/Kitsune-Qt-${VERSION}-x86_64.AppImage"
+export OUTPUT="$ROOT/$OUT/Kitsune-${VERSION}-x86_64.AppImage"
 
 "$LINUXDEPLOY" --appdir "$APPDIR" \
   --plugin qt \

@@ -193,7 +193,7 @@ jobs:
         run: |
           xvfb-run -a --server-args="-screen 0 1280x800x24" \
             env KITSUNE_SCREENSHOT=smoke.png KITSUNE_SCREENSHOT_DELAY_MS=4000 \
-            ./target/release/kitsune-qt
+            ./target/release/kitsune
           test -s smoke.png || { echo "no screenshot produced"; exit 1; }
 
       - name: Upload smoke screenshot
@@ -209,6 +209,6 @@ jobs:
         with:
           name: kitsune-qt-${{ matrix.name }}
           path: |
-            target/release/kitsune-qt
-            target/release/kitsune-qt.exe
+            target/release/kitsune
+            target/release/kitsune.exe
           if-no-files-found: ignore

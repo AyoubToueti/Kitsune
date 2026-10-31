@@ -9,8 +9,13 @@ description = "Kitsune's Qt6/QML frontend"
 authors = ["you"]
 
 # A binary, not a library: this is the Qt app's entry point.
+#
+# The binary is named `kitsune` while the CRATE stays `kitsune-qt`. The crate
+# name keeps the frontend distinguishable in `cargo build -p` and in the
+# directory tree; the binary name is what a user sees in a process list, in the
+# install directory and on a desktop entry, and there is only one app now.
 [[bin]]
-name = "kitsune-qt"
+name = "kitsune"
 path = "src/main.rs"
 
 [dependencies]

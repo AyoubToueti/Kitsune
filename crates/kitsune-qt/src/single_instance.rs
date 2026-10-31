@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn finds_a_redirect_url() {
-        let args = ["/usr/bin/kitsune-qt", "kitsune://auth#access_token=abc"];
+        let args = ["/usr/bin/kitsune", "kitsune://auth#access_token=abc"];
         assert_eq!(
             auth_url_from_args(args).as_deref(),
             Some("kitsune://auth#access_token=abc")
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn ignores_unrelated_arguments() {
-        let args = ["/usr/bin/kitsune-qt", "--help", "file.mkv"];
+        let args = ["/usr/bin/kitsune", "--help", "file.mkv"];
         assert_eq!(auth_url_from_args(args), None);
     }
 

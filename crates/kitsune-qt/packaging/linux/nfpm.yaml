@@ -8,7 +8,7 @@
 #
 # The ${...} values are substituted from the environment by nfpm itself, so
 # the release workflow exports VERSION and DIST before invoking it.
-name: kitsune-qt
+name: kitsune
 arch: amd64
 platform: linux
 version: ${VERSION}
@@ -33,28 +33,28 @@ depends:
 
 contents:
   # The launcher goes on PATH; the real binary and its Qt tree live under
-  # /usr/lib/kitsune-qt so the plugins and QML imports can sit next to it.
-  - src: crates/kitsune-qt/packaging/linux/kitsune-qt.sh
-    dst: /usr/bin/kitsune-qt
+  # /usr/lib/kitsune so the plugins and QML imports can sit next to it.
+  - src: crates/kitsune-qt/packaging/linux/kitsune.sh
+    dst: /usr/bin/kitsune
     file_info:
       mode: 0755
 
-  - src: dist/AppDir/usr/bin/kitsune-qt
-    dst: /usr/lib/kitsune-qt/kitsune-qt
+  - src: dist/AppDir/usr/bin/kitsune
+    dst: /usr/lib/kitsune/kitsune
     file_info:
       mode: 0755
 
   # linuxdeploy lays the bundled Qt out as plugins/ and qml/ at the AppDir root.
   - src: dist/AppDir/usr/plugins
-    dst: /usr/lib/kitsune-qt/plugins
+    dst: /usr/lib/kitsune/plugins
     type: tree
   - src: dist/AppDir/usr/qml
-    dst: /usr/lib/kitsune-qt/qml
+    dst: /usr/lib/kitsune/qml
     type: tree
   # Shared libraries linuxdeploy decided to bundle (libmpv and friends, when it
   # found them outside the base system).
   - src: dist/AppDir/usr/lib
-    dst: /usr/lib/kitsune-qt/lib
+    dst: /usr/lib/kitsune/lib
     type: tree
 
   - src: crates/kitsune-qt/packaging/linux/com.kitsune.app.qt.desktop
@@ -65,7 +65,7 @@ contents:
     type: tree
 
 # A wrapper is required because the Qt plugins and QML imports live under
-# /usr/lib/kitsune-qt, not beside the binary -- Qt only searches relative to the
+# /usr/lib/kitsune, not beside the binary -- Qt only searches relative to the
 # executable, so the paths must be exported.
 scripts:
   postinstall: crates/kitsune-qt/packaging/linux/postinstall.sh
