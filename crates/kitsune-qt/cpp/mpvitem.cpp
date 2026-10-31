@@ -6,7 +6,18 @@
 
 #include <clocale>
 #include <stdexcept>
+
+// The wakeup-pipe drain below reads a file descriptor. On POSIX that is
+// `read` from <unistd.h>; on Windows mpv never creates a wakeup pipe (it
+// returns a negative fd and the QTimer fallback is used instead), but the
+// translation unit still has to compile, and MSVC has no <unistd.h>.
+// Deliberately not `Q_OS_WIN`: that macro only exists once a Qt header has
+// been included, which happens further down this file.
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #include <QDebug>
 #include <QGuiApplication>
@@ -627,8 +638,15 @@ MpvObject::drainMpvEvents()
   // render loop (audio keeps playing, video goes black).
   if (mpv_wakeup_fd_ >= 0) {
     char buf[64];
+    // MSVC names the POSIX read `_read` (and takes an unsigned count).
+#ifdef _WIN32
+    while (_read(mpv_wakeup_fd_, buf,
+                 static_cast<unsigned int>(sizeof(buf))) > 0) {
+    }
+#else
     while (read(mpv_wakeup_fd_, buf, sizeof(buf)) > 0) {
     }
+#endif
   }
 
   // mpv_wait_event with a 0 timeout returns MPV_EVENT_NONE once the queue is

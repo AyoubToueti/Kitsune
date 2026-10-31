@@ -6,6 +6,7 @@
 mod backend;
 mod mpv;
 mod netcache;
+mod platcompat;
 mod screenshot;
 mod single_instance;
 
@@ -274,32 +275,19 @@ fn main() {
 /// `QQuickFramebufferObject` requires. Honours an explicit user override so a
 /// developer can still experiment with another backend.
 fn force_opengl_rhi() {
-    // `setenv` lives in libc; declared here rather than pulling in a crate.
-    extern "C" {
-        fn setenv(name: *const i8, value: *const i8, overwrite: i32) -> i32;
-    }
     // Only set it when the caller has not chosen a backend themselves.
     if std::env::var_os("QSG_RHI_BACKEND").is_none() {
-        let name = b"QSG_RHI_BACKEND\0";
-        let value = b"opengl\0";
-        unsafe {
-            setenv(name.as_ptr() as *const i8, value.as_ptr() as *const i8, 1);
-        }
+        // `qputenv` on the C++ side: the portable spelling of what used to be
+        // a raw `setenv`, which does not exist in the MSVC CRT.
+        platcompat::set_env("QSG_RHI_BACKEND", "opengl");
     }
 }
 
 /// Reset the numeric locale to "C" for C libraries (libmpv) that parse numbers
 /// with `strtod` and assume a dot decimal separator.
 fn libc_setlocale() {
-    // `setlocale` lives in libc; we only need the one call, so declare it here
-    // rather than pull in a whole crate for it.
-    extern "C" {
-        fn setlocale(category: i32, locale: *const i8) -> *mut i8;
-    }
-    // LC_NUMERIC == 1 on glibc; "C" is the portable locale name.
-    const LC_NUMERIC: i32 = 1;
-    let c = b"C\0";
-    unsafe {
-        setlocale(LC_NUMERIC, c.as_ptr() as *const i8);
-    }
+    // Delegated to C++ so the `LC_NUMERIC` constant comes from the CRT in use.
+    // The old hand-written `extern "C"` hardcoded glibc's value (1), which is
+    // 2 on MSVC -- so on Windows it silently reset the wrong category.
+    platcompat::reset_numeric_locale();
 }

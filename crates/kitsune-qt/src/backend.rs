@@ -4994,17 +4994,25 @@ mod downloaded_for_anime_tests {
         }
     }
 
-    fn with_temp_file() -> (std::path::PathBuf, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join("kitsune-downloaded-for-anime-tests");
+    /// A throwaway `.mkv` on disk, in a directory unique to `tag`.
+    ///
+    /// `tag` must differ per test: cargo runs the tests in a module on parallel
+    /// threads, so a path keyed only on `process::id()` is shared by every test
+    /// in the binary and they delete each other's files mid-assertion.
+    fn with_temp_file(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "kitsune-downloaded-for-anime-tests-{}-{tag}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("show-01-{}.mkv", std::process::id()));
+        let path = dir.join("show-01.mkv");
         std::fs::write(&path, b"x").unwrap();
         (dir, path)
     }
 
     #[test]
     fn keeps_only_existing_complete_file_for_same_anime_provider() {
-        let (_dir, path) = with_temp_file();
+        let (_dir, path) = with_temp_file("keeps-only-existing");
         let mut on_disk = sample_record(1);
         on_disk.output_path = path.display().to_string();
         let mut other_anime = sample_record(2);
@@ -5033,7 +5041,7 @@ mod downloaded_for_anime_tests {
 
     #[test]
     fn drops_file_after_reader_deletes_it() {
-        let (dir, path) = with_temp_file();
+        let (dir, path) = with_temp_file("drops-after-delete");
         let mut record = sample_record(1);
         record.output_path = path.display().to_string();
         assert_eq!(downloaded_views_for(&[record], 1, "anilist").len(), 1);
