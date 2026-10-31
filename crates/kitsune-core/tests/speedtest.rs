@@ -8,7 +8,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use kitsune_lib::diagnostics::speedtest::{
+use kitsune_core::diagnostics::speedtest::{
     build_client, run_measurement, SpeedTestConfig, SpeedTestProgress, SpeedVerdict,
 };
 use wiremock::matchers::{method, path};

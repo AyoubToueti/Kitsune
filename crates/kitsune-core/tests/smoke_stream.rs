@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use kitsune_lib::torrent::{api_for, EngineConfig, HttpBridge, TorrentEngine};
+use kitsune_core::torrent::{api_for, EngineConfig, HttpBridge, TorrentEngine};
 
 fn torrent_path() -> PathBuf {
     std::env::var("KITSUNE_TORRENT")

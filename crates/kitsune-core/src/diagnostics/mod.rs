@@ -4,8 +4,8 @@
 //! A GUI release has no console, so a log file and captured crashes are the
 //! only evidence a user or maintainer can inspect.
 //!
-//! The Tauri-specific pieces (`commands`, `task`) stay in `src-tauri` and
-//! re-export from here, so a frontend only supplies its own glue.
+//! The frontend-specific pieces stay in the frontend crate, so a frontend only
+//! supplies its own glue on top of these.
 
 pub mod logging;
 pub mod metrics;

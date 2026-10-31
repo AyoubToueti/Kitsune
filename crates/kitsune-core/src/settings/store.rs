@@ -325,6 +325,7 @@ mod tests {
             use_binary_units: true,
             title_language: "romaji".to_string(),
             metadata_source: "kitsu".to_string(),
+            fullscreen_timecode: true,
         };
 
         store.write(&settings).expect("write");

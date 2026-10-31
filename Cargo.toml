@@ -1,14 +1,14 @@
 # The Kitsune cargo workspace.
 #
-# `src-tauri` is the Tauri app (the crate being migrated away from).
-# `crates/kitsune-core` will hold the pure, framework-agnostic backend logic so
-# the Tauri app, the Qt6 frontend, and the tests all share ONE copy of it.
+# `crates/kitsune-core` holds the pure, framework-agnostic backend logic;
+# `crates/kitsune-qt` is the Qt6/QML frontend that ships. There used to be a
+# third member, `src-tauri`, which was the app the Qt frontend replaced.
 #
 # A workspace keeps a single `Cargo.lock` at the repo root and a single
 # `target/`, so a dependency is compiled once no matter how many members use it.
 [workspace]
 resolver = "2"
-members = ["src-tauri", "crates/kitsune-core", "crates/kitsune-qt"]
+members = ["crates/kitsune-core", "crates/kitsune-qt"]
 
 # One version for the whole workspace. Members inherit it with
 # `version.workspace = true`, so Cargo -- not a script -- is the authority:

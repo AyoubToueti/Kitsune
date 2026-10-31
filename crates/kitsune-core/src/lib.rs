@@ -1,13 +1,14 @@
 //! Kitsune's shared, framework-agnostic backend logic.
 //!
-//! Everything here is pure enough to be used by any frontend: the Tauri app
-//! today, the Qt6 frontend after the migration. Modules are moved in one at a
-//! time from `src-tauri/src`, and `src-tauri` re-exports each one with a
-//! `pub use kitsune_core::X;` shim so its existing `crate::X::...` paths keep
-//! resolving with ZERO call-site edits.
+//! This crate is where the whole application lives: metadata providers, the
+//! indexer, the torrent engine and stream bridge, downloads, the local library,
+//! settings, auth and player state. `crates/kitsune-qt` is a thin QML frontend
+//! on top -- it owns windows, widgets and the libmpv surface, and calls in here
+//! for everything else.
 //!
-//! HARD RULE: this crate must not depend on a UI framework (tauri, slint, Qt,
-//! ...). A frontend dependency here would pull one UI stack into the other.
+//! HARD RULE: this crate must not depend on a UI framework (Qt, slint, gtk,
+//! tauri, ...). That is what keeps the logic testable without a display and
+//! keeps the frontend replaceable.
 
 pub mod auth;
 pub mod diagnostics;

@@ -335,8 +335,9 @@ impl PlayerState {
 
     /// Extra arguments for the player, from settings when a store is present.
     ///
-    /// Public because the external-player launcher lives in the Tauri crate
-    /// (see `src-tauri/src/player/external.rs`), not here.
+    /// Public because launching an external player is a frontend concern: the
+    /// Qt build plays in-process through libmpv, but a future one may want to
+    /// hand the stream URL to mpv and needs these flags to do it.
     pub fn player_args(&self) -> Vec<String> {
         self.inner
             .settings

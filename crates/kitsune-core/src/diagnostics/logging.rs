@@ -1,7 +1,7 @@
 //! Process-wide logging.
 //!
 //! Installs a `tracing` subscriber that writes to BOTH stdout (for
-//! `pnpm tauri dev`) and a rotating file under the OS data directory. Before
+//! `cargo run`) and a rotating file under the OS data directory. Before
 //! this existed the crate called `tracing::info!` and friends but never
 //! installed a subscriber, so every log line was silently dropped -- and a
 //! release build has no console to fall back on.
