@@ -74,7 +74,7 @@ build fails with an explicit message if it is missing or malformed.
 
 ### 3. At runtime
 
-`libmpv-2.dll` must sit beside `kitsune-qt.exe`, together with the ffmpeg DLLs
+`libmpv-2.dll` must sit beside `kitsune.exe`, together with the ffmpeg DLLs
 from the matching `mpv-x86_64-*.7z` runtime archive. Running from
 `target\debug` without them fails to start.
 

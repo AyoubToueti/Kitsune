@@ -5,9 +5,10 @@ A desktop anime streaming app. Kitsune browses and searches anime metadata
 episode lists), finds matching releases on [Nyaa](https://nyaa.si), and streams
 them directly from torrents — without leaving the app.
 
-Built with [Tauri 2](https://v2.tauri.app/) + [SvelteKit](https://svelte.dev/docs/kit)
-+ [Svelte 5](https://svelte.dev/) + TypeScript, styled with
-[Tailwind CSS 4](https://tailwindcss.com/).
+Built with [Qt 6](https://www.qt.io/) + QML through
+[CXX-Qt](https://kdab.github.io/cxx-qt/), with an embedded
+[libmpv](https://mpv.io) video surface. The application logic is pure Rust in
+`crates/kitsune-core`; the frontend is a thin QML layer on top of it.
 
 ## Install
 
@@ -33,13 +34,13 @@ Fedora/openSUSE `.rpm`.
 > installed, either install it (`libfuse2t64` on Ubuntu 24.04+) or run the
 > AppImage with `--appimage-extract-and-run`.
 
-Playback uses the system GStreamer stack, and the external-player handoff uses
-`mpv`. Install them through your distro if they are missing.
+Playback runs through an embedded libmpv, so `libmpv` must be installed
+(`libmpv2` on Debian/Ubuntu, `mpv-libs` on Fedora).
 
 ### Windows
 
-Run the `Kitsune_*_x64-setup.exe` (or the `.msi`) from the Releases page.
-WebView2 is bundled with Windows 10 and later, so no extra runtime is needed.
+Run the `Kitsune_*_x64-setup.exe` from the Releases page. libmpv and the Qt
+runtime are bundled, so no separate install is needed.
 
 ## Features
 
@@ -76,116 +77,74 @@ render. Suggested width: 1280px (the default window size).
 | :-------: | :------: |
 | ![List page](docs/screenshots/list.png) | ![Settings](docs/screenshots/settings.png) |
 
-## The Qt frontend
-
-`crates/kitsune-qt` is a second, native frontend built with
-[CXX-Qt](https://kdab.github.io/cxx-qt/): Qt6/QML for the interface and embedded
-[libmpv](https://mpv.io) for playback (replacing the webview's GStreamer stack).
-It shares `kitsune-core` with the Tauri build, so both apps have identical
-metadata, indexer, torrent, and progress behaviour.
-
-It builds on Linux and Windows. The setup differs enough per platform — libmpv
-has no Windows package manager story — that it has its own guide:
-
-    crates/kitsune-qt/README.md
-
-Quick start on Linux, from the Nix shell:
-
-    nix develop
-    cargo run -p kitsune-qt
-
-CI builds and tests it on both platforms (`.github/workflows/qt-ci.yml`), and a
-tag publishes installers alongside the Tauri assets
-(`.github/workflows/qt-release.yml`).
-
 ## Project structure
 
-    src/                 SvelteKit frontend
-      lib/               pure logic + Svelte components (each unit is tested)
-      routes/            app routes: home, anime, filter, list, search, top, watch
-      test/              Vitest setup and SvelteKit virtual-module stubs
     crates/
-      kitsune-core/      shared, UI-free backend used by both frontends
+      kitsune-core/      the whole application, with no UI dependency
+        providers/       AniList + Jikan + Kitsu metadata providers
+        indexer/         torrent search: Nyaa transport + Sonarr-derived ranking
+        torrent/         librqbit session management + the stream HTTP bridge
+        player/          player state, watch position, last-played release
+        downloads/       download records and on-disk layout
+        list/            the reader's AniList list, with a local cache
+        auth/            AniList token store + OAuth flow
+        settings/        persisted settings store
+        diagnostics/     logging, crash capture, process metrics, speed test
+        tests/           `cargo test` integration tests (wiremock, librqbit)
       kitsune-qt/        Qt6/QML frontend (CXX-Qt + embedded libmpv)
+        src/             the CXX-Qt bridge: every QML-visible command
         cpp/             C++ QML items: the mpv video surface, net cache, helpers
         qml/             pages, controls, dialogs, singletons
         packaging/       AppImage/deb/rpm and NSIS installer definitions
-    src-tauri/           Rust backend
-      src/
-        commands.rs      IPC surface exposed to the frontend
-        providers/       AniList + Jikan metadata providers
-        indexer/         torrent search: Nyaa transport + Sonarr-derived parsing/ranking
-        torrent/         librqbit session management
-        player/          playback + player state
-        auth/            AniList token + deep-link handling
-        settings/        persisted settings store
-      tests/             `cargo test` integration tests (wiremock for HTTP)
+    docs/                player debugging notes
+    scripts/             version propagation
 
 ## Getting started
 
 ### With Nix (recommended on NixOS)
 
-The `flake.nix` dev shell provides the full Rust + Node toolchain and every
-native dependency WebKitGTK and GStreamer need for playback.
+The `flake.nix` dev shell provides the Rust toolchain, Qt 6 and libmpv, and
+builds the merged Qt prefix that CXX-Qt needs on NixOS.
 
-```sh
-nix develop
-```
+    nix develop
 
 ### Without Nix
 
-Install the usual Tauri prerequisites for your platform (Rust, Node 22+, pnpm,
-and the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/)),
-then:
+Install Rust, a Qt 6.8+ development kit (with the Qt SVG module), CMake, Ninja,
+`pkg-config` and the libmpv development files, then:
 
-```sh
-pnpm install
-```
+    cargo build -p kitsune-qt
+
+Windows needs a slightly different libmpv setup, because the published mpv
+builds ship a MinGW import library that MSVC cannot link. See
+`crates/kitsune-qt/README.md` for the full recipe.
 
 ### Run in development
 
-```sh
-pnpm tauri dev
-```
+    cargo run -p kitsune-qt
 
-The frontend alone can be run with `pnpm dev` (Vite on port 1420), but most
-features need the Rust backend.
+The QML is compiled into the binary by `build.rs`, so there is no separate
+frontend dev server.
 
 ### Build
 
-```sh
-pnpm tauri build
-```
+    cargo build -p kitsune-qt --release
 
 ## Testing
 
-Frontend (Vitest + Testing Library):
+    cargo test -p kitsune-core -p kitsune-qt
 
-```sh
-pnpm test          # run once
-pnpm test:watch    # watch mode
-```
+`smoke_stream` is `#[ignore]`d because it needs real content and network access:
 
-Backend (Rust):
-
-```sh
-cd src-tauri && cargo test
-```
-
-Type-check the frontend:
-
-```sh
-pnpm check
-```
+    cargo test -p kitsune-core --test smoke_stream -- --ignored --nocapture
 
 ## Releasing
 
-The app version lives in four files: `src-tauri/tauri.conf.json` (the source of
-truth), `package.json`, `src-tauri/Cargo.toml`, and the `kitsune` entry in
-`src-tauri/Cargo.lock`. Keep them in lockstep with:
+The version lives in one place: `[workspace.package] version` in the root
+`Cargo.toml`. Both crates inherit it, and Cargo regenerates `Cargo.lock` from it.
 
-    pnpm version:sync 0.2.0     # set every file to 0.2.0
-    pnpm version:sync           # or propagate tauri.conf.json's version
+    # bump it (also updates the two Cargo.lock entries)
+    node scripts/sync-version.mjs 0.2.0
 
 Then commit, tag, and push — the tag triggers the release workflow:
 
@@ -193,8 +152,8 @@ Then commit, tag, and push — the tag triggers the release workflow:
     git tag v0.2.0
     git push origin main --tags
 
-The tag **must** match the version (`tagName: v__VERSION__` is filled from
-`tauri.conf.json`).
+The tag **must** match the version; `qt-release.yml` derives the installer
+version from the tag name and fails if it cannot.
 
 ## Credits
 
@@ -204,17 +163,19 @@ Kitsune stands on the work of others:
   [Jikan](https://jikan.moe) (episode lists).
 - **Torrent index** — [Nyaa](https://nyaa.si) (`nyaa.si`) for release search.
 - **Release parsing & ranking** — the title/episode parser, normalizer, and
-  release-ranking pipeline in `src-tauri/src/indexer/` are ported from the
+  release-ranking pipeline in `crates/kitsune-core/src/indexer/` are ported from the
   [Sonarr](https://github.com/Sonarr/Sonarr) project (specifically its
   `Parser`/`AnimeParser` and quality-resolution logic), adapted to the shapes
   anime indexers emit and re-implemented in Rust.
 - **Torrent engine** — [librqbit](https://github.com/ikatson/rqbit).
-- **Playback** — WebKitGTK + GStreamer, with optional handoff to
-  [mpv](https://mpv.io).
+- **Playback** — [libmpv](https://mpv.io) rendered into a Qt Quick
+  framebuffer object.
 
 ## Recommended IDE setup
 
-[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer).
+[VS Code](https://code.visualstudio.com/) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
++ the [Qt QML](https://marketplace.visualstudio.com/items?itemName=theqtcompany.qt-qml)
+extension.
 
 ## License
 

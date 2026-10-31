@@ -1,10 +1,10 @@
-name: qt-ci
+name: ci
 
-# Build and test the Qt/CXX-Qt frontend on both Linux and Windows.
+# Build and test Kitsune on Linux and Windows. Everything here is the Qt app's
+# native dependency set -- there is no other frontend any more.
 #
-# This is deliberately separate from ci.yml (which covers the Tauri app): the
-# Qt frontend has a completely different native dependency set, and a failure
-# in one should not hide a failure in the other.
+# cargo test runs the whole suite: the unit tests in both crates plus the
+# integration tests in crates/kitsune-core/tests.
 #
 # Why install-qt-action and not the distro packages:
 #   Ubuntu 22.04 ships Qt 6.2, which is below the minimum cxx-qt 0.10 supports.
@@ -26,13 +26,13 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/workflows/qt-ci.yml"
+      - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/workflows/qt-ci.yml"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 env:
@@ -182,6 +182,11 @@ jobs:
       - name: Run tests
         run: cargo test -p kitsune-core -p kitsune-qt
 
+      # Not gated on warnings: the crate has pre-existing dead-code warnings
+      # from the CXX-Qt bridge, and failing on those would hide real errors.
+      - name: Clippy
+        run: cargo clippy -p kitsune-core -p kitsune-qt --all-targets
+
       - name: Build (release)
         run: cargo build -p kitsune-qt --release
 
@@ -207,7 +212,7 @@ jobs:
       - name: Upload built binary
         uses: actions/upload-artifact@v4
         with:
-          name: kitsune-qt-${{ matrix.name }}
+          name: kitsune-${{ matrix.name }}
           path: |
             target/release/kitsune
             target/release/kitsune.exe
