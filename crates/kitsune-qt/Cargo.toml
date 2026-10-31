@@ -1,9 +1,12 @@
 [package]
 name = "kitsune-qt"
-version = "0.1.0"
+# Inherited from [workspace.package] in the root Cargo.toml. This crate is the
+# one that ships, so its version is what the installers report -- but it is
+# still declared once, at the workspace root.
+version.workspace = true
+edition.workspace = true
 description = "Kitsune's Qt6/QML frontend"
 authors = ["you"]
-edition = "2021"
 
 # A binary, not a library: this is the Qt app's entry point.
 [[bin]]

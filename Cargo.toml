@@ -10,6 +10,18 @@
 resolver = "2"
 members = ["src-tauri", "crates/kitsune-core", "crates/kitsune-qt"]
 
+# One version for the whole workspace. Members inherit it with
+# `version.workspace = true`, so Cargo -- not a script -- is the authority:
+# it validates this value and regenerates Cargo.lock from it. Previously the
+# version lived in tauri.conf.json and three other files had to be patched to
+# match it by hand.
+#
+# Bump with: cargo set-version --workspace X.Y.Z (or edit this line, then let
+# the next build rewrite Cargo.lock).
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
 # Release profile lives HERE, not in a member. Cargo ignores a [profile.*]
 # table in a non-root member of a virtual workspace, so keeping it in
 # src-tauri/Cargo.toml would silently do nothing.

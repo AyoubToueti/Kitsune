@@ -7,9 +7,12 @@
 
 /// The scheme the OS routes back to this app.
 ///
-/// Must match `plugins.deep-link.desktop.schemes` in `tauri.conf.json` and the
-/// redirect URL registered on the AniList application, or the browser has
-/// nowhere to send the token.
+/// Registered per platform by the Qt frontend's packaging: the NSIS installer
+/// writes `HKCU\Software\Classes\kitsune` on Windows, and
+/// `packaging/linux/com.kitsune.app.qt.desktop` declares
+/// `MimeType=x-scheme-handler/kitsune` on Linux. It must also match the redirect
+/// URL registered on the AniList application, or the browser has nowhere to
+/// send the token.
 pub const REDIRECT_SCHEME: &str = "kitsune";
 
 /// The host part of the redirect URL.

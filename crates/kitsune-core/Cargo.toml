@@ -1,9 +1,11 @@
 [package]
 name = "kitsune-core"
-version = "0.1.0"
+# Inherited from [workspace.package] in the root Cargo.toml, so there is
+# exactly one version in the repository.
+version.workspace = true
+edition.workspace = true
 description = "Framework-agnostic backend logic for Kitsune"
 authors = ["you"]
-edition = "2021"
 
 # This crate MUST NOT depend on tauri, slint, Qt or any other UI framework.
 # It is the shared seam the Tauri app and the Qt6 frontend both build on, so a

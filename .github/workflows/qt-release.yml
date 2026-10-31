@@ -33,12 +33,13 @@ jobs:
       - name: Derive version
         id: ver
         run: |
-          # workflow_dispatch has no tag; fall back to the Tauri config, which
-          # scripts/sync-version.mjs keeps authoritative.
+          # workflow_dispatch has no tag; fall back to the workspace version in
+          # the root Cargo.toml, which is the single source of truth.
           if [ "${{ github.ref_type }}" = "tag" ]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            v=$(node -p "require('./src-tauri/tauri.conf.json').version")
+            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+            if [ -z "$v" ]; then echo "could not read [workspace.package] version"; exit 1; fi
             echo "version=$v" >> "$GITHUB_OUTPUT"
           fi
 
@@ -145,7 +146,11 @@ jobs:
           if ("${{ github.ref_type }}" -eq "tag") {
             "version=$("${{ github.ref_name }}".TrimStart('v'))" >> $env:GITHUB_OUTPUT
           } else {
-            $v = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+            # Single source of truth: [workspace.package] in the root Cargo.toml.
+            $section = (Get-Content Cargo.toml -Raw) -split '(?m)^\[' |
+              Where-Object { $_ -like 'workspace.package]*' } | Select-Object -First 1
+            $v = [regex]::Match($section, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+            if (-not $v) { throw "could not read [workspace.package] version" }
             "version=$v" >> $env:GITHUB_OUTPUT
           }
 
