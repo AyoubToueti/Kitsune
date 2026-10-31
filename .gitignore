@@ -1,20 +1,12 @@
-# ---- Dependencies ----
-node_modules/
-.pnpm-store/
-
-# ---- Frontend build output ----
+# ---- Rust build output ----
+# The cargo workspace keeps ONE target/ at the repo root.
+target/
+# nfpm and the AppImage script write here.
 dist/
 build/
-.svelte-kit/
-.vite/
-package/
-vite.config.js.timestamp-*
-vite.config.ts.timestamp-*
 
-# ---- Rust / Tauri build output ----
-target/
-src-tauri/target/
-src-tauri/gen/
+# ---- Throwaway spikes (e.g. the Qt6 toolchain spike) ----
+spike-qt/build/
 
 # ---- Environment & secrets ----
 .env
@@ -23,16 +15,15 @@ src-tauri/gen/
 
 # ---- Logs ----
 *.log
-pnpm-debug.log*
 
 # ---- Test output ----
 coverage/
 
 # ---- Torrent files (used for manual smoke tests, never committed) ----
 *.torrent
-# ...except the test fixture probe_session_conflict.rs relies on. Big Buck
-# Bunny is Creative Commons, so it is fine to commit.
-!src-tauri/tests/fixtures/*.torrent
+# ...except the fixture the core integration tests rely on. Big Buck Bunny is
+# Creative Commons, so it is fine to commit.
+!crates/kitsune-core/tests/fixtures/*.torrent
 
 # ---- Nix ----
 .direnv/
@@ -47,4 +38,3 @@ Thumbs.db
 .*
 !.github/
 !.gitignore
-Sonarr*

@@ -1,0 +1,193 @@
+//! Generates and compiles the C++ for every `#[cxx_qt::bridge]` in this crate.
+//!
+//! `new_qml_module` also embeds the QML files into a Qt resource under
+//! `qrc:/qt/qml/<uri-as-dirs>/...`, which is how `main.rs` loads them.
+
+use cxx_qt_build::{CppFile, CxxQtBuilder, QmlFile, QmlModule};
+
+fn main() {
+    CxxQtBuilder::new_qml_module(
+        QmlModule::new("com.kitsune.app")
+            .qml_file("qml/main.qml")
+            .qml_file("qml/HomePage.qml")
+            .qml_file("qml/DetailPage.qml")
+            .qml_file("qml/BrowsePage.qml")
+            .qml_file("qml/SchedulePage.qml")
+            .qml_file("qml/TopPage.qml")
+            .qml_file("qml/MyListPage.qml")
+            .qml_file("qml/DownloadsPage.qml")
+            .qml_file("qml/DownloadFilePicker.qml")
+            .qml_file("qml/DownloadFilesDialog.qml")
+            .qml_file("qml/AvailabilityPopup.qml")
+            .qml_file("qml/ActionButton.qml")
+            .qml_file("qml/SettingsPopup.qml")
+            .qml_file("qml/EpisodeWatchModal.qml")
+            .qml_file("qml/PlayerControls.qml")
+            .qml_file("qml/PlayerSettings.qml")
+            .qml_file("qml/PlayerIcon.qml")
+            .qml_file("qml/GlassPanel.qml")
+            .qml_file("qml/WatchPage.qml")
+            .qml_file("qml/NavBar.qml")
+            .qml_file("qml/ThemeSelect.qml")
+            .qml_file("qml/ThemedSwitch.qml")
+            .qml_file("qml/ThemedSlider.qml")
+            .qml_file("qml/ThemedSpinBox.qml")
+            .qml_file("qml/Chip.qml")
+            .qml_file("qml/NavButton.qml")
+            .qml_file("qml/PosterCard.qml")
+            .qml_file("qml/QuickStatusMenu.qml")
+            .qml_file("qml/QuickAddButton.qml")
+            .qml_file("qml/RecommendationCard.qml")
+            .qml_file("qml/RecommendationsPage.qml")
+            .qml_file("qml/ContinueWatchingCard.qml")
+            .qml_file("qml/ResumeDisc.qml")
+            .qml_file("qml/HeroCarousel.qml")
+            .qml_file("qml/HeroBackdrop.qml")
+            .qml_file("qml/TrendingCard.qml")
+            .qml_file("qml/AnimeListRow.qml")
+            .qml_file("qml/ListBlock.qml")
+            .qml_file("qml/ScheduleWidget.qml")
+            .qml_file("qml/TopList.qml")
+            .qml_file("qml/Skeleton.qml")
+            .qml_file("qml/HeroSkeleton.qml")
+            .qml_file("qml/TrendingRailSkeleton.qml")
+            .qml_file("qml/ListBlockSkeleton.qml")
+            .qml_file("qml/ScheduleWidgetSkeleton.qml")
+            .qml_file("qml/RankedListSkeleton.qml")
+            .qml_file("qml/DetailSkeleton.qml")
+            .qml_file("qml/PosterGridSkeleton.qml")
+            .qml_file("qml/ErrorState.qml")
+            .qml_file("qml/InlineRetry.qml")
+            .qml_file("qml/LoadingMore.qml")
+            .qml_file("qml/DragToStatus.qml")
+            // These are `pragma Singleton`; the qmldir must mark them or QML
+            // refuses to import them.
+            .qml_file(QmlFile::from("qml/Theme.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/ListStatusStore.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/RetryState.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/DragState.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/TitlePreference.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/SpeedTestStore.qml").singleton(true))
+            .qml_file(QmlFile::from("qml/DetailCache.qml").singleton(true)),
+    )
+    .files([
+        "src/backend.rs",
+        "src/screenshot.rs",
+        "src/mpv.rs",
+        "src/platcompat.rs",
+        "src/netcache.rs",
+    ])
+    // The brand mark, embedded so the UI can use it without shipping a loose
+    // file next to the binary. `qrc_resources` inherits the QML module's
+    // prefix, so these land at
+    // qrc:/qt/qml/com/kitsune/app/assets/logo.{png,svg}.
+    //
+    // Both are shipped: the SVG scales to any size without blurring, but it
+    // needs the qtsvg image-format plugin at runtime (see flake.nix's
+    // QT_PLUGIN_PATH), so the PNG stays as a fallback for the window icon.
+    .qrc_resources(["assets/logo.png", "assets/logo.svg"])
+    // Link QtQuick so its headers (QQuickWindow, QQuickFramebufferObject) are on
+    // the include path, and QtOpenGL for QOpenGLFramebufferObject (the mpv
+    // render target).
+    .qt_module("Quick")
+    .qt_module("OpenGL")
+    // `QNetworkDiskCache` / `QQmlNetworkAccessManagerFactory`, for the image
+    // cache installed before the engine loads.
+    .qt_module("Network")
+    .qt_module("Qml")
+    // The screenshot helper is plain C++ driven from Rust.
+    .cpp_file("cpp/screenshot.cpp")
+    // Environment/locale helpers. Portable replacements for the `setenv` /
+    // `setlocale` calls that used to be raw `extern "C"` in main.rs.
+    .cpp_file(CppFile::from("cpp/platcompat.h"))
+    .cpp_file(CppFile::from("cpp/platcompat.cpp"))
+    // The image HTTP cache. A header is listed so moc runs where it is needed;
+    // the factory here is not a QObject, so this is just a normal pair.
+    .cpp_file(CppFile::from("cpp/netcache.h"))
+    .cpp_file(CppFile::from("cpp/netcache.cpp"))
+    // `MpvObject` has a Q_OBJECT (virtuals + signals). CppFile's defaults run
+    // moc over the HEADER and compile the .cpp, so both files are listed.
+    .cpp_file(CppFile::from("cpp/mpvitem.h"))
+    .cpp_file(CppFile::from("cpp/mpvitem.cpp"))
+    .include_dir("cpp")
+    .build();
+
+    // Link libmpv, which the mpv item calls directly.
+    link_libmpv();
+}
+
+/// Emit the link/include flags for libmpv.
+///
+/// Two very different discovery stories, so they are separate functions rather
+/// than one `cfg`-littered body:
+///
+///   * Unix (and NixOS in particular): `pkg-config mpv` knows where the
+///     headers and the shared library live, including the multi-output store
+///     paths Nix splits them across.
+///   * Windows: there is no pkg-config in the default MSVC toolchain and the
+///     libmpv builds available for Windows ship a bare `libmpv-2.dll`. The
+///     caller supplies a root directory in `MPV_DIR` containing `include/mpv/`
+///     and `lib/mpv.lib`, and we point both the linker and the C++ compiler at
+///     it.
+///
+/// A missing `MPV_DIR` on Windows is a hard error: the previous fallback
+/// (`-lmpv` with no include path) produced a wall of "mpv/client.h: No such
+/// file or directory" errors that pointed nowhere near the real cause.
+#[cfg(not(windows))]
+fn link_libmpv() {
+    match pkg_config::Config::new().probe("mpv") {
+        Ok(lib) => {
+            for path in &lib.link_paths {
+                println!("cargo:rustc-link-search=native={}", path.display());
+            }
+            for name in &lib.libs {
+                println!("cargo:rustc-link-lib=dylib={}", name);
+            }
+        }
+        Err(err) => {
+            // Still a hard error -- but say what to install, because the bare
+            // "The system library `mpv` required by crate ... was not found"
+            // message is easy to misread as a Rust problem.
+            panic!("libmpv development files not found via pkg-config ({err}). Install the mpv development package (e.g. `mpv-unwrapped` on NixOS, `libmpv-dev` on Debian/Ubuntu).");
+        }
+    }
+}
+
+/// Windows: resolve libmpv from `MPV_DIR` (layout: `include/mpv/*.h` and
+/// `lib/mpv.lib`).
+#[cfg(windows)]
+fn link_libmpv() {
+    let root = std::env::var_os("MPV_DIR").unwrap_or_else(|| {
+        panic!(
+            "MPV_DIR is not set. Point it at a libmpv development tree containing \
+             `include/mpv/client.h` and `lib/mpv.lib` (see crates/kitsune-qt/README.md)."
+        )
+    });
+    let root = std::path::PathBuf::from(root);
+
+    let include = root.join("include");
+    let libdir = root.join("lib");
+
+    if !include.join("mpv").join("client.h").exists() {
+        panic!(
+            "MPV_DIR={} does not contain include/mpv/client.h",
+            root.display()
+        );
+    }
+    if !libdir.join("mpv.lib").exists() {
+        panic!(
+            "MPV_DIR={} does not contain lib/mpv.lib (see the dumpbin/lib recipe in \
+             crates/kitsune-qt/README.md)",
+            root.display()
+        );
+    }
+
+    // `cargo:include` is honoured by cxx-qt-build's C++ compilation step, which
+    // is what makes `#include <mpv/client.h>` resolve in mpvitem.h.
+    println!("cargo:include={}", include.display());
+    println!("cargo:rustc-link-search=native={}", libdir.display());
+    println!("cargo:rustc-link-lib=dylib=mpv");
+
+    // Rebuild when the developer points MPV_DIR somewhere else.
+    println!("cargo:rerun-if-env-changed=MPV_DIR");
+}

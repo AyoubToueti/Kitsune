@@ -1,0 +1,287 @@
+name: qt-release
+
+# Build the Qt/CXX-Qt frontend for Linux and Windows and attach the installers
+# to the release for the pushed tag.
+#
+# Runs alongside release.yml (the Tauri pipeline) on the same tag: both add
+# assets to the same draft release, with distinct filenames. That keeps "one
+# version number, two frontends" honest -- pushing v0.2.0 publishes both.
+#
+# The version comes from the tag, not from any file, so a tag can never ship a
+# binary whose own version says something else.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  QT_VERSION: "6.8.3"
+
+jobs:
+  build-linux:
+    name: linux
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version
+        id: ver
+        run: |
+          # workflow_dispatch has no tag; fall back to the workspace version in
+          # the root Cargo.toml, which is the single source of truth.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -1)
+            if [ -z "$v" ]; then echo "could not read [workspace.package] version"; exit 1; fi
+            echo "version=$v" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: qt-linux-release
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libmpv-dev \
+            libclang-dev \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libfuse2 \
+            file
+
+      - name: Point bindgen at libclang
+        run: |
+          dir=$(dirname "$(find /usr/lib -name 'libclang.so*' -print -quit)")
+          echo "LIBCLANG_PATH=$dir" >> "$GITHUB_ENV"
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: linux_gcc_64
+          modules: "qtsvg"
+          cache: true
+
+      - name: Build
+        run: cargo build -p kitsune-qt --release
+
+      - name: Fetch linuxdeploy
+        run: |
+          # Pinned by release tag: linuxdeploy changes its plugin ABI between
+          # releases, and an unpinned download has broken builds before.
+          curl -fsSLo linuxdeploy \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSLo linuxdeploy-plugin-qt \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+
+      - name: Build AppImage
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          LINUXDEPLOY: ${{ github.workspace }}/linuxdeploy
+          LINUXDEPLOY_PLUGIN_QT: ${{ github.workspace }}/linuxdeploy-plugin-qt
+        run: ./crates/kitsune-qt/packaging/linux/build-appimage.sh
+
+      - name: Build deb and rpm
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          # nfpm reads ${VERSION} from the environment. `GOBIN` keeps it off
+          # the system prefix without sudo.
+          curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.41.1/nfpm_2.41.1_Linux_x86_64.tar.gz \
+            | tar xz -C /tmp nfpm
+          sudo install -m 0755 /tmp/nfpm /usr/local/bin/nfpm
+          nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p deb
+          nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p rpm
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p out
+          # nfpm writes beside the config's `contents` paths, i.e. the repo
+          # root; the AppImage script writes into dist/.
+          mv dist/*.AppImage out/ 2>/dev/null || true
+          mv ./*.deb out/ 2>/dev/null || true
+          mv ./*.rpm out/ 2>/dev/null || true
+          ls -l out
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kitsune-qt-linux
+          path: out/*
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: out/*
+
+  build-windows:
+    name: windows
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            "version=$("${{ github.ref_name }}".TrimStart('v'))" >> $env:GITHUB_OUTPUT
+          } else {
+            # Single source of truth: [workspace.package] in the root Cargo.toml.
+            $section = (Get-Content Cargo.toml -Raw) -split '(?m)^\[' |
+              Where-Object { $_ -like 'workspace.package]*' } | Select-Object -First 1
+            $v = [regex]::Match($section, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+            if (-not $v) { throw "could not read [workspace.package] version" }
+            "version=$v" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: qt-windows-release
+
+      - name: Install LLVM and NSIS
+        shell: pwsh
+        run: |
+          choco install llvm nsis --no-progress -y
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> $env:GITHUB_ENV
+
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Identical recipe to qt-ci.yml: resolve the newest mpv-dev asset, then
+      # synthesise an MSVC import library from the DLL's export table.
+      - name: Fetch libmpv development files
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" `
+            -Headers @{ "User-Agent" = "kitsune-ci" }
+          $asset = $release.assets |
+            Where-Object { $_.name -match '^mpv-dev-x86_64-\d+-git-[0-9a-f]+\.7z$' } |
+            Select-Object -First 1
+          if (-not $asset) { throw "no mpv-dev-x86_64 asset found in $($release.tag_name)" }
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile mpv-dev.7z
+          7z x mpv-dev.7z -ompv-dev -y | Out-Null
+
+      - name: Generate an MSVC import library for libmpv
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem -Path mpv-dev -Recurse -Filter libmpv-2.dll |
+            Select-Object -First 1
+          $includeDir = (Get-ChildItem -Path mpv-dev -Recurse -Directory -Filter mpv |
+            Where-Object { Test-Path (Join-Path $_.FullName "client.h") } |
+            Select-Object -First 1).Parent.FullName
+          $root = Join-Path $PWD "libmpv"
+          New-Item -ItemType Directory -Force -Path (Join-Path $root "lib") | Out-Null
+          Copy-Item -Recurse $includeDir (Join-Path $root "include")
+
+          $exports = & dumpbin /nologo /exports $dll.FullName |
+            Select-String -Pattern '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(\S+)$' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } |
+            Sort-Object -Unique
+          $def = Join-Path $root "mpv.def"
+          "LIBRARY libmpv-2.dll" | Out-File -Encoding ascii $def
+          "EXPORTS"              | Out-File -Encoding ascii -Append $def
+          $exports               | Out-File -Encoding ascii -Append $def
+          Push-Location $root
+          lib /nologo /def:mpv.def /machine:x64 /out:lib\mpv.lib
+          Pop-Location
+          Copy-Item $dll.FullName (Join-Path $root "libmpv-2.dll")
+          "MPV_DIR=$root" | Out-File -Encoding ascii -Append $env:GITHUB_ENV
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: "qtsvg"
+          cache: true
+
+      - name: Build
+        run: cargo build -p kitsune-qt --release
+
+      - name: Stage installer payload
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/kitsune.exe $stage
+
+          # windeployqt copies the Qt DLLs and, crucially, the plugin and QML
+          # directories. --qmldir makes it scan the QML sources so every module
+          # actually imported is included.
+          windeployqt --release --no-translations `
+            --qmldir crates/kitsune-qt/qml `
+            (Join-Path $stage "kitsune.exe")
+          if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+
+          # libmpv and its ffmpeg dependency DLLs. The dev archive is not
+          # enough for a working app: the runtime mpv archive has the codec
+          # DLLs the dev build links against.
+          $runtime = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" `
+            -Headers @{ "User-Agent" = "kitsune-ci" }
+          $rtAsset = $runtime.assets |
+            Where-Object { $_.name -match '^mpv-x86_64-\d+-git-[0-9a-f]+\.7z$' } |
+            Select-Object -First 1
+          Invoke-WebRequest -Uri $rtAsset.browser_download_url -OutFile mpv.7z
+          7z x mpv.7z -ompv-rt -y | Out-Null
+          Get-ChildItem -Path mpv-rt -Filter *.dll | Copy-Item -Destination $stage
+          Copy-Item (Join-Path $env:MPV_DIR "libmpv-2.dll") $stage -Force
+
+          if (-not (Test-Path (Join-Path $stage "platforms\qwindows.dll"))) {
+            throw "windeployqt did not produce platforms/qwindows.dll"
+          }
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.ver.outputs.version }}"
+          $out = "Kitsune_${version}_x64-setup.exe"
+          & "C:\Program Files (x86)\NSIS\makensis.exe" `
+            "/DVERSION=$version" `
+            "/DSRCDIR=$PWD\stage" `
+            "/DOUTFILE=$PWD\$out" `
+            "crates\kitsune-qt\packaging\windows\kitsune-qt.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          if (-not (Test-Path $out)) { throw "installer was not produced" }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kitsune-qt-windows
+          path: "*.exe"
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: "Kitsune_*_x64-setup.exe"

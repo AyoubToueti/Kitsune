@@ -1,0 +1,62 @@
+[package]
+name = "kitsune-core"
+# Inherited from [workspace.package] in the root Cargo.toml, so there is
+# exactly one version in the repository.
+version.workspace = true
+edition.workspace = true
+description = "Framework-agnostic backend logic for Kitsune"
+authors = ["you"]
+
+# This crate MUST NOT depend on tauri, slint, Qt or any other UI framework.
+# It is the shared seam the Tauri app and the Qt6 frontend both build on, so a
+# UI dependency here would drag one frontend into the other.
+# Check: `grep -rn 'tauri\|slint\|qt' crates/kitsune-core/src`.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# settings::store reads and writes its JSON file at runtime, so serde_json is
+# a real dependency, not a test-only one.
+serde_json = "1"
+anyhow = "1.0.104"
+# The torrent engine. `http-api` brings the Range-capable HTTP bridge that the
+# player reads from; `tracing-subscriber-utils` is required by librqbit's own
+# logging setup.
+librqbit = { version = "9.0.1", features = ["http-api", "tracing-subscriber-utils"] }
+librqbit-dualstack-sockets = "0.7.0"
+# `net` for the bridge's TcpListener, `sync`/`time` for the engine's locks and
+# poll loops, `rt` for spawning the bridge task.
+tokio = { version = "1.53.1", features = ["rt", "sync", "time", "net"] }
+# `tracing::error!` in the bridge's accept loop, and in diagnostics::panic.
+# The subscriber that actually captures these lives in diagnostics::logging.
+tracing = "0.1.44"
+# diagnostics::logging builds the daily-rotating file sink that makes the
+# `tracing` calls above actually go somewhere in a release GUI build.
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+# diagnostics::metrics reads this process's CPU and RAM (cross-platform:
+# /proc on Linux, native APIs elsewhere).
+sysinfo = "0.39"
+# diagnostics::logging resolves the OS log directory (and the token store will
+# need it too).
+dirs = "6"
+# diagnostics::speedtest drives a client against Cloudflare at runtime, so
+# reqwest belongs in [dependencies], not only [dev-dependencies].
+reqwest = { version = "0.13.5", features = ["json", "default-tls"] }
+# providers::traits declares an async trait (AnimeProvider).
+async-trait = "0.1.92"
+# indexer::parse ports Sonarr's release-name regexes, which use lookaround and
+# backreferences that the `regex` crate cannot express.
+fancy-regex = "0.14"
+# indexer::nyaa reads the Nyaa RSS feed.
+quick-xml = "0.37"
+# indexer uses process-wide lazy regexes/statics.
+once_cell = "1"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread"] }
+tokio-test = "0.4.5"
+# The torrent engine's tests need a scratch directory, the bridge tests spin a
+# real HTTP client against the loopback server, and the providers mock AniList
+# and Jikan over HTTP.
+tempfile = "3.27.0"
+wiremock = "0.6.5"

@@ -1,55 +1,63 @@
 name: ci
 
-# Run the test suites on every pull request and on pushes to main, so a release
-# tag only ever ships code that passed locally.
+# Build and test Kitsune on Linux and Windows. Everything here is the Qt app's
+# native dependency set -- there is no other frontend any more.
+#
+# cargo test runs the whole suite: the unit tests in both crates plus the
+# integration tests in crates/kitsune-core/tests.
+#
+# Why install-qt-action and not the distro packages:
+#   Ubuntu 22.04 ships Qt 6.2, which is below the minimum cxx-qt 0.10 supports.
+#   Even on 24.04 the packaged Qt lacks the matching QML tooling. The action
+#   installs a complete kit and puts qmake on PATH, which is exactly how
+#   cxx-qt-build discovers Qt (see qt-build-utils).
+#
+# Why libmpv is fetched by hand on Windows:
+#   mpv has no vcpkg port, and the shinchiro builds are the de-facto Windows
+#   binaries. They ship a MinGW import library plus the DLL, so an import
+#   library for MSVC is generated from the DLL's exports. See
+#   crates/kitsune-qt/README.md for the same recipe done locally.
 
 on:
   push:
     branches:
       - main
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+env:
+  # Pinned so a new Qt minor cannot silently break the build overnight. Bump
+  # deliberately, together with the cxx-qt version if needed.
+  QT_VERSION: "6.8.3"
 
 jobs:
-  frontend:
-    runs-on: ubuntu-22.04
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-24.04
+            qt_arch: linux_gcc_64
+          - name: windows
+            os: windows-latest
+            qt_arch: win64_msvc2022_64
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install frontend dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Unit tests
-        run: pnpm test
-
-      - name: Type check
-        run: pnpm check
-
-  backend:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # The Rust crate links against the webview, so the same system libraries
-      # the release job needs are required here to compile and test.
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -57,8 +65,155 @@ jobs:
       - name: Cache Rust build artifacts
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: "./src-tauri -> target"
+          # The workspace root owns the target dir, so cache from there.
+          workspaces: ". -> target"
+          # Separate caches per OS; the artifacts are not interchangeable.
+          key: qt-${{ matrix.name }}
 
-      - name: Run Rust tests
-        working-directory: ./src-tauri
-        run: cargo test
+      # ---------------------------------------------------------------- Linux
+      - name: Install Linux dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libmpv-dev \
+            libclang-dev \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            xvfb
+
+      - name: Point bindgen at libclang (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          # cxx-qt-build parses C++ headers with libclang; the versioned dir
+          # name changes between Ubuntu releases, so resolve it rather than
+          # hardcoding llvm-18.
+          dir=$(dirname "$(find /usr/lib -name 'libclang.so*' -print -quit)")
+          echo "LIBCLANG_PATH=$dir" >> "$GITHUB_ENV"
+
+      # -------------------------------------------------------------- Windows
+      - name: Install LLVM (Windows)
+        if: matrix.name == 'windows'
+        run: |
+          # Needed for libclang (cxx-qt-build) and for dumpbin/lib below.
+          choco install llvm --no-progress -y
+          echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$env:GITHUB_ENV"
+
+      - name: Set up MSVC developer environment
+        if: matrix.name == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Fetch libmpv development files (Windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          # The "latest" tag is a moving target, but the asset name pattern is
+          # stable. Resolve the newest mpv-dev-x86_64 asset via the GitHub API
+          # rather than pinning a date that will rot.
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" `
+            -Headers @{ "User-Agent" = "kitsune-ci" }
+          # Exclude the -v3 variant: it requires AVX2 and the runner image is
+          # not guaranteed to have it.
+          $asset = $release.assets |
+            Where-Object { $_.name -match '^mpv-dev-x86_64-\d+-git-[0-9a-f]+\.7z$' } |
+            Select-Object -First 1
+          if (-not $asset) { throw "no mpv-dev-x86_64 asset found in $($release.tag_name)" }
+          Write-Host "Using $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile mpv-dev.7z
+          7z x mpv-dev.7z -ompv-dev -y | Out-Null
+
+      - name: Generate an MSVC import library for libmpv
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          # The shinchiro archive ships a MinGW `libmpv.dll.a`, which MSVC's
+          # linker cannot consume. Build a proper import library from the DLL's
+          # export table instead.
+          $dll = Get-ChildItem -Path mpv-dev -Recurse -Filter libmpv-2.dll |
+            Select-Object -First 1
+          if (-not $dll) { throw "libmpv-2.dll not found in the mpv-dev archive" }
+          $includeDir = (Get-ChildItem -Path mpv-dev -Recurse -Directory -Filter mpv |
+            Where-Object { Test-Path (Join-Path $_.FullName "client.h") } |
+            Select-Object -First 1).Parent.FullName
+          if (-not $includeDir) { throw "mpv/client.h not found in the mpv-dev archive" }
+
+          $root = Join-Path $PWD "libmpv"
+          New-Item -ItemType Directory -Force -Path (Join-Path $root "lib") | Out-Null
+          Copy-Item -Recurse $includeDir (Join-Path $root "include")
+
+          $exports = & dumpbin /nologo /exports $dll.FullName |
+            Select-String -Pattern '^\s+\d+\s+[0-9A-F]+\s+[0-9A-F]+\s+(\S+)$' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value } |
+            Sort-Object -Unique
+          if (-not $exports) { throw "dumpbin reported no exports for $($dll.Name)" }
+
+          $def = Join-Path $root "mpv.def"
+          "LIBRARY libmpv-2.dll" | Out-File -Encoding ascii $def
+          "EXPORTS"              | Out-File -Encoding ascii -Append $def
+          $exports               | Out-File -Encoding ascii -Append $def
+
+          Push-Location $root
+          lib /nologo /def:mpv.def /machine:x64 /out:lib\mpv.lib
+          Pop-Location
+          if (-not (Test-Path (Join-Path $root "lib\mpv.lib"))) {
+            throw "lib.exe did not produce lib/mpv.lib"
+          }
+
+          # Copy the runtime DLL beside the crate's build output later; keep a
+          # canonical copy here for the packaging step.
+          Copy-Item $dll.FullName (Join-Path $root "libmpv-2.dll")
+          "MPV_DIR=$root" | Out-File -Encoding ascii -Append $env:GITHUB_ENV
+
+      # ------------------------------------------------------------- Qt (both)
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ matrix.qt_arch }}
+          # qtsvg supplies the SVG image-format plugin a QML Image needs to
+          # render assets/logo.svg at runtime (see build.rs).
+          modules: "qtsvg"
+          cache: true
+
+      # -------------------------------------------------------- Build & test
+      - name: Run tests
+        run: cargo test -p kitsune-core -p kitsune-qt
+
+      # Not gated on warnings: the crate has pre-existing dead-code warnings
+      # from the CXX-Qt bridge, and failing on those would hide real errors.
+      - name: Clippy
+        run: cargo clippy -p kitsune-core -p kitsune-qt --all-targets
+
+      - name: Build (release)
+        run: cargo build -p kitsune-qt --release
+
+      # Proves the QML tree actually loads and libmpv links at runtime. The app
+      # photographs itself (KITSUNE_SCREENSHOT) because external capture tools
+      # are unreliable, and xvfb supplies the display a Qt app needs.
+      - name: Smoke run (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x800x24" \
+            env KITSUNE_SCREENSHOT=smoke.png KITSUNE_SCREENSHOT_DELAY_MS=4000 \
+            ./target/release/kitsune
+          test -s smoke.png || { echo "no screenshot produced"; exit 1; }
+
+      - name: Upload smoke screenshot
+        if: matrix.name == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: qt-smoke-screenshot
+          path: smoke.png
+          if-no-files-found: error
+
+      - name: Upload built binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: kitsune-${{ matrix.name }}
+          path: |
+            target/release/kitsune
+            target/release/kitsune.exe
+          if-no-files-found: ignore

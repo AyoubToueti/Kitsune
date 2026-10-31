@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kitsune
+Comment=Anime streaming from torrents
+Exec=kitsune %u
+Icon=com.kitsune.app
+Terminal=false
+Categories=AudioVideo;Video;Player;
+# This is what makes the OS hand a kitsune:// URL to the app. The Tauri build
+# ships a .desktop file without it, because Tauri registers the scheme itself.
+MimeType=x-scheme-handler/kitsune;
+StartupWMClass=com.kitsune.app

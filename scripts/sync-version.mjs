@@ -1,86 +1,81 @@
 #!/usr/bin/env node
-// Keep the app version identical across the files that carry it.
+// Keep Cargo.lock in step with the workspace version.
 //
 // Usage:
-//   node scripts/sync-version.mjs            # propagate tauri.conf.json's version
-//   node scripts/sync-version.mjs 0.2.0      # set every file to 0.2.0
+//   node scripts/sync-version.mjs            # propagate the workspace version
+//   node scripts/sync-version.mjs 0.2.0      # set the workspace version to 0.2.0
 //
-// `src-tauri/tauri.conf.json` is the source of truth: it is what Tauri bakes
-// into the app, the installer filenames, and the release workflow's
-// `tagName: v__VERSION__`. The other files are kept in lockstep so the running
-// app, the npm package, and the Rust crate never disagree -- a mismatch makes
-// the auto-updater compare the wrong numbers.
+// The single source of truth is `[workspace.package] version` in the ROOT
+// Cargo.toml. Every crate inherits it with `version.workspace = true`, so
+// Cargo is the authority: it validates the value and regenerates the lockfile
+// on the next build.
+//
+// That leaves this script with one job. Cargo.lock records each workspace
+// member's own version, and it is only rewritten when something forces a
+// resolve -- so bumping the version and committing would otherwise leave two
+// stale lines in the lock, which the next `cargo build` would then silently
+// dirty. Rewriting them here keeps the working tree clean.
+//
+// This used to be a four-file dance driven by `src-tauri/tauri.conf.json`.
+// That file, and the Tauri app that owned it, are gone.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-const FILES = {
-  tauri: join(root, "src-tauri", "tauri.conf.json"),
-  pkg: join(root, "package.json"),
-  cargo: join(root, "src-tauri", "Cargo.toml"),
-  lock: join(root, "src-tauri", "Cargo.lock"),
-};
+const WORKSPACE_TOML = join(root, "Cargo.toml");
+const LOCK = join(root, "Cargo.lock");
 
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
-/** Read the version out of tauri.conf.json (the source of truth). */
-function readTauriVersion() {
-  const json = JSON.parse(readFileSync(FILES.tauri, "utf8"));
-  if (!json.version) {
-    throw new Error("tauri.conf.json has no top-level `version` field");
-  }
-  return json.version;
-}
+/** Every workspace member whose version Cargo.lock records. */
+const MEMBERS = ["kitsune-core", "kitsune-qt"];
 
 /**
- * Replace the first `"version": "..."` in a JSON string, preserving the rest
- * of the file byte-for-byte (so indentation and key order are untouched).
- */
-function setJsonVersion(source, version) {
-  const re = /("version"\s*:\s*")([^"]*)(")/;
-  if (!re.test(source)) throw new Error('no "version" field found');
-  return source.replace(re, `$1${version}$3`);
-}
-
-/** Replace the `version = "..."` line under [package] in Cargo.toml. */
-function setCargoVersion(source, version) {
-  // Anchor on the line start so we only touch the package version, never a
-  // dependency's `version = "..."`.
-  const re = /^version\s*=\s*"[^"]*"/m;
-  if (!re.test(source)) throw new Error('no version line found');
-  return source.replace(re, `version = "${version}"`);
-}
-
-/**
- * Replace the version of the `kitsune` package entry in Cargo.lock.
+ * Read `version` from the `[workspace.package]` table.
  *
- * The lock is a machine-written file, but it records our own crate's version
- * and `cargo build` regenerates it -- updating it here keeps the working tree
- * clean instead of leaving a stray one-line diff after every build.
+ * Deliberately not a YAML/TOML parser: the repo has no dependency on one, and
+ * the table is three lines. The section boundary is respected so a
+ * `version =` inside `[profile.release]` cannot be picked up by mistake.
  */
-function setLockVersion(source, version) {
-  const re = /(\[\[package\]\]\nname = "kitsune"\nversion = ")([^"]*)(")/;
-  if (!re.test(source)) throw new Error('no [[package]] entry for "kitsune"');
+function readWorkspaceVersion(source) {
+  const section = source.split(/^\[/m).find((chunk) => chunk.startsWith("workspace.package]"));
+  if (!section) throw new Error("Cargo.toml has no [workspace.package] table");
+  const match = section.match(/^version\s*=\s*"([^"]*)"/m);
+  if (!match) throw new Error("[workspace.package] has no version");
+  return match[1];
+}
+
+/** Replace the version inside `[workspace.package]`, leaving everything else. */
+function setWorkspaceVersion(source, version) {
+  const re = /(\[workspace\.package\][^[]*?^version\s*=\s*")([^"]*)(")/ms;
+  if (!re.test(source)) throw new Error('no version line in [workspace.package]');
   return source.replace(re, `$1${version}$3`);
 }
 
-/** Read the current version of each file, for the change report. */
-function currentVersions() {
-  return {
-    tauri: readTauriVersion(),
-    pkg: JSON.parse(readFileSync(FILES.pkg, "utf8")).version,
-    cargo: readFileSync(FILES.cargo, "utf8").match(/^version\s*=\s*"([^"]*)"/m)?.[1],
-    lock: readFileSync(FILES.lock, "utf8").match(
-      /\[\[package\]\]\nname = "kitsune"\nversion = "([^"]*)"/,
-    )?.[1],
-  };
+/** Replace the version of one named `[[package]]` entry in Cargo.lock. */
+function setLockVersion(source, name, version) {
+  const re = new RegExp(
+    `(\\[\\[package\\]\\]\\nname = "${name}"\\nversion = ")([^"]*)(")`,
+  );
+  if (!re.test(source)) throw new Error(`no [[package]] entry for "${name}"`);
+  return source.replace(re, `$1${version}$3`);
+}
+
+/** Read a named `[[package]]` version from Cargo.lock, for the report. */
+function lockVersion(source, name) {
+  const re = new RegExp(
+    `\\[\\[package\\]\\]\\nname = "${name}"\\nversion = "([^"]*)"`,
+  );
+  return source.match(re)?.[1];
 }
 
 function main() {
   const arg = process.argv[2];
+
+  const workspaceSource = readFileSync(WORKSPACE_TOML, "utf8");
+  const before = readWorkspaceVersion(workspaceSource);
 
   let version;
   if (arg) {
@@ -90,34 +85,41 @@ function main() {
     }
     version = arg;
   } else {
-    version = readTauriVersion();
+    version = before;
   }
 
-  const before = currentVersions();
-
-  writeFileSync(
-    FILES.tauri,
-    setJsonVersion(readFileSync(FILES.tauri, "utf8"), version),
-  );
-  writeFileSync(
-    FILES.pkg,
-    setJsonVersion(readFileSync(FILES.pkg, "utf8"), version),
-  );
-  writeFileSync(
-    FILES.cargo,
-    setCargoVersion(readFileSync(FILES.cargo, "utf8"), version),
-  );
-  writeFileSync(
-    FILES.lock,
-    setLockVersion(readFileSync(FILES.lock, "utf8"), version),
+  // One read of the lock, all edits applied to it, one write. Writing per
+  // member would re-read the file and clobber the earlier replacement.
+  const lockSource = readFileSync(LOCK, "utf8");
+  const lockBefore = Object.fromEntries(
+    MEMBERS.map((name) => [name, lockVersion(lockSource, name)]),
   );
 
-  const changed = Object.entries(before).filter(([, v]) => v !== version);
-  if (changed.length === 0) {
+  if (version !== before) {
+    writeFileSync(WORKSPACE_TOML, setWorkspaceVersion(workspaceSource, version));
+  }
+
+  let updatedLock = lockSource;
+  for (const name of MEMBERS) {
+    updatedLock = setLockVersion(updatedLock, name, version);
+  }
+  if (updatedLock !== lockSource) {
+    writeFileSync(LOCK, updatedLock);
+  }
+
+  const moved = [
+    ...(version !== before ? [[`workspace`, before]] : []),
+    ...MEMBERS.filter((name) => lockBefore[name] !== version).map((name) => [
+      `Cargo.lock:${name}`,
+      lockBefore[name],
+    ]),
+  ];
+
+  if (moved.length === 0) {
     console.log(`all files already at ${version}`);
   } else {
-    for (const [name, v] of changed) {
-      console.log(`${name}: ${v} -> ${version}`);
+    for (const [name, from] of moved) {
+      console.log(`${name}: ${from} -> ${version}`);
     }
     console.log(`\nversion set to ${version}`);
   }

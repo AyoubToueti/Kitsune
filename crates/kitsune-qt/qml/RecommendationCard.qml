@@ -1,0 +1,440 @@
+// One recommendation: the recommended work's poster, its score, the community
+// vote tally with vector up/down arrows, and the bottom-right quick action stack.
+// Deliberately does NOT show who suggested it -- the reader only needs the
+// work and how the community rates the suggestion. The tally is optimistic:
+// it moves on click and is corrected by `recommendationRated`, or reverted on
+// `recommendationRateFailed`.
+import QtQuick
+import QtQuick.Controls
+import com.kitsune.app
+
+Item {
+    id: card
+
+    // A `RecommendedAnime`: { anime, rating, userRating? }.
+    required property var recommendation
+    property int mediaId: 0
+    property bool votable: false
+    property var backend: null
+
+    // `provider` is the id's namespace, forwarded from the recommended `Anime`.
+    signal openAnime(int id, string provider)
+
+    readonly property var anime: recommendation ? recommendation.anime : null
+    readonly property int animeId: anime ? (anime.id || 0) : 0
+    readonly property string title: TitlePreference.title(anime)
+
+    // Real-time watch status tracking
+    readonly property string currentStatus: (typeof ListStatusStore !== "undefined" && ListStatusStore && ListStatusStore.getStatus && card.animeId > 0)
+                                             ? ListStatusStore.getStatus(card.animeId, card.animeProvider)
+                                             : ""
+    // The recommended work's namespace, so the list controls name the right
+    // work even when the fallback provider supplied a Kitsu id.
+    readonly property string animeProvider: anime ? (anime.provider || "anilist") : "anilist"
+    readonly property bool isOnList: currentStatus !== ""
+
+    // A work still airing cannot sensibly be marked Completed, so its
+    // Completed button is hidden.
+    readonly property bool canComplete: !anime || anime.status !== "RELEASING"
+
+    // Local copies for optimistic vote tally updates
+    property int tally: recommendation ? (recommendation.rating || 0) : 0
+    property string userVote: (recommendation && recommendation.userRating)
+        ? recommendation.userRating : ""
+
+    onRecommendationChanged: {
+        tally = recommendation ? (recommendation.rating || 0) : 0
+        userVote = (recommendation && recommendation.userRating)
+            ? recommendation.userRating : ""
+    }
+
+    implicitWidth: 180
+    implicitHeight: width * 1.5 + 84
+
+    // Resolution-independent SVG icons as data URIs.
+    //
+    // `color` defaults to white for the buttons that sit on an accent fill; the
+    // vote arrows pass a theme colour so they stay visible on the card's own
+    // surface, which is light in light mode.
+    function getSvgIcon(name, color) {
+        var fill = color === undefined ? "#ffffff" : Theme.hex(color)
+        var path = ""
+        if (name === "play")
+            path = "M8 5v14l11-7z"
+        else if (name === "check")
+            path = "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"
+        else if (name === "calendar")
+            path = "M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z"
+        else if (name === "edit")
+            path = "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"
+        else if (name === "arrowUp")
+            path = "M12 8l-6 6h12z"
+        else if (name === "arrowDown")
+            path = "M12 16l6-6H6z"
+        else if (name === "pause")
+            path = "M6 19h4V5H6v14zm8-14v14h4V5h-4z"
+        else if (name === "minus")
+            path = "M19 13H5v-2h14v2z"
+        else if (name === "close" || name === "x")
+            path = "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
+        else // "plus"
+            path = "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"
+
+        var xml = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='" + fill + "'><path d='" + path + "'/></svg>"
+        // URL-encoded, NOT base64: `Qt.btoa` is deprecated in Qt 6 (its
+        // output differs from the standard Web API).
+        return "data:image/svg+xml," + encodeURIComponent(xml)
+    }
+
+    // The glyph for a list status, so the listed-state button shows *where*
+    // the work is saved (play / check / calendar / pause / minus) instead of
+    // a generic pencil. Unlisted works fall back to "+".
+    function statusIconName(status) {
+        if (status === "current") return "play"
+        if (status === "completed") return "check"
+        if (status === "planning") return "calendar"
+        if (status === "paused") return "pause"
+        if (status === "dropped") return "minus"
+        return "plus"
+    }
+
+    Connections {
+        target: card.backend
+        function onRecommendationRated(mediaId, recommendedId, rating) {
+            if (mediaId !== card.mediaId) return
+            if (!card.anime || recommendedId !== card.anime.id) return
+            card.tally = rating
+        }
+        function onRecommendationRateFailed(message) {
+            card.tally = card.recommendation ? (card.recommendation.rating || 0) : 0
+            card.userVote = (card.recommendation && card.recommendation.userRating)
+                ? card.recommendation.userRating : ""
+        }
+    }
+
+    function voteLiteral(direction) {
+        // camelCase, matching `RecommendationRating`'s serde form (the backend
+        // parses this string into that enum). The GraphQL spellings
+        // ("RATE_UP") are produced by the enum's own `literal()` on the way
+        // out, so they must NOT be sent in.
+        if (card.userVote === direction) return "noRating"
+        return direction === "rateUp" ? "rateUp" : "rateDown"
+    }
+
+    function delta(from, to) {
+        const value = (r) => r === "rateUp" ? 1 : (r === "rateDown" ? -1 : 0)
+        return value(to) - value(from)
+    }
+
+    function vote(direction) {
+        if (!card.votable || card.mediaId === 0 || !card.anime) return
+        if (typeof ListStatusStore !== "undefined" && !ListStatusStore.signedIn) {
+            if (card.backend) {
+                const url = card.backend.beginLogin()
+                if (url && url.length > 0) Qt.openUrlExternally(url)
+            }
+            return
+        }
+        const next = card.voteLiteral(direction)
+        card.tally = card.tally + card.delta(card.userVote, next === "noRating" ? "" : next)
+        card.userVote = next === "noRating" ? "" : next
+        if (card.backend) card.backend.rateRecommendation(card.mediaId, card.anime.id, next)
+    }
+
+    HoverHandler { id: hover }
+
+    Column {
+        anchors.fill: parent
+        spacing: 8
+
+        // --- Poster Frame ---------------------------------------------
+        Rectangle {
+            id: poster
+            width: parent.width
+            height: parent.width * 1.5
+            //radius: 12
+            color: Theme.surfaceRaised
+            clip: true
+            // no border on this rectangle
+
+            Image {
+                anchors.fill: parent
+                source: card.anime ? (card.anime.coverImage || "") : ""
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                sourceSize.width: 400
+                scale: hover.hovered ? 1.06 : 1.0
+
+                Behavior on scale { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+            }
+
+            // Dark Scrim Overlay
+            Rectangle {
+                anchors.fill: parent
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: Qt.rgba(0, 0, 0, 0.35) }
+                    GradientStop { position: 0.5; color: "transparent" }
+                    GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.88) }
+                }
+            }
+
+            // Score Badge (Top-Right)
+            Rectangle {
+                visible: card.anime && card.anime.averageScore != null
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 8
+                radius: 6
+                color: Qt.rgba(0.07, 0.08, 0.12, 0.82)
+                border.width: 1
+                border.color: Theme.glassBorder
+                implicitWidth: scoreLabel.implicitWidth + 12
+                implicitHeight: 22
+
+                Text {
+                    id: scoreLabel
+                    anchors.centerIn: parent
+                    text: "\u2605 " + (card.anime ? card.anime.averageScore : "")
+                    color: Theme.score
+                    font.pixelSize: 11
+                    font.bold: true
+                }
+            }
+
+            // One handler for both gestures: a plain click opens the work, and
+            // a middle-click (or Alt + left-drag) starts a drag into a list.
+            MouseArea {
+                id: cardMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+
+                property bool dragCandidate: false
+                property bool dragging: false
+                property bool suppressClick: false
+                property real pressX: 0
+                property real pressY: 0
+
+                onPressed: function (mouse) {
+                    pressX = mouse.x
+                    pressY = mouse.y
+                    dragging = false
+                    suppressClick = false
+                    
+                    dragCandidate = card.animeId > 0
+                        && (mouse.button === Qt.MiddleButton
+                            || (mouse.button === Qt.LeftButton
+                                && (mouse.modifiers & Qt.AltModifier) !== 0))
+
+                    // Prevents parent Flickable/ListView from stealing the grab during Alt+Left drag
+                    preventStealing = dragCandidate
+                }
+
+                onPositionChanged: function (mouse) {
+                    if (dragging) {
+                        const held = (mouse.buttons & Qt.LeftButton) !== 0
+                            || (mouse.buttons & Qt.MiddleButton) !== 0
+                        if (!held) {
+                            DragState.cancel()
+                            dragging = false
+                            dragCandidate = false
+                            preventStealing = false
+                            return
+                        }
+                        const moved = mapToItem(null, mouse.x, mouse.y)
+                        DragState.move(moved.x, moved.y)
+                        return
+                    }
+
+                    if (!dragCandidate) return
+
+                    const dx = mouse.x - pressX
+                    const dy = mouse.y - pressY
+                    if (Math.sqrt(dx * dx + dy * dy) < 6) return
+
+                    const point = mapToItem(null, mouse.x, mouse.y)
+                    dragging = true
+                    const coverUrl = card.anime ? (card.anime.coverImage || "") : ""
+                    DragState.begin(card.animeId, card.title || "(untitled)",
+                                    coverUrl,
+                                    point.x, point.y, card.animeProvider)
+                }
+
+                onReleased: function (mouse) {
+                    if (dragging) {
+                        DragState.finish()
+                        suppressClick = true
+                    }
+                    dragCandidate = false
+                    dragging = false
+                    preventStealing = false
+                }
+
+                onCanceled: {
+                    if (dragging) DragState.cancel()
+                    dragCandidate = false
+                    dragging = false
+                    suppressClick = false
+                    preventStealing = false
+                }
+
+                onClicked: function (mouse) {
+                    if (suppressClick) {
+                        suppressClick = false
+                        return
+                    }
+                    if (mouse.button !== Qt.LeftButton) return
+                    if ((mouse.modifiers & Qt.AltModifier) !== 0) return
+                    if (card.anime) card.openAnime(card.anime.id, card.anime.provider || "anilist")
+                }
+            }
+
+            // --- Quick Status Menu (Bottom-Right) -------------------------
+            // The same control the poster cards use: one circular button that
+            // expands into the list choices and, when the work is listed, shows
+            // WHERE it is saved. It reads and writes `ListStatusStore` itself,
+            // so the card needs no add/remove plumbing of its own.
+            QuickStatusMenu {
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.margins: 8
+                animeId: card.animeId
+                animeProvider: card.animeProvider
+                animeStatus: card.anime ? (card.anime.status || "") : ""
+                z: 30
+            }
+
+            // ── Border overlay — on top of everything ─────────────────────
+            Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.width: 1
+                border.color: hover.hovered ? Theme.accent : Theme.glassBorder
+                z: 1000
+                Behavior on border.color { ColorAnimation { duration: 180 } }
+            }
+        }
+
+        // --- Title Label ----------------------------------------------
+        Text {
+            width: parent.width
+            text: card.title
+            color: hover.hovered ? Theme.accent : Theme.ink
+            font.pixelSize: 12
+            font.bold: true
+            elide: Text.ElideRight
+            maximumLineCount: 2
+            wrapMode: Text.WordWrap
+
+            Behavior on color { ColorAnimation { duration: 150 } }
+        }
+
+        // --- Voting Controls Row --------------------------------------
+        Row {
+            spacing: 6
+
+            // Up Arrow Vote Button
+            Rectangle {
+                visible: card.votable
+                width: 26; height: 24; radius: 6
+                color: card.userVote === "rateUp"
+                    ? Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.25)
+                    : (upMouse.containsMouse ? Theme.surfaceHover : "transparent")
+                border.width: 1
+                border.color: card.userVote === "rateUp" ? Theme.accent : Theme.borderSubtle
+
+                Behavior on color { ColorAnimation { duration: 120 } }
+
+                Image {
+                    anchors.centerIn: parent
+                    width: 12
+                    height: 12
+                    // The arrow sits on the card's own surface, not on the
+                    // poster, so it follows the theme rather than staying
+                    // white (which was invisible in light mode).
+                    source: card.getSvgIcon("arrowUp",
+                        card.userVote === "rateUp" ? Theme.accent : Theme.inkMuted)
+                    sourceSize.width: 24
+                    sourceSize.height: 24
+                    smooth: true
+                }
+
+                MouseArea {
+                    id: upMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: card.vote("rateUp")
+                }
+            }
+
+            // Recommendation Tally Badge
+            Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                radius: 6
+                // Below the poster, on the card's own surface -- so this
+                // follows the page palette. The dark literal made it an opaque
+                // black pill under a light card.
+                color: Theme.fieldFill
+                border.width: 1
+                border.color: Theme.borderSubtle
+                implicitWidth: tallyRow.implicitWidth + 12
+                implicitHeight: 22
+
+                Row {
+                    id: tallyRow
+                    anchors.centerIn: parent
+                    spacing: 4
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "\u2605"
+                        color: Theme.score
+                        font.pixelSize: 10
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: (card.tally > 0 ? "+" : "") + card.tally
+                        color: card.tally > 0 ? Theme.accent : (card.tally < 0 ? Theme.danger : Theme.inkMuted)
+                        font.pixelSize: 11
+                        font.bold: true
+                    }
+                }
+            }
+
+            // Down Arrow Vote Button
+            Rectangle {
+                visible: card.votable
+                width: 26; height: 24; radius: 6
+                color: card.userVote === "rateDown"
+                    ? Qt.rgba(Theme.danger.r, Theme.danger.g, Theme.danger.b, 0.25)
+                    : (downMouse.containsMouse ? Theme.surfaceHover : "transparent")
+                border.width: 1
+                border.color: card.userVote === "rateDown" ? Theme.danger : Theme.borderSubtle
+
+                Behavior on color { ColorAnimation { duration: 120 } }
+
+                Image {
+                    anchors.centerIn: parent
+                    width: 12
+                    height: 12
+                    source: card.getSvgIcon("arrowDown",
+                        card.userVote === "rateDown" ? Theme.danger : Theme.inkMuted)
+                    sourceSize.width: 24
+                    sourceSize.height: 24
+                    smooth: true
+                }
+
+                MouseArea {
+                    id: downMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: card.vote("rateDown")
+                }
+            }
+        }
+    }
+
+}

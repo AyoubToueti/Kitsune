@@ -1,0 +1,1157 @@
+//! A TTL cache in front of an [`AnimeProvider`].
+//!
+//! Every metadata call funnels through one provider, so caching here covers
+//! every caller without each needing to know about it. AniList rate-limits
+//! hard and the UI is chatty -- the home page alone fires several requests at
+//! once, and navigating back to a title it already loaded would ask again --
+//! so the cache is the first line of defence against "too many requests".
+//!
+//! Mirrors the Svelte app's `src/lib/api/cache.ts`: same TTLs, same keys, same
+//! two behaviours beyond a plain TTL --
+//!   - in-flight de-duplication: two callers asking for the same key at once
+//!     share a single request rather than racing two;
+//!   - eviction at a fixed cap, so unbounded browse keys cannot leak.
+//!
+//! A rejection is deliberately NOT cached: a rate limit or a transient network
+//! failure must be retried on the next call, not stick for the whole TTL.
+
+use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
+use tokio::sync::OnceCell;
+
+use super::anilist::{AniListProvider, ListEntry, UserListEntry};
+use super::traits::{AnimeProvider, ProviderError};
+use crate::types::{
+    Anime, AnimePage, BrowseQuery, HomeShelves, ListFilter, MediaTag, ProviderId,
+    RecommendationsPage, RecommendedAnime, RelatedAnime, ScheduledEpisode,
+};
+
+/// How long each kind of result stays fresh, matching `API_TTL` in the Svelte
+/// app so the two frontends age data identically.
+pub mod ttl {
+    use std::time::Duration;
+
+    /// The genre and tag catalogue is effectively static.
+    pub const CATALOGUE: Duration = Duration::from_secs(60 * 60);
+    /// Metadata for a single title drifts slowly.
+    pub const DETAIL: Duration = Duration::from_secs(30 * 60);
+    /// Rankings and browse results shift hour to hour.
+    pub const LIST: Duration = Duration::from_secs(5 * 60);
+    /// Airing times move, so the schedule is the least safe to hold.
+    pub const SCHEDULE: Duration = Duration::from_secs(60);
+    /// Indexer results for one search. Uploads are effectively append-only,
+    /// so a short hold hides the per-open refetch without going stale; both
+    /// frontends share this number through the core cache.
+    pub const RELEASES: Duration = Duration::from_secs(5 * 60);
+}
+
+/// Upper bound on stored entries per cache.
+///
+/// A browse key encodes the whole query, so an unbounded map would grow with
+/// every filter combination the reader tries. The cap keeps memory flat.
+const MAX_ENTRIES: usize = 200;
+
+/// A `(value, expires-at)` pair held inside a [`OnceCell`].
+type Entry<V> = (V, Instant);
+
+/// The per-instance state, behind one mutex so the map and the eviction order
+/// are always updated together. The lock is never held across an await.
+struct Inner<V> {
+    /// Key -> the cell holding its value once loaded. The [`OnceCell`] is what
+    /// makes de-duplication work: the first caller runs the load and any caller
+    /// arriving while it is in flight awaits the SAME cell.
+    map: HashMap<String, std::sync::Arc<OnceCell<Entry<V>>>>,
+    /// Keys in insertion order, so the oldest can be evicted first.
+    order: VecDeque<String>,
+}
+
+/// A small TTL cache with in-flight de-duplication and a bounded size.
+///
+/// One instance serves one return shape; a provider holds several.
+pub(crate) struct TtlCache<V> {
+    inner: Mutex<Inner<V>>,
+}
+
+impl<V: Clone> TtlCache<V> {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                map: HashMap::new(),
+                order: VecDeque::new(),
+            }),
+        }
+    }
+
+    /// Resolve `key` from the cache, or run `load` and remember the result.
+    ///
+    /// The `load` closure only runs when the key is absent or stale; a live
+    /// value is cloned back. Concurrent callers for one key share a single
+    /// `load` through the [`OnceCell`].
+    pub(crate) async fn get_or_load<E, F, Fut>(
+        &self,
+        key: &str,
+        ttl: Duration,
+        load: F,
+    ) -> Result<V, E>
+    where
+        E: std::error::Error + Send + Sync,
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<V, E>>,
+    {
+        // Look up (or create) the cell under the lock, dropping a stale entry
+        // first so the load below re-runs. Never await while holding the lock.
+        let cell = {
+            let mut inner = self.inner.lock().expect("cache poisoned");
+            // A value past its expiry is evicted, so a fresh cell is made and
+            // the load runs again. (An initialized-but-stale cell is already
+            // complete, so no in-flight caller can still be awaiting it.)
+            let stale = inner
+                .map
+                .get(key)
+                .and_then(|cell| cell.get())
+                .is_some_and(|(_, expires)| *expires <= Instant::now());
+            if stale {
+                inner.map.remove(key);
+                inner.order.retain(|k| k != key);
+            }
+            inner
+                .map
+                .entry(key.to_string())
+                .or_insert_with(|| std::sync::Arc::new(OnceCell::new()))
+                .clone()
+        };
+
+        // First caller runs `load`; others await the same cell.
+        let entry = cell
+            .get_or_try_init(|| async move {
+                let value = load().await?;
+                Ok::<Entry<V>, E>((value, Instant::now() + ttl))
+            })
+            .await?;
+
+        // Record insertion order and evict the oldest beyond the cap, now that
+        // a real value exists (a failed load never occupies a slot).
+        self.touch(key);
+        Ok(entry.0.clone())
+    }
+
+    /// Read `key` when it is still fresh. No load, no de-duplication.
+    ///
+    /// For callers whose value arrives from somewhere other than a loader --
+    /// a probe batch recorded after the fact, say -- and who only want to ask
+    /// "do I already have this?".
+    pub(crate) fn get(&self, key: &str) -> Option<V> {
+        let inner = self.inner.lock().expect("cache poisoned");
+        let (value, expires) = inner.map.get(key)?.get()?;
+        (*expires > Instant::now()).then(|| value.clone())
+    }
+
+    /// Insert `value` under `key` for `ttl`, replacing anything there.
+    ///
+    /// The counterpart to [`Self::get`]: a caller that produced the value
+    /// elsewhere writes it here rather than going through a loader closure.
+    pub(crate) fn store(&self, key: &str, value: V, ttl: Duration) {
+        let cell = std::sync::Arc::new(OnceCell::new());
+        // `set` cannot fail on a fresh cell.
+        let _ = cell.set((value, Instant::now() + ttl));
+        {
+            let mut inner = self.inner.lock().expect("cache poisoned");
+            inner.map.insert(key.to_string(), cell);
+        }
+        self.touch(key);
+    }
+
+    /// Forget `key`, so the next [`Self::get_or_load`] runs `load` again.
+    ///
+    /// Used by callers whose value can turn out to be useless (an empty
+    /// search) and must not be served for the rest of the TTL. Removing the
+    /// cell, rather than just marking it stale, also drops any in-flight load
+    /// awaiting it -- matching what a stale entry does on the next lookup.
+    pub(crate) fn invalidate(&self, key: &str) {
+        let mut inner = self.inner.lock().expect("cache poisoned");
+        inner.map.remove(key);
+        inner.order.retain(|k| k != key);
+    }
+
+    /// Note `key` as most-recently inserted and evict the oldest if over cap.
+    fn touch(&self, key: &str) {
+        let mut inner = self.inner.lock().expect("cache poisoned");
+        if !inner.order.iter().any(|k| k == key) {
+            inner.order.push_back(key.to_string());
+        }
+        while inner.order.len() > MAX_ENTRIES {
+            if let Some(oldest) = inner.order.pop_front() {
+                inner.map.remove(&oldest);
+            }
+        }
+    }
+}
+
+/// A provider that caches another provider's results.
+///
+/// Wrap the concrete provider once at startup; every trait method then serves
+/// repeated reads from memory instead of hitting AniList again.
+pub struct CachedProvider<P: AnimeProvider> {
+    /// The wrapped provider, held behind an `Arc` so the backend can keep its
+    /// own concrete handle (for account writes) while the metadata path goes
+    /// through the cache.
+    inner: Arc<P>,
+    trending: TtlCache<Vec<Anime>>,
+    list: TtlCache<Vec<Anime>>,
+    list_page: TtlCache<AnimePage>,
+    browse: TtlCache<AnimePage>,
+    by_id: TtlCache<Option<Anime>>,
+    recommendations: TtlCache<RecommendationsPage>,
+    genres: TtlCache<Vec<String>>,
+    tags: TtlCache<Vec<MediaTag>>,
+    schedule: TtlCache<Vec<ScheduledEpisode>>,
+    home: TtlCache<HomeShelves>,
+    /// Every work this process has seen in a list response, by id.
+    ///
+    /// Not a cache of `by_id` results: the value is what a LIST query returns,
+    /// which is deliberately missing `relations` and `recommendations`. It
+    /// exists so the detail page can paint from a card the reader just clicked
+    /// without waiting for a request, and it is never written into `by_id` --
+    /// a provisional copy must not satisfy the authoritative lookup.
+    seen: TtlCache<Anime>,
+    /// The reader's list entry for a work, as `Some(None)` when the lookup
+    /// proved it is NOT on the list.
+    ///
+    /// Kept out of `Anime` (which is the shared shape of every list response)
+    /// and keyed by the provider's list revision, because the entry changes by
+    /// the reader's own action: a plain TTL would show a stale status for up
+    /// to `ttl::DETAIL` after an add or remove.
+    entries: TtlCache<Option<ListEntry>>,
+}
+
+impl<P: AnimeProvider> CachedProvider<P> {
+    /// Wrap `inner`, starting with empty caches.
+    pub fn new(inner: Arc<P>) -> Self {
+        Self {
+            inner,
+            trending: TtlCache::new(),
+            list: TtlCache::new(),
+            list_page: TtlCache::new(),
+            browse: TtlCache::new(),
+            by_id: TtlCache::new(),
+            recommendations: TtlCache::new(),
+            genres: TtlCache::new(),
+            tags: TtlCache::new(),
+            schedule: TtlCache::new(),
+            home: TtlCache::new(),
+            seen: TtlCache::new(),
+            entries: TtlCache::new(),
+        }
+    }
+
+    /// Record every work in a list response, so the detail page can paint from
+    /// the card the reader just clicked without a request.
+    ///
+    /// Called on a cache HIT as well as a miss: re-stamping the TTL keeps a
+    /// work the reader is actively browsing answerable, and the cost is one
+    /// lock plus a clone per item -- far less than the request it avoids.
+    fn remember(&self, items: &[Anime]) {
+        for anime in items {
+            self.seen
+                .store(&format!("seen:{}", anime.id), anime.clone(), ttl::LIST);
+        }
+    }
+
+    /// Record the works behind a page of recommendations as partials.
+    ///
+    /// A recommendation carries its work whole, but it arrives through
+    /// `recommendations`, not through a list/browse/detail call -- so without
+    /// this the work never enters `seen`. The list write path resolves a work
+    /// through `cached_partial` and refuses when it finds nothing, which is
+    /// exactly what made "add to list" from a recommendation card do nothing.
+    fn remember_recommendations(&self, items: &[RecommendedAnime]) {
+        for item in items {
+            self.seen.store(
+                &format!("seen:{}", item.anime.id),
+                item.anime.clone(),
+                ttl::LIST,
+            );
+        }
+    }
+
+    /// Record a detail page's RELATIONS as partials.
+    ///
+    /// A related work is a sidebar row, not a full [`Anime`], but clicking it
+    /// navigates by id -- and the namespace has to travel with that id. Storing
+    /// a minimal `Anime` under `seen:{id}` is what lets `cached_partial` answer
+    /// with the right `provider`, so a Kitsu relation opens through Kitsu
+    /// instead of being sent to AniList as an unrelated id.
+    ///
+    /// Only the fields a navigation needs are filled: the target page fetches
+    /// the rest.
+    fn remember_relations(&self, provider: ProviderId, relations: &[RelatedAnime]) {
+        for relation in relations {
+            // A relation that is already known in full is left alone: the fuller
+            // copy has the same provider and more fields.
+            if self.seen.get(&format!("seen:{}", relation.id)).is_some() {
+                continue;
+            }
+
+            let partial = Anime {
+                id: relation.id,
+                provider,
+                title: relation.title.clone(),
+                cover_image: relation.cover_image.clone(),
+                format: relation.format.clone(),
+                status: relation.status.clone(),
+                episode_count: relation.episode_count,
+                id_mal: None,
+                aired_episodes: None,
+                next_airing: None,
+                banner_image: None,
+                description: None,
+                duration_minutes: None,
+                genres: Vec::new(),
+                average_score: None,
+                popularity: None,
+                season: None,
+                season_year: None,
+                streaming_episodes: Vec::new(),
+                // NOT copied: a relation's own relations are a different
+                // question, and the detail fetch answers it.
+                relations: Vec::new(),
+                recommendations: Vec::new(),
+                trailer: None,
+            };
+
+            self.seen
+                .store(&format!("seen:{}", relation.id), partial, ttl::LIST);
+        }
+    }
+}
+
+/// A cache for the reader's own list (`user_list`).
+///
+/// Kept apart from [`CachedProvider`] because `user_list` is an
+/// [`AniListProvider`] capability, not part of the [`AnimeProvider`] trait --
+/// Jikan has no notion of a reader's list. Wrapping the concrete provider here
+/// keeps that AniList-only surface out of the shared trait while still letting
+/// the list be cached.
+///
+/// Unlike every other cached read, the reader's list changes by the reader's
+/// OWN action rather than by time. A plain TTL would keep serving the list as
+/// it looked before the last add/remove until the TTL expired. Instead the
+/// cache key carries [`AniListProvider::list_revision`], which the provider
+/// bumps on every successful write (and on a token change, since that is a
+/// different account's list). A write therefore changes the key, so the next
+/// read misses and re-fetches -- no explicit invalidation call, and no need for
+/// the cache to know which work changed. Old revisions age out under the same
+/// LRU cap as every other entry.
+pub struct CachedAccount {
+    inner: Arc<AniListProvider>,
+    user_list: TtlCache<Vec<UserListEntry>>,
+}
+
+impl CachedAccount {
+    /// Wrap `inner`, starting with an empty list cache.
+    pub fn new(inner: Arc<AniListProvider>) -> Self {
+        Self {
+            inner,
+            user_list: TtlCache::new(),
+        }
+    }
+
+    /// The reader's whole list, served from cache until the TTL lapses or the
+    /// reader writes to the list (which bumps the revision the key carries).
+    ///
+    /// A rejection is not cached, exactly as elsewhere: a transient failure or
+    /// a rate limit must be retried on the next call.
+    pub async fn user_list(&self) -> Result<Vec<UserListEntry>, ProviderError> {
+        let key = format!("user_list:{}", self.inner.list_revision());
+        self.user_list
+            .get_or_load(&key, ttl::LIST, || self.inner.user_list())
+            .await
+    }
+}
+
+/// The cache key fragment for a provider id.
+///
+/// Derived from `Debug` for the same reason [`filter_key`] is: the spelling is
+/// stable, and pulling `Serialize` into the hot path for a key fragment is not
+/// worth it.
+fn provider_key(provider: ProviderId) -> String {
+    format!("{provider:?}")
+}
+
+/// The cache key for a `ListFilter`, via its `Debug` spelling.
+///
+/// The enum derives `Debug`, which is stable enough for a cache key and avoids
+/// pulling serialization into the hot path.
+fn filter_key(filter: ListFilter) -> String {
+    format!("{filter:?}")
+}
+
+#[async_trait]
+impl<P: AnimeProvider> AnimeProvider for CachedProvider<P> {
+    fn id(&self) -> ProviderId {
+        self.inner.id()
+    }
+
+    async fn trending(&self, limit: u32) -> Result<Vec<Anime>, ProviderError> {
+        let key = format!("trending:{limit}");
+        let items = self
+            .trending
+            .get_or_load(&key, ttl::LIST, || self.inner.trending(limit))
+            .await?;
+        self.remember(&items);
+        Ok(items)
+    }
+
+    async fn home_shelves(&self) -> Result<HomeShelves, ProviderError> {
+        // A single key: the whole home screen is one request with fixed
+        // limits, so there is nothing to parameterise. Caching it means
+        // returning to the home tab re-uses the one reply instead of asking
+        // again (and the inner provider's own `home_shelves` is the single
+        // combined query, not this trait's six-call default).
+        let shelves = self
+            .home
+            .get_or_load("home", ttl::LIST, || self.inner.home_shelves())
+            .await?;
+        // Every shelf the home screen shows is a card the reader can click.
+        self.remember(&shelves.trending);
+        self.remember(&shelves.top_airing);
+        self.remember(&shelves.most_popular);
+        self.remember(&shelves.top_rated);
+        self.remember(&shelves.latest_completed);
+        self.remember(&shelves.top_100);
+        Ok(shelves)
+    }
+
+    async fn list(&self, filter: ListFilter, limit: u32) -> Result<Vec<Anime>, ProviderError> {
+        let key = format!("list:{}:{limit}", filter_key(filter));
+        let items = self
+            .list
+            .get_or_load(&key, ttl::LIST, || self.inner.list(filter, limit))
+            .await?;
+        self.remember(&items);
+        Ok(items)
+    }
+
+    async fn list_page(
+        &self,
+        filter: ListFilter,
+        page: u32,
+        per_page: u32,
+    ) -> Result<AnimePage, ProviderError> {
+        let key = format!("list_page:{}:{page}:{per_page}", filter_key(filter));
+        let result = self
+            .list_page
+            .get_or_load(&key, ttl::LIST, || {
+                self.inner.list_page(filter, page, per_page)
+            })
+            .await?;
+        self.remember(&result.items);
+        Ok(result)
+    }
+
+    fn cached_partial(&self, id: i64) -> Option<Anime> {
+        self.seen.get(&format!("seen:{id}"))
+    }
+
+    fn list_revision(&self) -> Option<u64> {
+        self.inner.list_revision()
+    }
+
+    fn cached_entry(&self, id: i64) -> Option<Option<ListEntry>> {
+        // `None` here means "not known"; the revision is part of the key so a
+        // write by the reader cannot be answered from a pre-write entry.
+        // Defaults to 0 for a provider with no list (Jikan, test stubs), so
+        // the entry cache still works when there is nothing to invalidate.
+        let revision = self.inner.list_revision().unwrap_or(0);
+        self.entries.get(&format!("entry:{id}:{revision}"))
+    }
+
+    /// The detail lookup and the reader's entry, in ONE upstream request when
+    /// neither is cached.
+    ///
+    /// The entry is cached separately from the work (it changes by the
+    /// reader's own action, the work does not), so a known entry lets the work
+    /// come from its own cache and costs nothing; an unknown one is fetched
+    /// together with the work rather than in a second request.
+    async fn by_id_with_entry(
+        &self,
+        id: i64,
+    ) -> Result<(Option<Anime>, Option<ListEntry>), ProviderError> {
+        // Defaults to 0 so a provider with no list (Jikan, test stubs) still
+        // gets the entry cached, just never invalidated by a write.
+        let revision = self.inner.list_revision().unwrap_or(0);
+        let entry_key = format!("entry:{id}:{revision}");
+
+        if let Some(entry) = self.entries.get(&entry_key) {
+            // Field/method name clash: `self.by_id` is the cache, so the
+            // trait method is spelled out.
+            let anime = AnimeProvider::by_id(self, id).await?;
+            return Ok((anime, entry));
+        }
+
+        let (anime, entry) = self.inner.by_id_with_entry(id).await?;
+
+        self.entries.store(&entry_key, entry.clone(), ttl::LIST);
+        // Warm the work's own cache too, so a later `by_id` is free.
+        self.by_id
+            .store(&format!("anime:{id}"), anime.clone(), ttl::DETAIL);
+        if let Some(found) = &anime {
+            self.seen
+                .store(&format!("seen:{}", found.id), found.clone(), ttl::LIST);
+            // Record the sidebar rows too, so clicking one navigates in the
+            // right id namespace.
+            self.remember_relations(found.provider, &found.relations);
+            // And the inline recommendation row's works, so "add to list" from
+            // one of those cards can resolve the work it is adding.
+            self.remember_recommendations(&found.recommendations);
+        }
+
+        Ok((anime, entry))
+    }
+
+    async fn by_id_in(
+        &self,
+        provider: ProviderId,
+        id: i64,
+    ) -> Result<Option<Anime>, ProviderError> {
+        // The namespace is part of the key: the same number means different
+        // works in different sources, so `anime:7442` must not answer for both.
+        let key = format!("anime:{}:{id}", provider_key(provider));
+        let found = self
+            .by_id
+            .get_or_load(&key, ttl::DETAIL, || self.inner.by_id_in(provider, id))
+            .await?;
+        if let Some(anime) = &found {
+            self.seen
+                .store(&format!("seen:{}", anime.id), anime.clone(), ttl::LIST);
+            // Same reason as `by_id_with_entry`: a relation clicked from this
+            // page must resolve in THIS page's namespace.
+            self.remember_relations(anime.provider, &anime.relations);
+            // And the inline recommendation row's works must be resolvable for
+            // a list write, which looks them up through `cached_partial`.
+            self.remember_recommendations(&anime.recommendations);
+        }
+        Ok(found)
+    }
+
+    async fn by_anilist_id(&self, anilist_id: i64) -> Result<Option<Anime>, ProviderError> {
+        // Keyed on the AniList id, not on whatever the inner provider resolves
+        // it to: the caller asked by AniList id, so that is the question to
+        // cache the answer to.
+        let key = format!("anime:anilist:{anilist_id}");
+        let found = self
+            .by_id
+            .get_or_load(&key, ttl::DETAIL, || self.inner.by_anilist_id(anilist_id))
+            .await?;
+        if let Some(anime) = &found {
+            self.seen
+                .store(&format!("seen:{}", anime.id), anime.clone(), ttl::LIST);
+            // The detail page opened by AniList id still renders sidebar rows
+            // whose ids belong to whichever source answered.
+            self.remember_relations(anime.provider, &anime.relations);
+            // Its inline recommendation row needs the same treatment, or a list
+            // write from one of those cards fails to resolve the work.
+            self.remember_recommendations(&anime.recommendations);
+        }
+        Ok(found)
+    }
+
+    async fn by_id(&self, id: i64) -> Result<Option<Anime>, ProviderError> {
+        let key = format!("anime:{id}");
+        let found = self
+            .by_id
+            .get_or_load(&key, ttl::DETAIL, || self.inner.by_id(id))
+            .await?;
+        // The authoritative copy also refreshes the partial, so a later click
+        // on a related title paints from what this page already showed.
+        if let Some(anime) = &found {
+            self.seen.store(
+                &format!("seen:{}", anime.id),
+                anime.clone(),
+                ttl::LIST,
+            );
+            // The detail page's inline recommendation row draws from this very
+            // response, so its works have to become resolvable for a list
+            // write, which looks them up through `cached_partial`.
+            self.remember_recommendations(&anime.recommendations);
+        }
+        Ok(found)
+    }
+
+    async fn recommendations(
+        &self,
+        id: i64,
+        page: u32,
+        per_page: u32,
+    ) -> Result<RecommendationsPage, ProviderError> {
+        let key = format!("recs:{id}:{page}:{per_page}");
+        let result = self
+            .recommendations
+            .get_or_load(&key, ttl::DETAIL, || {
+                self.inner.recommendations(id, page, per_page)
+            })
+            .await?;
+        // Record the recommended works as partials, exactly as the list and
+        // browse paths do for their items.
+        //
+        // Without this, "add to list" from a recommendation card failed: the
+        // write path resolves the work through `cached_partial`, finds nothing,
+        // and bails out with "the work is not loaded yet" -- so the card kept
+        // showing "+" no matter how often it was clicked.
+        self.remember_recommendations(&result.items);
+        Ok(result)
+    }
+
+    async fn genres(&self) -> Result<Vec<String>, ProviderError> {
+        self.genres
+            .get_or_load("genres", ttl::CATALOGUE, || self.inner.genres())
+            .await
+    }
+
+    async fn tags(&self) -> Result<Vec<MediaTag>, ProviderError> {
+        self.tags
+            .get_or_load("tags", ttl::CATALOGUE, || self.inner.tags())
+            .await
+    }
+
+    async fn schedule(
+        &self,
+        from: i64,
+        to: i64,
+        limit: u32,
+    ) -> Result<Vec<ScheduledEpisode>, ProviderError> {
+        let key = format!("schedule:{from}:{to}:{limit}");
+        self.schedule
+            .get_or_load(&key, ttl::SCHEDULE, || {
+                self.inner.schedule(from, to, limit)
+            })
+            .await
+    }
+
+    async fn browse(
+        &self,
+        query: BrowseQuery,
+        page: u32,
+        per_page: u32,
+    ) -> Result<AnimePage, ProviderError> {
+        // The whole query is part of the key, so two different filter sets
+        // never collide. `serde_json` gives a stable spelling for the struct.
+        let query_json = serde_json::to_string(&query).unwrap_or_default();
+        let key = format!("browse:{query_json}:{page}:{per_page}");
+        let result = self
+            .browse
+            .get_or_load(&key, ttl::LIST, || {
+                self.inner.browse(query.clone(), page, per_page)
+            })
+            .await?;
+        self.remember(&result.items);
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A provider that counts its calls and returns a fixed list, so a test can
+    /// tell a cache hit (no new call) from a miss.
+    struct CountingProvider {
+        calls: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    impl CountingProvider {
+        fn new() -> (Self, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    calls: Arc::clone(&calls),
+                    fail: false,
+                },
+                calls,
+            )
+        }
+
+        fn failing() -> (Self, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            (
+                Self {
+                    calls: Arc::clone(&calls),
+                    fail: true,
+                },
+                calls,
+            )
+        }
+
+        fn anime() -> Anime {
+            // `Anime` has no struct-level `default`, so the required `id`,
+            // `provider` and `title` must all be present for a decode.
+            serde_json::from_value(serde_json::json!({
+                "id": 1,
+                "provider": "anilist",
+                "title": {},
+            }))
+            .expect("valid anime")
+        }
+    }
+
+    #[async_trait]
+    impl AnimeProvider for CountingProvider {
+        fn id(&self) -> ProviderId {
+            ProviderId::AniList
+        }
+
+        async fn trending(&self, _limit: u32) -> Result<Vec<Anime>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(ProviderError::Remote("nope".into()));
+            }
+            Ok(vec![Self::anime()])
+        }
+
+        async fn home_shelves(&self) -> Result<HomeShelves, ProviderError> {
+            // Counted once: the trait's default would call `trending` and
+            // `list` several times, so an override proves the cache forwards
+            // to the provider's own single-request version.
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(HomeShelves {
+                trending: vec![Self::anime()],
+                ..HomeShelves::default()
+            })
+        }
+
+        async fn list(
+            &self,
+            _filter: ListFilter,
+            _limit: u32,
+        ) -> Result<Vec<Anime>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Self::anime()])
+        }
+
+        async fn by_id(&self, _id: i64) -> Result<Option<Anime>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(Self::anime()))
+        }
+
+        async fn recommendations(
+            &self,
+            _id: i64,
+            _page: u32,
+            _per_page: u32,
+        ) -> Result<RecommendationsPage, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            // A recommended work with an id no list response mentions, so a
+            // test can tell "made resolvable by the recommendation" from "was
+            // already known".
+            let anime = serde_json::from_value(serde_json::json!({
+                "id": 42,
+                "provider": "anilist",
+                "title": {},
+            }))
+            .expect("valid anime");
+            Ok(RecommendationsPage {
+                items: vec![RecommendedAnime {
+                    anime,
+                    rating: 1,
+                    user: None,
+                    user_rating: None,
+                }],
+                page_info: crate::types::PageInfo {
+                    total: 1,
+                    current_page: 1,
+                    last_page: 1,
+                    has_next_page: false,
+                },
+            })
+        }
+
+        async fn genres(&self) -> Result<Vec<String>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec!["Action".into()])
+        }
+
+        async fn tags(&self) -> Result<Vec<MediaTag>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![])
+        }
+
+        async fn schedule(
+            &self,
+            _from: i64,
+            _to: i64,
+            _limit: u32,
+        ) -> Result<Vec<ScheduledEpisode>, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![])
+        }
+
+        async fn browse(
+            &self,
+            _query: BrowseQuery,
+            _page: u32,
+            _per_page: u32,
+        ) -> Result<AnimePage, ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            unreachable!("not exercised")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_read_is_served_from_cache() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.trending(10).await.unwrap();
+        cached.trending(10).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "only one upstream call");
+    }
+
+    #[tokio::test]
+    async fn a_listed_work_is_answerable_without_a_request() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        assert!(
+            cached.cached_partial(1).is_none(),
+            "nothing listed yet, so nothing to serve"
+        );
+
+        cached.trending(10).await.unwrap();
+        let upstream = calls.load(Ordering::SeqCst);
+
+        let partial = cached
+            .cached_partial(1)
+            .expect("the listed work should be answerable");
+        assert_eq!(partial.id, 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            upstream,
+            "serving a partial must not reach the provider"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unlisted_id_has_no_partial() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.trending(10).await.unwrap();
+
+        assert!(
+            cached.cached_partial(999).is_none(),
+            "an id no list mentioned must not be invented"
+        );
+    }
+
+    /// The partial is a LIST response, so it must not claim the detail-only
+    /// fields. This documents the contract the UI relies on: those sections
+    /// stay absent until `by_id` answers.
+    #[tokio::test]
+    async fn a_partial_carries_no_detail_only_fields() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.trending(10).await.unwrap();
+        let partial = cached.cached_partial(1).expect("listed");
+
+        assert!(partial.relations.is_empty(), "relations are detail-only");
+        assert!(
+            partial.recommendations.is_empty(),
+            "recommendations are detail-only"
+        );
+    }
+
+    /// A recommended work must become answerable as a partial, or "add to
+    /// list" from a recommendation card fails: the write path resolves the
+    /// work through `cached_partial` and gives up when it finds nothing.
+    #[tokio::test]
+    async fn a_recommendation_warms_its_works_partial() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        assert!(
+            cached.cached_partial(42).is_none(),
+            "nothing has mentioned the recommended work yet"
+        );
+
+        cached.recommendations(1, 1, 10).await.unwrap();
+
+        let partial = cached
+            .cached_partial(42)
+            .expect("a recommended work should be answerable");
+        assert_eq!(partial.id, 42, "and carry its own id");
+    }
+
+    #[tokio::test]
+    async fn a_detail_lookup_also_warms_the_partial() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.by_id(1).await.unwrap();
+        let upstream = calls.load(Ordering::SeqCst);
+        assert!(cached.cached_partial(1).is_some(), "by_id should warm it");
+        assert_eq!(calls.load(Ordering::SeqCst), upstream, "no extra request");
+    }
+
+    /// One detail lookup must answer BOTH the work and the entry, and a
+    /// repeat must cost nothing. This is the whole point of folding the entry
+    /// into the `by_id` query: the rate limit counts requests, so a signed-in
+    /// open used to cost twice what it needed to.
+    #[tokio::test]
+    async fn a_detail_lookup_caches_the_entry_too() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.by_id_with_entry(1).await.unwrap();
+        let after_first = calls.load(Ordering::SeqCst);
+        assert!(after_first > 0, "the first lookup must reach the provider");
+
+        let (anime, entry) = cached.by_id_with_entry(1).await.unwrap();
+        assert!(anime.is_some(), "the cached work should come back");
+        assert!(entry.is_none(), "the fixture lists no entry");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            after_first,
+            "a repeat must be served from cache on both halves"
+        );
+    }
+
+    /// A known "not on the list" is an answer, not a miss: without this the
+    /// Qt bridge would fall back to a second request for every work the reader
+    /// has not added, which is the common case.
+    #[tokio::test]
+    async fn a_known_absent_entry_is_answerable() {
+        let (inner, _calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.by_id_with_entry(1).await.unwrap();
+
+        assert_eq!(
+            cached.cached_entry(1),
+            Some(None),
+            "known-absent must be distinguishable from unknown"
+        );
+        assert_eq!(cached.cached_entry(999), None, "never looked up");
+    }
+
+    #[tokio::test]
+    async fn different_limits_do_not_share_an_entry() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        cached.trending(10).await.unwrap();
+        cached.trending(20).await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn home_shelves_is_cached_and_forwarded() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        let first = cached.home_shelves().await.unwrap();
+        let second = cached.home_shelves().await.unwrap();
+
+        assert_eq!(first.trending.len(), 1);
+        assert_eq!(second.trending.len(), 1);
+        // One upstream call, not the trait default's six, and the second read
+        // is served from the cache.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the combined home query runs once and is cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejection_is_not_cached() {
+        let (inner, calls) = CountingProvider::failing();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        assert!(cached.trending(10).await.is_err());
+        assert!(cached.trending(10).await.is_err());
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a failure must be retried, not remembered"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_entry_is_reloaded() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = CachedProvider::new(Arc::new(inner));
+
+        // Prime with a zero TTL so the value is instantly stale.
+        cached
+            .genres
+            .get_or_load("genres", Duration::from_secs(0), || cached.inner.genres())
+            .await
+            .unwrap();
+        cached.genres().await.unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "expired entry reloads");
+    }
+
+    #[tokio::test]
+    async fn concurrent_reads_share_one_load() {
+        let (inner, calls) = CountingProvider::new();
+        let cached = Arc::new(CachedProvider::new(Arc::new(inner)));
+
+        // Fire several calls for the same key at once.
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let c = Arc::clone(&cached);
+            handles.push(tokio::spawn(async move { c.trending(5).await.unwrap() }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "one load, shared");
+    }
+
+    // --- CachedAccount -----------------------------------------------------
+
+    /// One `MediaListCollection` entry, matching what the list reader maps.
+    fn list_entry(id: i64, status: &str, progress: u32) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "status": status,
+            "progress": progress,
+            "media": { "id": 21, "title": { "romaji": "One Piece" } },
+        })
+    }
+
+    /// Mount a server answering the two requests `user_list` makes -- the
+    /// `Viewer` lookup, then the collection -- and count the COLLECTION
+    /// requests, which is the one the cache is meant to save.
+    async fn account_with(entries: Vec<serde_json::Value>) -> (MockServer, CachedAccount) {
+        let server = MockServer::start().await;
+
+        // The Viewer lookup answers once per uncached read; it is small and is
+        // not what the cache is about, so it is not counted here.
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(wiremock::matchers::body_string_contains("Viewer"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({ "data": { "Viewer": { "id": 7 } } }),
+            ))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(wiremock::matchers::body_string_contains("MediaListCollection"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "MediaListCollection": { "lists": [{ "entries": entries }] }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = Arc::new(AniListProvider::with_endpoint(server.uri()));
+        let account = CachedAccount::new(provider);
+        (server, account)
+    }
+
+    /// How many collection requests the server received.
+    async fn collection_calls(server: &MockServer) -> usize {
+        server
+            .received_requests()
+            .await
+            .expect("requests recorded")
+            .iter()
+            .filter(|request| {
+                let body = String::from_utf8_lossy(&request.body);
+                body.contains("MediaListCollection")
+            })
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_second_list_read_is_served_from_cache() {
+        let (server, account) = account_with(vec![list_entry(4, "CURRENT", 3)]).await;
+
+        let first = account.user_list().await.unwrap();
+        let second = account.user_list().await.unwrap();
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].entry_id, 4);
+        assert_eq!(
+            collection_calls(&server).await,
+            1,
+            "the second read must not hit AniList again"
+        );
+    }
+
+    /// A write bumps the provider's list revision, so the cached list is no
+    /// longer served: the next read re-fetches, and shows the new state.
+    #[tokio::test]
+    async fn a_list_write_invalidates_the_cached_list() {
+        let (server, account) = account_with(vec![list_entry(4, "CURRENT", 3)]).await;
+
+        // Prime the cache.
+        account.user_list().await.unwrap();
+
+        // A save that the server accepts. This bumps the revision.
+        Mock::given(method("POST"))
+            .and(path("/"))
+            .and(wiremock::matchers::body_string_contains("SaveMediaListEntry"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "SaveMediaListEntry": { "id": 4, "status": "COMPLETED", "progress": 3 }
+                }
+            })))
+            .mount(&server)
+            .await;
+        account
+            .inner
+            .save_list_entry(21, crate::types::ListStatus::Completed, None)
+            .await
+            .unwrap();
+
+        // The read after the write must go back to AniList.
+        account.user_list().await.unwrap();
+
+        assert_eq!(
+            collection_calls(&server).await,
+            2,
+            "a write must make the next read miss the cache"
+        );
+    }
+
+    /// Signing in or out is a different list, so it invalidates just like a
+    /// write -- the previous account's list must never be served.
+    #[tokio::test]
+    async fn a_token_change_invalidates_the_cached_list() {
+        let (server, account) = account_with(vec![list_entry(4, "CURRENT", 3)]).await;
+
+        account.user_list().await.unwrap();
+
+        // Setting a token changes which list is being read.
+        account.inner.set_token(Some("secret".into()));
+        account.user_list().await.unwrap();
+
+        assert_eq!(
+            collection_calls(&server).await,
+            2,
+            "a token change must make the next read miss the cache"
+        );
+    }
+}

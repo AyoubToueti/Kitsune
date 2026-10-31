@@ -1,5 +1,4 @@
 {
-  "svelte.enable-ts-plugin": true,
   "nixEnvSelector.nixFile": "${workspaceFolder}/flake.nix",
   "nixEnvSelector.useFlakes": true,
   "nixEnvSelector.flakeShell": "default"

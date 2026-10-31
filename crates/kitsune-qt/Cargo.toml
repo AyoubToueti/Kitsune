@@ -1,0 +1,56 @@
+[package]
+name = "kitsune-qt"
+# Inherited from [workspace.package] in the root Cargo.toml. This crate is the
+# one that ships, so its version is what the installers report -- but it is
+# still declared once, at the workspace root.
+version.workspace = true
+edition.workspace = true
+description = "Kitsune's Qt6/QML frontend"
+authors = ["you"]
+
+# A binary, not a library: this is the Qt app's entry point.
+#
+# The binary is named `kitsune` while the CRATE stays `kitsune-qt`. The crate
+# name keeps the frontend distinguishable in `cargo build -p` and in the
+# directory tree; the binary name is what a user sees in a process list, in the
+# install directory and on a desktop entry, and there is only one app now.
+[[bin]]
+name = "kitsune"
+path = "src/main.rs"
+
+[dependencies]
+# The shared backend. The whole point of the Phase 0 extraction.
+kitsune-core = { path = "../kitsune-core" }
+# CXX-Qt: QObject/QML interop. `qt_gui` brings QGuiApplication, `qt_qml`
+# brings QQmlApplicationEngine.
+cxx = "1.0.95"
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
+# The async command runtime and the JSON boundary QML parses.
+tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
+# `serde` for the `Serialize` bound in the generic JSON helper; `serde_json`
+# for the actual encoding.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Background-task failure logs (torrent removal/release). Matches the core
+# crate's logging; the subscriber lives in kitsune-core::diagnostics::logging.
+tracing = "0.1.44"
+# Session-bus single-instance + deep-link forwarding. Chosen over a C++ D-Bus
+# shim because cxx-qt-lib exposes no QDBus types, and over QLocalServer because
+# the bus is a natural name mutex with nothing to clean up after a crash.
+#
+# Unix only: Windows has no session bus. There, single_instance.rs uses a
+# loopback TCP listener instead (binding the port is the mutex), so zbus would
+# be dead weight in the Windows binary.
+[target.'cfg(unix)'.dependencies]
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[build-dependencies]
+# Generates and compiles the C++ side of every #[cxx_qt::bridge].
+cxx-qt-build = "0.10"
+
+# Locates libmpv's include/link flags for the embedded player. Unix only: on
+# Windows there is no pkg-config in the MSVC toolchain, and the build script
+# resolves libmpv from MPV_DIR instead (see build.rs).
+[target.'cfg(not(windows))'.build-dependencies]
+pkg-config = "0.3"
