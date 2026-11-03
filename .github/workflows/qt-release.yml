@@ -242,6 +242,33 @@ jobs:
       - name: Build
         run: cargo build -p kitsune-qt --release
 
+      # Windows allocates a console window for a CONSOLE-subsystem binary. The
+      # app declares `#![cfg_attr(not(debug_assertions), windows_subsystem =
+      # "windows")]`, so a RELEASE build must be GUI. If that attribute is ever
+      # removed or a feature changes it, the only other way to notice is to
+      # double-click the exe on Windows and watch a black window flash.
+      #
+      # dumpbin is already on PATH: ilammy/msvc-dev-cmd set it up earlier.
+      - name: Verify GUI subsystem
+        shell: pwsh
+        run: |
+          $exe = "target/release/kitsune.exe"
+          if (-not (Test-Path $exe)) { throw "$exe not found" }
+
+          $headers = & dumpbin /nologo /headers $exe
+          $line = $headers | Select-String -Pattern 'subsystem' | Select-Object -First 1
+          if (-not $line) {
+            $headers | Select-String -Pattern 'optional header' -Context 0,25
+            throw "could not find a subsystem line in $exe headers"
+          }
+          Write-Host $line
+
+          # dumpbin prints e.g. "2 subsystem (Windows GUI)" for GUI and
+          # "3 subsystem (Windows CUI)" for console.
+          if ($line -notmatch 'Windows GUI') {
+            throw "kitsune.exe is not a GUI-subsystem binary, so Windows will open a console window on every launch"
+          }
+
       - name: Stage installer payload
         shell: pwsh
         env:

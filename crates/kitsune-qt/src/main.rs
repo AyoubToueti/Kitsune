@@ -3,6 +3,23 @@
 //! Loads `qml/main.qml` (embedded by `build.rs` under the
 //! `qrc:/qt/qml/com/kitsune/app/` prefix) into a `QQmlApplicationEngine`.
 
+// Launch as a GUI application on Windows, not a console one.
+//
+// Without this, Rust links the binary with the CONSOLE subsystem and Windows
+// allocates a console window on every launch -- double-clicking the exe from
+// Explorer, or starting it from a Start Menu shortcut, flashes a black terminal
+// before (and behind) the app window. The Tauri build got a GUI subsystem from
+// `tauri-build`; that crate is gone, and this attribute is the replacement.
+//
+// Scoped to non-debug builds on purpose: `cargo run` on Windows keeps its
+// console, which is where the `eprintln!` diagnostics go while developing.
+//
+// Consequence in release: stdout/stderr handles are invalid, so `eprintln!` and
+// `fprintf(stderr, ...)` become silent no-ops. That is acceptable -- logging
+// already writes a rotating file under the OS data directory -- but it means a
+// startup failure is only visible in that log, never in a console.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod backend;
 mod mpv;
 mod netcache;
