@@ -269,6 +269,16 @@ jobs:
             throw "kitsune.exe is not a GUI-subsystem binary, so Windows will open a console window on every launch"
           }
 
+          # The icon and version metadata come from a resource section that
+          # winresource compiles in. If rc.exe was missing the build script
+          # panics, so this is mostly a guard against someone "simplifying"
+          # build.rs later: an exe without .rsrc shows the generic application
+          # glyph on every shortcut, and nothing else would notice.
+          if (-not ($headers | Select-String -Pattern '\.rsrc')) {
+            throw "kitsune.exe has no resource section; the icon was not embedded"
+          }
+          Write-Host "resource section present (icon + version info)"
+
       - name: Stage installer payload
         shell: pwsh
         env:

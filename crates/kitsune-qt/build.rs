@@ -122,9 +122,48 @@ fn main() {
     // 3. NOW build the C++ code (it will now successfully find mpv/client.h)
     builder.build();
 
-    // 4. Finally, emit the linker flags for the Rust side
+    // 4. Emit the linker flags for the Rust side
     link_libmpv();
+
+    // 5. Give the Windows exe an icon and version resource.
+    //
+    // Deliberately after the cxx-qt build and outside its chain: winresource
+    // generates a .rc, runs rc.exe, and emits the link directive itself; it has
+    // no relationship to the C++ compile step.
+    embed_windows_resources();
 }
+
+/// Attach the icon and version metadata to the Windows executable.
+///
+/// No-op off Windows -- the dependency is `cfg(windows)`-gated too, so this
+/// cannot even be compiled elsewhere.
+///
+/// `WindowsResource::new()` reads version fields from Cargo's build-time env
+/// vars, so the file properties match the crate version without duplication.
+/// The icon path is relative to the crate root, which is the build script's
+/// working directory.
+#[cfg(windows)]
+fn embed_windows_resources() {
+    println!("cargo:rerun-if-changed=assets/icon.ico");
+
+    if let Err(err) = winresource::WindowsResource::new()
+        .set_icon("assets/icon.ico")
+        .set("FileDescription", "Kitsune")
+        .set("ProductName", "Kitsune")
+        .compile()
+    {
+        // A missing rc.exe is a real failure, not a warning: shipping an exe
+        // with no icon is exactly the bug this step exists to prevent.
+        panic!(
+            "failed to compile the Windows resource (icon/version): {err}. \
+             rc.exe must be on PATH -- it is installed with the Windows SDK \
+             that the MSVC developer environment sets up."
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_resources() {}
 
 /// Helper to get the include path for both Windows and Unix
 #[cfg(windows)]

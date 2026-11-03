@@ -54,3 +54,16 @@ cxx-qt-build = "0.10"
 # resolves libmpv from MPV_DIR instead (see build.rs).
 [target.'cfg(not(windows))'.build-dependencies]
 pkg-config = "0.3"
+
+# Embeds a Windows icon and version resource into kitsune.exe.
+#
+# Windows-only because it shells out to `rc.exe` (MSVC) or `windres.exe`
+# (MinGW), neither of which exists elsewhere. cxx-qt-build has no hook for this,
+# so the build script calls it directly.
+#
+# Without it the exe has no icon resource: Explorer, the taskbar and a Start
+# Menu shortcut all fall back to the generic application glyph. The *installer*
+# already has the fox (NSIS MUI_ICON points at assets/icon.ico), and the app's
+# window/taskbar icon comes from setWindowIcon -- this fills the last gap.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
