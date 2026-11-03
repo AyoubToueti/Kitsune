@@ -42,7 +42,23 @@ cat > "$APPDIR/usr/share/metainfo/com.kitsune.app.appdata.xml" <<XML
   <id>com.kitsune.app</id>
   <name>Kitsune</name>
   <summary>Anime streaming from torrents</summary>
+  <description>
+    <p>
+      Kitsune browses and searches anime metadata from AniList, finds matching
+      releases on Nyaa, and streams them directly from torrents without leaving
+      the app.
+    </p>
+    <p>
+      Playback runs through an embedded libmpv surface, so subtitles and
+      hardware decoding behave the same as in a dedicated player.
+    </p>
+  </description>
   <metadata_license>MIT</metadata_license>
+  <url type="homepage">https://github.com/AyoubToueti/Kitsune</url>
+  <content_rating type="oars-1.1"/>
+  <developer id="com.kitsune">
+    <name>Kitsune</name>
+  </developer>
   <project_license>MIT</project_license>
   <launchable type="desktop-id">com.kitsune.app.desktop</launchable>
   <releases>
