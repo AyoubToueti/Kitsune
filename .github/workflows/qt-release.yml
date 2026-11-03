@@ -284,10 +284,31 @@ jobs:
           Invoke-WebRequest -Uri $rtAsset.browser_download_url -OutFile mpv.7z
           7z x mpv.7z -ompv-rt -y | Out-Null
 
-          $mpvDlls = @(Get-ChildItem -Path mpv-rt -Recurse -Filter *.dll)
-          if ($mpvDlls.Count -eq 0) { throw "mpv runtime archive produced no DLLs" }
+          # Search BOTH archives. The shinchiro runtime archive is a standalone
+          # player build -- mpv.exe with its dependencies linked in -- so it may
+          # carry no loose DLLs at all, while the dev archive ships libmpv-2.dll
+          # and its headers. Rather than assume a layout, take every DLL from
+          # both trees; duplicate names are identical files, and the verify step
+          # below fails loudly if a required one is still absent.
+          foreach ($tree in @("mpv-rt", "mpv-dev")) {
+            if (-not (Test-Path $tree)) { continue }
+            Write-Host "--- $tree contents ---"
+            Get-ChildItem -Path $tree -Recurse -File |
+              ForEach-Object { $_.FullName.Substring((Resolve-Path $tree).Path.Length + 1) }
+          }
+
+          $mpvDlls = @(
+            foreach ($tree in @("mpv-rt", "mpv-dev")) {
+              if (-not (Test-Path $tree)) { continue }
+              Get-ChildItem -Path $tree -Recurse -Filter *.dll -File
+            }
+          )
+          if ($mpvDlls.Count -eq 0) {
+            throw "neither the mpv runtime archive nor the dev archive contained any DLLs"
+          }
           $mpvDlls | Copy-Item -Destination $stage -Force
-          Write-Host "copied $($mpvDlls.Count) DLLs from the mpv runtime archive"
+          Write-Host "copied $($mpvDlls.Count) DLLs from the mpv archives:"
+          $mpvDlls | ForEach-Object { Write-Host "  $($_.Name)" }
 
           # The MSVC runtime. windeployqt does NOT bundle this for release MSVC
           # builds -- by design. Qt's deployment docs say the tool "expects the

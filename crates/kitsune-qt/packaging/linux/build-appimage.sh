@@ -55,8 +55,12 @@ XML
 # qml imports being scanned, the app starts to a blank window on a machine with
 # no system Qt.
 export QML_SOURCES_PATHS="$ROOT/crates/kitsune-qt/qml"
-export EXTRA_QT_MODULES="svg"
-export EXTRA_PLATFORM_PLUGINS="libqsvg.so"
+# NOTE: do NOT set EXTRA_PLATFORM_PLUGINS here. linuxdeploy-plugin-qt resolves
+# it against plugins/platforms/, and the SVG plugin is an IMAGE FORMAT plugin
+# living in plugins/imageformats/ -- naming it under platforms makes the plugin
+# abort with "Cannot deploy non-existing library file:
+# .../plugins/platforms/libqsvg.so". The Qt plugin deploys imageformats on its
+# own; the check below proves it actually happened.
 export OUTPUT="$ROOT/$OUT/Kitsune-${VERSION}-x86_64.AppImage"
 
 "$LINUXDEPLOY" --appdir "$APPDIR" \
@@ -64,5 +68,18 @@ export OUTPUT="$ROOT/$OUT/Kitsune-${VERSION}-x86_64.AppImage"
   --desktop-file "$APPDIR/usr/share/applications/com.kitsune.app.desktop" \
   --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/com.kitsune.app.png" \
   --output appimage
+
+# The SVG image-format plugin is what decodes both assets/logo.svg and the
+# inline SVG data URIs in NavBar.qml. A missing decoder builds and links fine
+# and then renders a blank wordmark and missing icons, so assert it here
+# rather than discovering it on a user's desktop.
+svg_plugin=$(find "$APPDIR" -path '*imageformats*' -name '*qsvg*' -print -quit)
+if [ -z "$svg_plugin" ]; then
+  echo "error: Qt's SVG image-format plugin was not deployed into the AppDir" >&2
+  echo "imageformats contents:" >&2
+  find "$APPDIR" -path '*imageformats*' -type f >&2 || true
+  exit 1
+fi
+echo "svg plugin: $svg_plugin"
 
 echo "wrote $OUTPUT"
