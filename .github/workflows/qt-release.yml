@@ -395,8 +395,16 @@ jobs:
           # found in neither means it is genuinely missing and the installer
           # would fail on a clean machine.
           #
-          # Only one level deep. libmpv's dependencies are system DLLs or the
-          # MSVC CRT, both of which are handled by the explicit $required list
+          # EXCEPT the API-set contract DLLs. Names beginning `api-ms-win-` or
+          # `ext-ms-` are virtual: the loader resolves them through the API set
+          # schema in the OS and no matching file exists in System32, so a
+          # filesystem test always reports them missing. That is what made this
+          # step fail on 17 api-ms-win-crt-* names after the allowlist was
+          # removed. They are an OS component on Windows 10+ and are never
+          # shipped by an installer.
+          #
+          # Only one level deep. libmpv's dependencies are system DLLs, API sets
+          # or the MSVC CRT, all covered here or by the explicit $required list
           # and the CRT copy above.
           function Get-ImportedDlls([string]$path) {
             if (-not (Test-Path $path)) { return @() }
@@ -414,6 +422,12 @@ jobs:
             foreach ($dep in $deps) {
               if (Test-Path (Join-Path $stage $dep)) {
                 Write-Host "  staged    $dep"
+              } elseif ($dep -match '^(api-ms-win-|ext-ms-)') {
+                # Virtual API-set contract. The loader resolves these through
+                # the OS API set schema; there is no matching file in System32,
+                # so a filesystem test always reports them missing. They are an
+                # OS component on Windows 10+ and must never be shipped.
+                Write-Host "  apiset    $dep"
               } elseif (Test-Path (Join-Path $system32 $dep)) {
                 Write-Host "  system    $dep"
               } else {
