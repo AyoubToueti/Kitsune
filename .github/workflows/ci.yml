@@ -112,9 +112,16 @@ jobs:
           # The "latest" tag is a moving target, but the asset name pattern is
           # stable. Resolve the newest mpv-dev-x86_64 asset via the GitHub API
           # rather than pinning a date that will rot.
+          # Authenticated: 60 req/hr unauthenticated is routinely exceeded on
+          # a shared runner IP. GITHUB_TOKEN raises it to 5000/hr.
+          $ghHeaders = @{
+            "User-Agent"    = "kitsune-ci"
+            "Authorization" = "Bearer $env:GITHUB_TOKEN"
+            "Accept"        = "application/vnd.github+json"
+          }
           $release = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" `
-            -Headers @{ "User-Agent" = "kitsune-ci" }
+            -Headers $ghHeaders
           # Exclude the -v3 variant: it requires AVX2 and the runner image is
           # not guaranteed to have it.
           $asset = $release.assets |

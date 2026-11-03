@@ -180,9 +180,18 @@ jobs:
       - name: Fetch libmpv development files
         shell: pwsh
         run: |
+          # Authenticated: the unauthenticated GitHub API allows 60 requests
+          # per hour per IP, and the runner's shared egress IP routinely exceeds
+          # that. GITHUB_TOKEN raises it to 5000/hr. It is already in the
+          # environment; passing it in the header is the whole change.
+          $ghHeaders = @{
+            "User-Agent"    = "kitsune-ci"
+            "Authorization" = "Bearer $env:GITHUB_TOKEN"
+            "Accept"        = "application/vnd.github+json"
+          }
           $release = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" `
-            -Headers @{ "User-Agent" = "kitsune-ci" }
+            -Headers $ghHeaders
           $asset = $release.assets |
             Where-Object { $_.name -match '^mpv-dev-x86_64-\d+-git-[0-9a-f]+\.7z$' } |
             Select-Object -First 1
@@ -274,9 +283,15 @@ jobs:
           # `-Recurse` is load-bearing: the shinchiro .7z extracts into a nested
           # folder, so a non-recursive Get-ChildItem matches nothing and copies
           # zero files. That is what produced an installer with no libmpv at all.
+          # Header defined locally: PowerShell variables do not survive between
+          # workflow steps, so $ghHeaders from the earlier fetch step is gone.
           $runtime = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" `
-            -Headers @{ "User-Agent" = "kitsune-ci" }
+            -Headers @{
+              "User-Agent"    = "kitsune-ci"
+              "Authorization" = "Bearer $env:GITHUB_TOKEN"
+              "Accept"        = "application/vnd.github+json"
+            }
           $rtAsset = $runtime.assets |
             Where-Object { $_.name -match '^mpv-x86_64-\d+-git-[0-9a-f]+\.7z$' } |
             Select-Object -First 1
