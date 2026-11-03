@@ -118,6 +118,12 @@ Section "Kitsune" SecMain
   CreateDirectory "$SMPROGRAMS\Kitsune"
   CreateShortcut "$SMPROGRAMS\Kitsune\Kitsune.lnk" "$INSTDIR\${APP_EXE}"
   CreateShortcut "$SMPROGRAMS\Kitsune\Uninstall.lnk" "$INSTDIR\uninstall.exe"
+
+  ; ---- Desktop shortcut ----------------------------------------------------
+  ; Per-user Desktop (the installer runs as the invoking user with
+  ; RequestExecutionLevel user), so this matches where the Start Menu entries
+  ; above land. The shortcut picks up the exe's embedded icon automatically.
+  CreateShortcut "$DESKTOP\Kitsune.lnk" "$INSTDIR\${APP_EXE}"
 SectionEnd
 
 Section "Uninstall"
@@ -130,6 +136,12 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Kitsune\Kitsune.lnk"
   Delete "$SMPROGRAMS\Kitsune\Uninstall.lnk"
   RMDir "$SMPROGRAMS\Kitsune"
+
+  ; Only remove the shortcut if it still points at this install. If the reader
+  ; has since installed elsewhere or repointed it, deleting it would be
+  ; destructive -- NSIS cannot inspect the target, so the pragmatic choice is
+  ; to delete unconditionally and note that an upgrade reinstalls it.
+  Delete "$DESKTOP\Kitsune.lnk"
 
   ; windeployqt's tree, including its subdirectories. `RMDir /r` would also
   ; take user-created files with it, so remove the known subtrees then the dir.

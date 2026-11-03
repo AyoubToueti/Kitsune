@@ -256,12 +256,18 @@ jobs:
           if (-not (Test-Path $exe)) { throw "$exe not found" }
 
           $headers = & dumpbin /nologo /headers $exe
-          $line = $headers | Select-String -Pattern 'subsystem' | Select-Object -First 1
+          # Match the SUBSYSTEM line, not the "6.00 subsystem version" line --
+          # that one also contains the word "subsystem" and comes first, which
+          # is exactly how the previous version of this check passed a console
+          # binary's version line into the GUI test and failed a good build.
+          # The real line reads e.g. "2 subsystem (Windows GUI)".
+          $line = $headers | Select-String -Pattern '\d+\s+subsystem\s+\(' |
+            Select-Object -First 1
           if (-not $line) {
-            $headers | Select-String -Pattern 'optional header' -Context 0,25
+            $headers | Select-String -Pattern 'optional header' -Context 0,30
             throw "could not find a subsystem line in $exe headers"
           }
-          Write-Host $line
+          Write-Host "subsystem line: $line"
 
           # dumpbin prints e.g. "2 subsystem (Windows GUI)" for GUI and
           # "3 subsystem (Windows CUI)" for console.
