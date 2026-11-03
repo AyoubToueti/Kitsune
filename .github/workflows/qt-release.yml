@@ -179,11 +179,16 @@ jobs:
       # synthesise an MSVC import library from the DLL's export table.
       - name: Fetch libmpv development files
         shell: pwsh
+        # GITHUB_TOKEN is NOT injected into run steps automatically. It is a
+        # context value, and a step can only see it through an explicit env
+        # mapping like this one. Sending "Bearer $env:GITHUB_TOKEN" without it
+        # sends an empty string, which GitHub rejects with 401 Bad credentials.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Authenticated: the unauthenticated GitHub API allows 60 requests
           # per hour per IP, and the runner's shared egress IP routinely exceeds
-          # that. GITHUB_TOKEN raises it to 5000/hr. It is already in the
-          # environment; passing it in the header is the whole change.
+          # that. GITHUB_TOKEN raises it to 5000/hr.
           $ghHeaders = @{
             "User-Agent"    = "kitsune-ci"
             "Authorization" = "Bearer $env:GITHUB_TOKEN"
@@ -239,6 +244,8 @@ jobs:
 
       - name: Stage installer payload
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $stage = Join-Path $PWD "stage"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null

@@ -108,6 +108,10 @@ jobs:
       - name: Fetch libmpv development files (Windows)
         if: matrix.name == 'windows'
         shell: pwsh
+        # Must be mapped explicitly: GITHUB_TOKEN is a context value, not an
+        # ambient environment variable, so run steps cannot read it otherwise.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # The "latest" tag is a moving target, but the asset name pattern is
           # stable. Resolve the newest mpv-dev-x86_64 asset via the GitHub API
