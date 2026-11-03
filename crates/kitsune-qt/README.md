@@ -74,9 +74,10 @@ build fails with an explicit message if it is missing or malformed.
 
 ### 3. At runtime
 
-`libmpv-2.dll` must sit beside `kitsune.exe`, together with the ffmpeg DLLs
-from the matching `mpv-x86_64-*.7z` runtime archive. Running from
-`target\debug` without them fails to start.
+`libmpv-2.dll` must sit beside `kitsune.exe`. Its ffmpeg dependency is linked
+**statically** into that DLL, so there are no `avcodec-*.dll` files to copy —
+verified with `dumpbin /dependents libmpv-2.dll`, which imports only system
+libraries. Running from `target\debug` without `libmpv-2.dll` fails to start.
 
 ## Packaging
 
@@ -91,10 +92,18 @@ in `packaging/`.
   `linuxdeploy --plugin qt`; `packaging/linux/nfpm.yaml` turns the same AppDir
   into `.deb` and `.rpm`. The launcher script exports `QT_PLUGIN_PATH` and
   `QML2_IMPORT_PATH` because the Qt tree is installed under
-  `/usr/lib/kitsune-qt`, not beside the binary.
+  `/usr/lib/kitsune`, not beside the binary.
 
 ## Notes
 
+- The shipped Windows binary is built for the **GUI subsystem**, so launching it
+  never opens a console window. That also means `println!`/`eprintln!` and
+  `fprintf(stderr, ...)` are silent no-ops in release builds — the rotating log
+  under `%APPDATA%\kitsune\logs\` is the only output. Debug builds keep a
+  console, which is what `cargo run` shows.
+- `kitsune.exe` carries an icon and version resource compiled in by
+  `build.rs` via `winresource` (Windows only). Without it, shortcuts and
+  Explorer show a generic application glyph.
 - Playback is libmpv's **OpenGL** render API inside a
   `QQuickFramebufferObject`, so `QSG_RHI_BACKEND=opengl` is forced at startup.
   On Windows `hwdec=auto-safe` selects D3D11VA; if video is black while audio

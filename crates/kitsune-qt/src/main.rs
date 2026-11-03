@@ -132,8 +132,8 @@ fn main() {
     // Tell the desktop environment which entry this window belongs to. On
     // Wayland the window's app_id comes from this, and the compositor matches
     // it against an installed `.desktop` file to choose the taskbar icon.
-    // Without it the executable name ("kitsune-qt") is used, which matches no
-    // entry and shows a generic icon. The Tauri build shipped
+    // Without it the executable name ("kitsune") is used, which matches no
+    // entry and shows a generic icon. The packaging ships
     // `com.kitsune.app.desktop` plus hicolor icons, so reuse that identity.
     screenshot::set_desktop_file_name("com.kitsune.app");
 
