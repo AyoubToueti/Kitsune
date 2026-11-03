@@ -48,8 +48,21 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "LegalCopyright" "MIT"
 
 !include "MUI2.nsh"
-!define MUI_ICON "${SRCDIR}\kitsune.exe"
-!define MUI_UNICON "${SRCDIR}\kitsune.exe"
+
+; Installer and uninstaller icons.
+;
+; These MUST point at a .ico, not at kitsune.exe. NSIS can extract an icon
+; resource from an executable, but the Qt build has no .rc file and therefore
+; no icon resource embedded -- so pointing MUI_ICON at the exe fails with
+; "Error while loading icon from ...kitsune.exe: invalid icon file".
+;
+; ICONFILE is passed by the release workflow as an absolute path; the fallback
+; is the repo-relative asset, which works when makensis runs from the repo root.
+!ifndef ICONFILE
+  !define ICONFILE "crates\kitsune-qt\assets\icon.ico"
+!endif
+!define MUI_ICON "${ICONFILE}"
+!define MUI_UNICON "${ICONFILE}"
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_UNPAGE_CONFIRM

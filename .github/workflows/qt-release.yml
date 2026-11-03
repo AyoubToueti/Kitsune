@@ -471,10 +471,17 @@ jobs:
         run: |
           $version = "${{ steps.ver.outputs.version }}"
           $out = "Kitsune_${version}_x64-setup.exe"
+          # ICONFILE must be a real .ico. MUI_ICON used to point at kitsune.exe,
+          # which has no embedded icon resource (the Qt build has no .rc file),
+          # so makensis aborted with "invalid icon file".
+          $icon = Join-Path $PWD "crates\kitsune-qt\assets\icon.ico"
+          if (-not (Test-Path $icon)) { throw "installer icon not found: $icon" }
+
           & "C:\Program Files (x86)\NSIS\makensis.exe" `
             "/DVERSION=$version" `
             "/DSRCDIR=$PWD\stage" `
             "/DOUTFILE=$PWD\$out" `
+            "/DICONFILE=$icon" `
             "crates\kitsune-qt\packaging\windows\kitsune-qt.nsi"
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
           if (-not (Test-Path $out)) { throw "installer was not produced" }
