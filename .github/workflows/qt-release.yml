@@ -383,37 +383,49 @@ jobs:
           # The honest check is to ask libmpv what IT imports and require
           # exactly that: if libmpv needs avcodec-61.dll, it must be staged; if
           # it imports nothing but system DLLs, nothing more is needed.
-          $libmpv = Join-Path $stage "libmpv-2.dll"
-          if (Test-Path $libmpv) {
-            $libmpvImports = & dumpbin /nologo /dependents $libmpv |
+          # Walk the transitive non-system dependencies of every DLL we ship.
+          #
+          # An earlier version hardcoded a list of "system DLLs Windows supplies"
+          # and required everything else to be staged. That list can never be
+          # complete -- it failed on d2d1, DWrite, AVICAP32, UxTheme, SHCORE and
+          # vulkan-1, all genuine Windows components.
+          #
+          # The authoritative test needs no list: if the file is not in the
+          # stage, look for it in System32. Found there means the OS supplies it;
+          # found in neither means it is genuinely missing and the installer
+          # would fail on a clean machine.
+          #
+          # Only one level deep. libmpv's dependencies are system DLLs or the
+          # MSVC CRT, both of which are handled by the explicit $required list
+          # and the CRT copy above.
+          function Get-ImportedDlls([string]$path) {
+            if (-not (Test-Path $path)) { return @() }
+            & dumpbin /nologo /dependents $path |
               Select-String -Pattern '^\s+(\S+\.dll)\s*$' |
               ForEach-Object { $_.Matches[0].Groups[1].Value } |
-              Where-Object {
-                # System libraries Windows supplies; not our job to stage.
-                $_ -notmatch '^(api-ms-win-|ext-ms-)' -and
-                $_ -notin @(
-                  'kernel32.dll','user32.dll','gdi32.dll','advapi32.dll',
-                  'shell32.dll','ole32.dll','oleaut32.dll','combase.dll',
-                  'bcrypt.dll','bcryptprimitives.dll','crypt32.dll','ntdll.dll',
-                  'ws2_32.dll','iphlpapi.dll','dnsapi.dll','winmm.dll',
-                  'shlwapi.dll','version.dll','secur32.dll','userenv.dll',
-                  'dbghelp.dll','psapi.dll','powrprof.dll','mfplat.dll',
-                  'mfuuid.dll','mf.dll','d3d11.dll','dxgi.dll','opengl32.dll',
-                  'setupapi.dll','cfgmgr32.dll','mpr.dll','netapi32.dll',
-                  'wldap32.dll','msvcrt.dll'
-                )
-              } |
               Sort-Object -Unique
+          }
 
-            Write-Host "libmpv-2.dll imports these non-system DLLs:"
-            if ($libmpvImports.Count -eq 0) {
-              Write-Host "  (none -- ffmpeg is linked statically)"
-            } else {
-              $libmpvImports | ForEach-Object { Write-Host "  $_" }
+          $system32 = Join-Path $env:SystemRoot "System32"
+          $libmpv = Join-Path $stage "libmpv-2.dll"
+          if (Test-Path $libmpv) {
+            $deps = Get-ImportedDlls $libmpv
+            Write-Host "libmpv-2.dll imports $($deps.Count) DLLs:"
+            foreach ($dep in $deps) {
+              if (Test-Path (Join-Path $stage $dep)) {
+                Write-Host "  staged    $dep"
+              } elseif (Test-Path (Join-Path $system32 $dep)) {
+                Write-Host "  system    $dep"
+              } else {
+                Write-Host "  MISSING   $dep"
+                $missing += "libmpv dep: $dep"
+              }
             }
 
-            foreach ($dep in $libmpvImports) {
-              if (-not (Test-Path (Join-Path $stage $dep))) { $missing += "libmpv dep: $dep" }
+            # ffmpeg being linked statically is worth stating explicitly, since
+            # it decides whether codec DLLs are expected at all.
+            if (-not ($deps | Where-Object { $_ -match '^(av|sw)(codec|format|util|resample|scale)' })) {
+              Write-Host "  (no av*/sw* imports -- ffmpeg is linked statically)"
             }
           }
 
