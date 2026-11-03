@@ -238,28 +238,153 @@ jobs:
           # windeployqt copies the Qt DLLs and, crucially, the plugin and QML
           # directories. --qmldir makes it scan the QML sources so every module
           # actually imported is included.
-          windeployqt --release --no-translations `
+          #
+          # --no-compiler-runtime: windeployqt's default is to copy whatever CRT
+          # DLLs it finds on the build machine. Qt's docs are explicit that those
+          # individual files "are not intended or licensed for redistribution";
+          # the supported path is the official redistributable, which we copy
+          # from VCToolsRedistDir below.
+          windeployqt --release --no-translations --no-compiler-runtime `
             --qmldir crates/kitsune-qt/qml `
             (Join-Path $stage "kitsune.exe")
           if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
 
-          # libmpv and its ffmpeg dependency DLLs. The dev archive is not
-          # enough for a working app: the runtime mpv archive has the codec
-          # DLLs the dev build links against.
+          # The SVG image-format plugin is what decodes both assets/logo.svg and
+          # the inline SVG data URIs in NavBar.qml. windeployqt does not always
+          # pick it up, because it is a runtime plugin rather than a link-time
+          # import, so copy it explicitly from the kit if it is absent.
+          $svgPlugin = Join-Path $stage "imageformats\qsvg.dll"
+          if (-not (Test-Path $svgPlugin)) {
+            $src = Join-Path $env:QT_ROOT_DIR "plugins\imageformats\qsvg.dll"
+            if (-not (Test-Path $src)) {
+              throw "qsvg.dll not found in the deployed tree or in $env:QT_ROOT_DIR\plugins\imageformats"
+            }
+            New-Item -ItemType Directory -Force -Path (Split-Path $svgPlugin) | Out-Null
+            Copy-Item $src $svgPlugin
+            Write-Host "copied qsvg.dll from the Qt kit (windeployqt missed it)"
+          }
+
+          # libmpv and its ffmpeg dependencies.
+          #
+          # Both come from the RUNTIME archive, not from MPV_DIR. MPV_DIR is the
+          # dev archive, which carries the import library and headers but not
+          # the ffmpeg DLLs libmpv loads at runtime -- mixing the two would pair
+          # an import library with a DLL from a different build.
+          #
+          # `-Recurse` is load-bearing: the shinchiro .7z extracts into a nested
+          # folder, so a non-recursive Get-ChildItem matches nothing and copies
+          # zero files. That is what produced an installer with no libmpv at all.
           $runtime = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest" `
             -Headers @{ "User-Agent" = "kitsune-ci" }
           $rtAsset = $runtime.assets |
             Where-Object { $_.name -match '^mpv-x86_64-\d+-git-[0-9a-f]+\.7z$' } |
             Select-Object -First 1
+          if (-not $rtAsset) { throw "no mpv-x86_64 asset found in $($runtime.tag_name)" }
           Invoke-WebRequest -Uri $rtAsset.browser_download_url -OutFile mpv.7z
           7z x mpv.7z -ompv-rt -y | Out-Null
-          Get-ChildItem -Path mpv-rt -Filter *.dll | Copy-Item -Destination $stage
-          Copy-Item (Join-Path $env:MPV_DIR "libmpv-2.dll") $stage -Force
 
-          if (-not (Test-Path (Join-Path $stage "platforms\qwindows.dll"))) {
-            throw "windeployqt did not produce platforms/qwindows.dll"
+          $mpvDlls = @(Get-ChildItem -Path mpv-rt -Recurse -Filter *.dll)
+          if ($mpvDlls.Count -eq 0) { throw "mpv runtime archive produced no DLLs" }
+          $mpvDlls | Copy-Item -Destination $stage -Force
+          Write-Host "copied $($mpvDlls.Count) DLLs from the mpv runtime archive"
+
+          # The MSVC runtime. windeployqt does NOT bundle this for release MSVC
+          # builds -- by design. Qt's deployment docs say the tool "expects the
+          # application installer to include the official Visual C++
+          # Redistributable Packages", and the individual DLLs it may copy from a
+          # developer machine are not licensed for redistribution.
+          #
+          # kitsune.exe imports MSVCP140.dll and VCRUNTIME140.dll directly (see
+          # its PE import table), and Qt6Core.dll additionally needs
+          # VCRUNTIME140_1.dll. Without these the app fails to start with a
+          # "DLL not found" dialog before any of our code runs.
+          #
+          # Shipping vc_redist.x64.exe instead would need elevation, which this
+          # per-user installer deliberately avoids. App-local deployment of the
+          # CRT DLLs is permitted by Microsoft's redistributable licence.
+          #
+          # ucrtbase.dll is NOT copied: the Universal CRT is an OS component on
+          # Windows 10 and later, and shipping a copy would shadow the system one.
+          $crtDir = Get-ChildItem -Path $env:VCToolsRedistDir -Recurse -Directory `
+            -Filter "Microsoft.VC*.CRT" |
+            Where-Object { $_.FullName -match '\\x64\\' } |
+            Select-Object -First 1
+          if (-not $crtDir) {
+            throw "could not find the x64 Microsoft.VC*.CRT redist directory under $env:VCToolsRedistDir"
           }
+          Write-Host "CRT source: $($crtDir.FullName)"
+          Copy-Item (Join-Path $crtDir.FullName "*.dll") $stage -Force
+
+      # The only check that stood here before was "platforms\qwindows.dll
+      # exists", which a payload missing the CRT, libmpv and every ffmpeg DLL
+      # would still pass. That is exactly how an 8 MB installer shipped: the
+      # build was green, and the user found the missing files.
+      #
+      # The list below is derived from kitsune.exe's own PE import table plus
+      # libmpv-2.dll's dependencies. Names are matched with wildcards where the
+      # file carries a version or hash in its name.
+      - name: Verify installer payload
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "stage"
+
+          $required = @(
+            # Our binary
+            "kitsune.exe",
+
+            # Qt link-time imports (from kitsune.exe's import table)
+            "Qt6Core.dll", "Qt6Gui.dll", "Qt6Qml.dll", "Qt6Network.dll",
+            "Qt6OpenGL.dll", "Qt6Quick.dll",
+
+            # Qt plugins loaded at runtime, not link time
+            "platforms\qwindows.dll",
+            "imageformats\qsvg.dll",
+
+            # MSVC runtime -- direct imports of kitsune.exe, plus the
+            # _CxxFrameHandler4 helper Qt6Core.dll needs
+            "msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll",
+
+            # libmpv, a direct import of kitsune.exe
+            "libmpv-2.dll"
+          )
+
+          # ffmpeg: versioned filenames, e.g. avcodec-61.dll
+          $patterns = @(
+            "avcodec-*.dll", "avformat-*.dll", "avutil-*.dll",
+            "swresample-*.dll", "swscale-*.dll"
+          )
+
+          $missing = @()
+          foreach ($name in $required) {
+            if (-not (Test-Path (Join-Path $stage $name))) { $missing += $name }
+          }
+          foreach ($pattern in $patterns) {
+            $hit = Get-ChildItem -Path $stage -Filter $pattern -File -ErrorAction SilentlyContinue
+            if (-not $hit) { $missing += $pattern }
+          }
+
+          # A correct payload is well over 100 MB uncompressed: Qt alone is
+          # 30-45 MB, libmpv 25-35 MB, ffmpeg 30-50 MB. Anything under that
+          # means files are missing again, whatever the individual checks say.
+          $bytes = (Get-ChildItem -Path $stage -Recurse -File |
+            Measure-Object -Property Length -Sum).Sum
+          $mb = [math]::Round($bytes / 1MB, 1)
+          Write-Host "payload size: $mb MB"
+
+          if ($missing.Count -gt 0) {
+            Write-Host "--- stage contents ---"
+            Get-ChildItem -Path $stage -Recurse -File |
+              ForEach-Object { $_.FullName.Substring($stage.Length + 1) } |
+              Sort-Object
+            throw "installer payload is missing: $($missing -join ', ')"
+          }
+
+          if ($mb -lt 100) {
+            throw "installer payload is only $mb MB; expected well over 100 MB. Files are missing."
+          }
+
+          Write-Host "payload verified: $mb MB"
 
       - name: Build installer
         shell: pwsh

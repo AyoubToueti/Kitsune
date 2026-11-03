@@ -38,3 +38,10 @@ Thumbs.db
 .*
 !.github/
 !.gitignore
+
+# ---- Stray build artifacts dropped at the repo root ----
+# Cargo writes to target/, but copying a binary out of it (or unzipping an
+# installer beside it) is easy to do while debugging a Windows build.
+/kitsune
+/kitsune.exe
+/*.exe
