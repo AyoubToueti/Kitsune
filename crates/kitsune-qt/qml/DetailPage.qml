@@ -1047,7 +1047,14 @@ Item {
 
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: "🎯 Ep " + page.watchedThrough
+                                    text: "\uf140"
+                                    font.pixelSize: 14
+                                    color: lastWatchMouse.containsMouse ? Theme.accent : Theme.inkMuted
+                                }
+
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Ep " + page.watchedThrough
                                     color: lastWatchMouse.containsMouse ? Theme.accent : Theme.inkMuted
                                     font.pixelSize: 12
                                     font.bold: true

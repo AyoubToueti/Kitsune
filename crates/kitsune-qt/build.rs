@@ -5,6 +5,9 @@
 use cxx_qt_build::{CppFile, CxxQtBuilder, QmlFile, QmlModule};
 
 fn main() {
+    // Force MSVC to treat source files and QML assets as UTF-8 on Windows
+    configure_msvc_utf8();
+
     // 1. Resolve the mpv include directory BEFORE building the C++ code.
     // This ensures the include path is passed to the C++ compiler via .include_dir().
     let mpv_include_dir = resolve_mpv_include_dir();
@@ -132,6 +135,22 @@ fn main() {
     // no relationship to the C++ compile step.
     embed_windows_resources();
 }
+
+/// Sets the MSVC flag environment variable so that text assets, C++ files, 
+/// and QML files compile using the UTF-8 character encoder on Windows.
+#[cfg(windows)]
+fn configure_msvc_utf8() {
+    // CXXFLAGS is read automatically by the underlying C++ build engine
+    if std::env::var_os("CXXFLAGS").is_none() {
+        std::env::set_var("CXXFLAGS", "/utf-8");
+    }
+    if std::env::var_os("CFLAGS").is_none() {
+        std::env::set_var("CFLAGS", "/utf-8");
+    }
+}
+
+#[cfg(not(windows))]
+fn configure_msvc_utf8() {}
 
 /// Attach the icon and version metadata to the Windows executable.
 ///
