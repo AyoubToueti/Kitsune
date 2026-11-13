@@ -23,3 +23,13 @@ void kitsuneSetEnv(rust::Str name, rust::Str value);
 // separator. Must be called AFTER QGuiApplication is constructed: Qt's
 // constructor applies the environment locale and would undo an earlier reset.
 void kitsuneResetNumericLocale();
+
+// Restart the process: start a detached copy of this executable, then quit the
+// current instance. Returns false when the new process could not be started, in
+// which case the caller should stay alive rather than leave the reader with no
+// window. Never returns when the relaunch succeeded.
+//
+// Done in C++ because QProcess is the only portable way to spawn and detach:
+// Rust's `Command` has no "detach from this process group" notion, and a child
+// that dies with its parent would close the window the reader asked to reopen.
+bool kitsuneRestartApp();

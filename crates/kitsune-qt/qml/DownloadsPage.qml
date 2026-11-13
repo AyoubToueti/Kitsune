@@ -134,6 +134,11 @@ Item {
                 status: r.status || "",
                 progressBytes: r.progressBytes || 0,
                 totalBytes: r.totalBytes || 0,
+                // Carried through so a per-file row can explain a failure.
+                // Without it a failed episode under a season pack showed a red
+                // dot and no reason, which is the "silent failure" this page
+                // exists to avoid.
+                error: r.error || "",
                 fraction: 0,
                 percent: 0
             }
@@ -1836,6 +1841,19 @@ Item {
                                             color: Theme.inkFaint
                                             font.pixelSize: 9
                                             elide: Text.ElideMiddle
+                                        }
+                                        // Why THIS file failed. The group
+                                        // card carries the same text, but a
+                                        // season pack needs it on the row the
+                                        // reader is looking at.
+                                        Text {
+                                            Layout.fillWidth: true
+                                            visible: liveRec.status === "failed"
+                                                && liveRec.error.length > 0
+                                            text: liveRec.error
+                                            color: Theme.danger
+                                            font.pixelSize: 9
+                                            wrapMode: Text.WordWrap
                                         }
                                     }
                                     Rectangle {

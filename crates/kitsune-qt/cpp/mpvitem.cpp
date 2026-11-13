@@ -5,6 +5,7 @@
 #include "mpvitem.h"
 
 #include <clocale>
+#include <cmath>
 #include <stdexcept>
 
 // The wakeup-pipe drain below reads a file descriptor. On POSIX that is
@@ -502,6 +503,10 @@ MpvObject::pollState()
   bool eof = false;
   int percent = -1;
   QVariantList ranges;
+  // `cache-duration` from the state map below: seconds of media buffered ahead
+  // of the playhead. -1 until mpv reports it, so a genuine 0 ("nothing cached
+  // ahead") stays distinguishable from "this mpv build does not send it".
+  double cache_duration = -1.0;
   mpv_node cache_node{};
   if (mpv_get_property(mpv,
                        "demuxer-cache-state",
@@ -515,6 +520,10 @@ MpvObject::pollState()
     if (cache.contains("cache-buffering-state")) {
       percent = cache.value("cache-buffering-state").toInt();
     }
+    if (cache.contains("cache-duration")) {
+      cache_duration = cache.value("cache-duration").toDouble();
+      if (cache_duration < 0.0) cache_duration = 0.0;
+    }
 
     // `seekable-ranges` is the demuxer's own answer to "what can be played
     // without waiting for the network", which is what the buffered bar should
@@ -527,8 +536,9 @@ MpvObject::pollState()
       }
       const double start = range.value("start").toDouble();
       const double end = range.value("end").toDouble();
-      // mpv reports a 1e99 sentinel for "to the end of the file"; clamp it so
-      // the bar can divide by the duration without an infinity.
+      // mpv reports a 1e99 sentinel for "to the end of the file"; it is
+      // forwarded as-is and the seek bar clamps it into [0, duration]
+      // (PlayerControls.cachedSpans) so nothing ever divides by an infinity.
       if (end > start) {
         ranges.append(QVariantMap{ { "start", start }, { "end", end } });
       }
@@ -546,6 +556,42 @@ MpvObject::pollState()
     // A separate signal because the bar is the only consumer and it redraws
     // more often than the transport controls need to.
     emit seekableRangesChanged();
+  }
+
+  // The PotPlayer-style "Cache: 3m11s" -- seconds of media buffered AHEAD OF
+  // THE PLAYHEAD: how long playback can continue if the swarm died this
+  // instant. It grows while the torrent delivers faster than the decoder
+  // consumes it and shrinks as the playhead advances; a backward seek inside a
+  // cached span jumps it back up. It must never be the cumulative span cached
+  // since the file start.
+  //
+  // `demuxer-cache-state`'s `cache-duration` is exactly that number.
+  // `demuxer-cache-time` is NOT, despite how it reads: mpv documents it as the
+  // TIMESTAMP of the buffered end, so reading it raw reported "cached from the
+  // file start" -- at 3:43 into an episode the chip showed 4m32s while only
+  // ~50s were actually ahead of the playhead. That property survives only as
+  // the fallback (minus the playhead) for builds whose state map lacks the
+  // field. Like the cache state above, a failed read means "nothing playing"
+  // -> 0. Quantised to 50ms so the property does not churn on every poll tick
+  // for sub-perceptual drift.
+  double ahead = 0.0;
+  if (cache_duration >= 0.0) {
+    ahead = cache_duration;
+  } else {
+    double prop = 0.0;
+    if (mpv_get_property(mpv, "demuxer-cache-duration", MPV_FORMAT_DOUBLE, &prop) >= 0) {
+      ahead = prop;
+    } else {
+      double cache_end = 0.0;
+      if (mpv_get_property(mpv, "demuxer-cache-time", MPV_FORMAT_DOUBLE, &cache_end) >= 0) {
+        ahead = cache_end - position_;
+      }
+    }
+  }
+  if (ahead < 0.0) ahead = 0.0;
+  if (std::abs(ahead - cache_ahead_seconds_) > 0.05) {
+    cache_ahead_seconds_ = ahead;
+    changed = true;
   }
 
   // Time to first frame: a positive `time-pos` plus a configured video output

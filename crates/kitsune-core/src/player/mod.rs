@@ -14,7 +14,10 @@ pub mod state;
 pub mod watch_position;
 
 pub use last_release::{LastRelease, LastReleaseStore};
-pub use state::{PlayerState, TorrentFile, TorrentHandle};
+pub use state::{
+    PlayerState, PreparedStream, RamFallbackReason, StreamingDecision, StreamingRestart,
+    TorrentFile, TorrentHandle,
+};
 pub use watch_position::{WatchPosition, WatchPositionStore};
 
 /// The external player assumed when the reader has not chosen one.

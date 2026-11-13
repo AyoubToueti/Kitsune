@@ -18,6 +18,13 @@ mod ffi {
         /// `strtod` and assume a dot decimal separator (libmpv).
         #[rust_name = "reset_numeric_locale"]
         fn kitsuneResetNumericLocale();
+
+        /// Relaunch the executable and quit this instance.
+        ///
+        /// False when the replacement could not be started, so the caller can
+        /// keep the current window open instead of closing the app.
+        #[rust_name = "restart_app"]
+        fn kitsuneRestartApp() -> bool;
     }
 }
 
@@ -29,4 +36,12 @@ pub fn set_env(name: &str, value: &str) {
 /// Reset the numeric locale after the Qt application object exists.
 pub fn reset_numeric_locale() {
     ffi::reset_numeric_locale();
+}
+
+/// Restart the application: spawn a detached copy, then quit this one.
+///
+/// `false` means the new process could not be started and nothing was quit, so
+/// the caller should stay running.
+pub fn restart_app() -> bool {
+    ffi::restart_app()
 }

@@ -115,6 +115,32 @@ pub struct Settings {
     /// Writes are unaffected either way -- the reader's list is AniList's, and
     /// Kitsu has no token to write with.
     pub metadata_source: String,
+    /// Whether playback streams from a bounded RAM buffer instead of writing
+    /// pieces to disk.
+    ///
+    /// When on, a play is fetched into an in-memory LRU cache (see
+    /// [`Settings::ram_buffer_mib`]) and NOTHING is written to the disk: no
+    /// pieces, no partial files, no resume data. The cache is shared by every
+    /// simultaneously streaming episode and evicts least-recently-used data
+    /// first, so memory stays at the cap however long the release is.
+    /// Permanent downloads always go to disk, whatever this says.
+    /// Defaults to `true`: streaming without touching the disk is the reason
+    /// the feature exists.
+    pub ram_streaming: bool,
+    /// Size of the RAM streaming buffer in MiB, across all streams combined.
+    ///
+    /// Read through [`Settings::ram_buffer_bytes`], which clamps it to a
+    /// usable range (48..=4096) so a typo or a hand-edited file cannot
+    /// produce a buffer a single piece would not fit in.
+    pub ram_buffer_mib: u32,
+    /// Free space to keep on the download volume before classic (disk)
+    /// streaming is used.
+    ///
+    /// Disk mode needs the episode's bytes plus headroom for the rest of the
+    /// system. When the volume cannot spare this much, playback falls back to
+    /// RAM automatically rather than filling the disk. Read through
+    /// [`Settings::reserve_bytes`]. Defaults to 2 GiB.
+    pub disk_reserve_mib: u32,
 }
 
 impl Default for Settings {
@@ -153,6 +179,15 @@ impl Default for Settings {
             // AniList preferred, with Kitsu as the safety net. That is the
             // behaviour before this setting existed, plus a fallback.
             metadata_source: "anilist".to_string(),
+            // Stream from RAM by default: playback never touches the disk,
+            // which is the whole point of the feature. The prototype proved
+            // the design; the default follows it.
+            ram_streaming: true,
+            // 256 MiB, matching the prototype's default buffer.
+            ram_buffer_mib: 256,
+            // 2 GiB of headroom: enough that a disk stream does not fill the
+            // volume and break everything else on it.
+            disk_reserve_mib: 2048,
         }
     }
 }
@@ -182,6 +217,24 @@ impl Settings {
             "kitsu" => MetadataSource::Kitsu,
             _ => MetadataSource::AniList,
         }
+    }
+
+    /// The RAM streaming buffer size in bytes, clamped.
+    ///
+    /// The clamp is the same one [`crate::torrent::RamBufferConfig::from_mib`]
+    /// applies, so a hand-edited `ram_buffer_mib` cannot produce a pool
+    /// smaller than a couple of pieces or larger than anything a reader
+    /// needs.
+    pub fn ram_buffer_bytes(&self) -> u64 {
+        crate::torrent::RamBufferConfig::from_mib(self.ram_buffer_mib).buffer_bytes
+    }
+
+    /// The free-space reserve in bytes, for the disk-mode space check.
+    ///
+    /// No clamp: a reader who wants 0 gets 0 (disk streaming may fill the
+    /// volume), and a huge value simply makes RAM the choice more often.
+    pub fn reserve_bytes(&self) -> u64 {
+        u64::from(self.disk_reserve_mib) * 1024 * 1024
     }
 }
 
@@ -302,6 +355,25 @@ mod tests {
         assert!(!settings.preferred_resolutions.is_empty());
     }
 
+    /// The reserve is the only disk headroom the space check uses, so its
+    /// default and conversion are pinned: a wrong value would silently make
+    /// disk streaming either impossible or dangerously permissive.
+    #[test]
+    fn the_disk_reserve_defaults_to_two_gib() {
+        let settings = Settings::default();
+        assert_eq!(settings.disk_reserve_mib, 2048);
+        assert_eq!(settings.reserve_bytes(), 2048 * 1024 * 1024);
+    }
+
+    /// A hand-edited zero must mean zero, not a fallback to the default: the
+    /// reader asked for disk streaming to be allowed to fill the volume.
+    #[test]
+    fn a_zero_disk_reserve_means_no_headroom() {
+        let mut settings = Settings::default();
+        settings.disk_reserve_mib = 0;
+        assert_eq!(settings.reserve_bytes(), 0);
+    }
+
     #[test]
     fn settings_round_trip() {
         let (_dir, store) = store();
@@ -326,6 +398,9 @@ mod tests {
             title_language: "romaji".to_string(),
             metadata_source: "kitsu".to_string(),
             fullscreen_timecode: true,
+            ram_streaming: false,
+            ram_buffer_mib: 128,
+            disk_reserve_mib: 512,
         };
 
         store.write(&settings).expect("write");

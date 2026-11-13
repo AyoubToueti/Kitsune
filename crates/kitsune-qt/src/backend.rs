@@ -615,6 +615,30 @@ pub mod qobject {
         #[cxx_name = "setSettings"]
         fn set_settings(self: Pin<&mut Self>, json: QString);
 
+        /// Apply a just-saved streaming-mode change to the running session.
+        ///
+        /// Separate from `setSettings` because the mode is baked into a
+        /// session when it starts: the caller saves first, then asks for the
+        /// restart. Answers with `streamingModeApplied`.
+        #[qinvokable]
+        #[cxx_name = "applyStreamingMode"]
+        fn apply_streaming_mode(self: Pin<&mut Self>);
+
+        /// Relaunch the app so a setting that needs a fresh session takes
+        /// effect.
+        ///
+        /// Synchronous: it spawns the replacement and quits this instance, so
+        /// there is nothing to answer. Emits `restartFailed` when the new
+        /// process could not be started, and the current window stays open.
+        #[qinvokable]
+        #[cxx_name = "restartApp"]
+        fn restart_app(self: Pin<&mut Self>);
+
+        /// The restart could not be started; the app is still running.
+        #[qsignal]
+        #[cxx_name = "restartFailed"]
+        fn restart_failed(self: Pin<&mut Self>, message: QString);
+
         // --- Settings results -------------------------------------------------
 
         #[qsignal]
@@ -850,6 +874,23 @@ pub mod qobject {
         #[cxx_name = "streamUrlFailed"]
         fn stream_url_failed(self: Pin<&mut Self>, message: QString);
 
+        /// The play fell back to RAM because the disk was too full.
+        ///
+        /// Emitted just before `streamUrlReady`, so the watch modal can show a
+        /// one-line note. Its absence means the reader got the mode they
+        /// asked for.
+        #[qsignal]
+        #[cxx_name = "streamingFallback"]
+        fn streaming_fallback(self: Pin<&mut Self>, reason: QString);
+
+        /// Result of applying a streaming-mode change from Settings.
+        ///
+        /// `applied` is true when the session was restarted, false when
+        /// something was playing and the change waits for the next launch.
+        #[qsignal]
+        #[cxx_name = "streamingModeApplied"]
+        fn streaming_mode_applied(self: Pin<&mut Self>, applied: bool, message: QString);
+
         #[qsignal]
         #[cxx_name = "torrentStatsReady"]
         fn torrent_stats_ready(self: Pin<&mut Self>, json: QString);
@@ -979,7 +1020,7 @@ use kitsune_core::indexer::{
 };
 use kitsune_core::list::{ListSync, MediaListStore};
 use kitsune_core::player::state::PlayerState;
-use kitsune_core::player::{LastReleaseStore, WatchPositionStore};
+use kitsune_core::player::{LastReleaseStore, StreamingRestart, WatchPositionStore};
 use kitsune_core::providers::cache::ttl;
 use kitsune_core::providers::{
     AniListProvider, AnimeProvider, CachedProvider, FailoverProvider, KitsuProvider,
@@ -1518,6 +1559,21 @@ fn downloads_json(records: &[DownloadRecord]) -> String {
         })
         .collect();
     views_json(&views)
+}
+
+/// Whether a librqbit error string describes a full disk.
+///
+/// The engine's messages come from the OS, so the exact wording varies
+/// ("No space left on device", "No space left on device (os error 28)",
+/// "there is not enough space on the disk" on Windows). Matching loosely is
+/// deliberate: a false positive only adds a clearer prefix to a real error,
+/// while a miss leaves the reader with a raw OS string.
+fn looks_like_disk_full(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("no space left")
+        || lower.contains("not enough space")
+        || lower.contains("disk full")
+        || lower.contains("enospc")
 }
 
 /// Seconds until ONE file completes, from the whole-torrent rate.
@@ -2557,13 +2613,32 @@ impl qobject::Backend {
             // leave initializing, verifies the selection, then warms the head
             // and tail so the player is not left blocking on a range.
             match player.prepare_stream(id, file).await {
-                Ok(url) => {
+                Ok(prepared) => {
                     tracing::info!(
-                        "backend: prepareStream completed torrent={id} file={file} in {}ms",
-                        started.elapsed().as_millis()
+                        "backend: prepareStream completed torrent={id} file={file} in {}ms \
+                         (streaming torrent={}, fallback={:?})",
+                        started.elapsed().as_millis(),
+                        prepared.torrent_id,
+                        prepared.ram_fallback
                     );
+                    // The play path can RE-ADD the torrent in RAM, which gives
+                    // it a new id; every follow-up (stats, holds, removal) must
+                    // use the one that is actually streaming.
+                    let stream_torrent = prepared.torrent_id as i64;
+                    let url = prepared.url;
+                    let fallback = prepared.ram_fallback;
+                    // ONE signal per closure: the generated methods take
+                    // `Pin<&mut Self>` and consume it, so the note and the URL
+                    // need separate queue calls. Both land on the same event
+                    // loop turn, in order.
+                    if fallback.is_some() {
+                        let note_thread = qt_thread.clone();
+                        let _ = note_thread.queue(|qobject| {
+                            qobject.streaming_fallback(QString::from("lowDiskSpace"));
+                        });
+                    }
                     let _ = qt_thread.queue(move |qobject| {
-                        qobject.stream_url_ready(id as i64, file as i64, QString::from(&url))
+                        qobject.stream_url_ready(stream_torrent, file as i64, QString::from(&url))
                     });
                 }
                 Err(err) => {
@@ -2942,6 +3017,38 @@ impl qobject::Backend {
             // `sizeBytes` is the WHOLE torrent, which on a season pack is not
             // any one episode's size and would make every bar wrong.
             let torrent_files = player.torrent_files(torrent_id);
+
+            // Refuse to start a download that cannot possibly finish. The
+            // metadata is resolved here, so this is the first point where the
+            // real size is known -- and the last before pieces are written.
+            // Without this the transfer stalled and the page showed a frozen
+            // bar until the engine reported an error.
+            let needed: u64 = file_indices
+                .iter()
+                .filter_map(|idx| {
+                    torrent_files
+                        .iter()
+                        .find(|file| file.idx == *idx)
+                        .map(|file| file.length_bytes)
+                })
+                .sum();
+            let reserve = player.disk_reserve_bytes();
+            if needed > 0 && !kitsune_core::torrent::fits_on_disk(&cache_dir, needed, reserve) {
+                let free = kitsune_core::torrent::available_space(&cache_dir)
+                    .map(|bytes| format!("{:.1} GiB", bytes as f64 / 1024.0 / 1024.0 / 1024.0))
+                    .unwrap_or_else(|| "an unknown amount of".to_string());
+                let message = format!(
+                    "Not enough disk space: this download needs {:.1} GiB, and the disk has {free} free.",
+                    needed as f64 / 1024.0 / 1024.0 / 1024.0
+                );
+                let _ = qt_thread.queue(move |qobject| {
+                    qobject.episode_download_failed(QString::from(""), QString::from(&message))
+                });
+                // Nothing was recorded yet, so there is no row to fail: the
+                // torrent is dropped to avoid downloading into a full disk.
+                let _ = player.remove_torrent(torrent_id).await;
+                return;
+            }
             let torrent_file_count = torrent_files.len() as u32;
             let mut created: Vec<DownloadRecord> = Vec::with_capacity(file_indices.len());
 
@@ -3300,6 +3407,26 @@ impl qobject::Backend {
                 }
                 continue;
             };
+
+            // A torrent librqbit has given up on reports it here and NOWHERE
+            // else. Without this the row sat at a frozen bar forever: the
+            // engine knew why, the record never did. Full disk is the common
+            // cause, and it deserves a real message on the page.
+            if progress.state == "error" || progress.error.is_some() {
+                let reason = progress
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "the torrent engine reported an error".to_string());
+                let message = if looks_like_disk_full(&reason) {
+                    format!("Not enough disk space to finish this download: {reason}")
+                } else {
+                    reason
+                };
+                record.status = DownloadStatus::Failed;
+                record.error = Some(message);
+                finished.push(record.clone());
+                continue;
+            }
 
             record.progress_bytes = progress
                 .file_progress
@@ -4666,6 +4793,50 @@ impl qobject::Backend {
         let stored = self.rust().settings.read();
         let out = serde_json::to_string(&stored).unwrap_or_else(|_| "null".to_string());
         self.settings_ready(QString::from(&out));
+    }
+
+    fn restart_app(self: Pin<&mut Self>) {
+        // Spawns a detached copy and calls QCoreApplication::quit(), so this
+        // call normally never returns into a live window.
+        if crate::platcompat::restart_app() {
+            return;
+        }
+        self.restart_failed(QString::from(
+            "Could not restart automatically. Please close and reopen the app.",
+        ));
+    }
+
+    fn apply_streaming_mode(self: Pin<&mut Self>) {
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        runtime.spawn(async move {
+            let result = player.apply_streaming_mode().await;
+            let _ = qt_thread.queue(move |qobject| match result {
+                Ok(outcome) => {
+                    let (applied, message) = match outcome {
+                        StreamingRestart::Applied => (
+                            true,
+                            "Streaming mode applied. The next play uses it.",
+                        ),
+                        StreamingRestart::Busy => (
+                            false,
+                            "Something is playing. The new mode takes effect on the next launch.",
+                        ),
+                        StreamingRestart::NothingToDo => (
+                            true,
+                            "Streaming mode will apply to the next play.",
+                        ),
+                    };
+                    qobject.streaming_mode_applied(applied, QString::from(message));
+                }
+                Err(err) => {
+                    let message = format!("could not apply the streaming mode: {err:#}");
+                    qobject.streaming_mode_applied(false, QString::from(&message));
+                }
+            });
+        });
     }
 
     // --- Local resume state ------------------------------------------------

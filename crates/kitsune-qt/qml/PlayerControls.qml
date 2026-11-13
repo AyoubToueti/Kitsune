@@ -8,11 +8,16 @@ Item {
 
     property var player: null
     property string playingUrl: ""
-    property real bufferedFraction: 0
     property bool fullscreen: false
     property var chapterList: []
     property bool showRemainingTime: false
     property bool timelineOnly: false
+    // Live transfer stats for the playing stream: the camelCase
+    // TorrentProgress JSON the backend emits from `getTorrentStats`
+    // (downloadMbps, peersLive, peersConnecting, peersQueued, state, ...).
+    // Null for local files, which hides the transfer chips -- a local file
+    // has no swarm, and its whole timeline is already on disk.
+    property var torrentStats: null
 
     signal openSettings()
     signal toggleFullscreen()
@@ -86,18 +91,6 @@ Item {
         return ""
     }
 
-    // The spans of the timeline mpv can serve from its cache right now.
-    //
-    // This is the buffered bar's source of truth. An empty list means mpv has
-    // not reported any yet (the first moments of a load), and the caller falls
-    // back to `bufferedFraction`.
-    function seekableSpans() {
-        if (!bar.player || bar.player.seekableRanges === undefined) return []
-        const raw = bar.player.seekableRanges
-        if (!raw || raw.length === undefined) return []
-        return raw
-    }
-
     function pos() { return bar.player !== null ? bar.player.position : 0 }
     function dur() { return bar.player !== null ? bar.player.duration : 0 }
     function isPaused() { return bar.player !== null ? bar.player.paused : true }
@@ -115,6 +108,104 @@ Item {
         if (h > 0) return h + ":" + mm + ":" + ss
         return mm + ":" + ss
     }
+
+    // The mpv cache window, exactly as `seekable-ranges` reports it: the
+    // spans the demuxer can serve right now, clamped into [0, duration] with
+    // gaps of 2.5s or less bridged (the prototype's `coalesceSpans`
+    // coalescing -- hairline gaps would render as flickering dashes).
+    // Deliberately NOT a "cached so far" fill: this is a MOVING window around
+    // the playhead. mpv keeps a ~30s read-ahead and a 16MiB back buffer, so
+    // the back edge slides forward as old data is evicted, the leading edge
+    // grows while the torrent feeds the demuxer, and the whole stripe travels
+    // with playback -- the way mpv's own cache display moves. The backend
+    // only re-emits `seekableRanges` when a range actually changes.
+    function cachedSpans() {
+        if (!bar.player || bar.player.seekableRanges === undefined) return []
+        const raw = bar.player.seekableRanges
+        if (!raw || raw.length === undefined) return []
+        const dur = bar.dur()
+        if (!dur || dur <= 0) return []
+        const list = []
+        for (let i = 0; i < raw.length; i++) {
+            const a = Math.max(0, raw[i].start)
+            const z = Math.min(dur, raw[i].end)
+            if (z > a) list.push([a, z])
+        }
+        list.sort((x, y) => x[0] - y[0])
+        const out = []
+        for (let i = 0; i < list.length; i++) {
+            const last = out.length > 0 ? out[out.length - 1] : null
+            if (last && list[i][0] - last.end <= 2.5) {
+                last.end = Math.max(last.end, list[i][1])
+            } else {
+                out.push({ start: list[i][0], end: list[i][1] })
+            }
+        }
+        return out
+    }
+
+    // Remaining cache ahead of the playhead, in media seconds. This is mpv's
+    // `cache-duration` (the `cacheAhead` property, polled at 200ms; the
+    // backend reads it from `demuxer-cache-state` and falls back to
+    // `demuxer-cache-time` minus the playhead, because that property alone is
+    // the buffered-end TIMESTAMP, not a duration): it GROWS while the torrent
+    // delivers data faster than the decoder consumes it, SHRINKS as the
+    // playhead advances, and jumps back up on a backward seek inside a cached
+    // span. Never a cumulative total -- exactly the "how long can I keep
+    // watching before it stalls" number.
+    function cacheAheadSeconds() {
+        if (!bar.player || bar.player.cacheAhead === undefined) return 0
+        return Math.max(0, bar.player.cacheAhead)
+    }
+
+    // "57s" / "2m 20s", the shape mpv's own OSC and the web player use.
+    function fmtCacheAhead(s) {
+        s = Math.max(0, Math.round(s))
+        if (s < 60) return s + "s"
+        const r = s % 60
+        return Math.floor(s / 60) + "m " + (r < 10 ? "0" + r : "" + r) + "s"
+    }
+
+    // Health tint for the cache dot: how safely playback can continue if the
+    // swarm dropped this instant. Green >= 45s, amber >= 12s, red below.
+    function cacheHealthColor(s) {
+        if (s < 12) return Theme.healthRed
+        if (s < 45) return Theme.healthYellow
+        return Theme.healthGreen
+    }
+
+    // Download rate in MiB/s (the engine's per-torrent rate; the backend
+    // converts already). "\u2014" while nothing is arriving: paused, stalled,
+    // or still handshaking with the swarm.
+    function speedLabel() {
+        if (bar.torrentStats === null) return ""
+        const mbps = bar.torrentStats.downloadMbps || 0
+        if (mbps <= 0) return "\u2014"
+        return mbps.toFixed(1) + " MiB/s"
+    }
+
+    // Peers currently transferring pieces. "\u2026" while the swarm is still
+    // connecting, "0" once the trackers have answered and found nobody.
+    function peersLabel() {
+        if (bar.torrentStats === null) return ""
+        const live = bar.torrentStats.peersLive || 0
+        if (live > 0) return String(live)
+        const warming = (bar.torrentStats.peersConnecting || 0)
+            + (bar.torrentStats.peersQueued || 0)
+        return warming > 0 ? "\u2026" : "0"
+    }
+
+    // Track pieces grow while the pointer works the bar, so the played layer
+    // is easier to judge before committing to a seek.
+    readonly property real trackHeight: (seek.hovering || seek.dragging) ? 7 : 4
+    // The cache stripe color: the prototype's `cacheStripe` token. A near
+    // black line through the track -- the mpv look -- that stays readable on
+    // both the dark glass track and the light one.
+    readonly property color cacheStripe: Qt.rgba(0, 0, 0, 0.82)
+    // The stripe runs thinner than the track it sits in: 3px inside the
+    // grown (7px) hovered track, 2px inside the idle (4px) one, exactly like
+    // the prototype's seek row.
+    readonly property real stripeHeight: trackHeight > 4 ? 3 : 2
 
     function formattedTimeDisplay() {
         const currentPos = bar.pos()
@@ -304,64 +395,52 @@ Item {
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width
-                        height: 4
-                        radius: 2
+                        height: bar.trackHeight
+                        radius: height / 2
                         color: Theme.glassFillHover
-                    }
-
-                    // Buffered Progress: what mpv can actually play right now.
-                    //
-                    // Drawn from the demuxer's own `seekable-ranges`, not from
-                    // the torrent's byte count. Those are different things: a
-                    // torrent can have 40% of its bytes with none of them
-                    // contiguous, and a seek inside a downloaded gap still has
-                    // to wait. mpv knows which spans it can serve instantly, so
-                    // the bar shows exactly those -- the same picture VLC gives
-                    // for a local file. `bufferedFraction` remains the fallback
-                    // for the hover-preview player and any load where mpv has
-                    // not reported ranges yet.
-                    Repeater {
-                        model: bar.seekableSpans()
-
-                        delegate: Rectangle {
-                            required property var modelData
-
-                            visible: bar.dur() > 0
-                            anchors.verticalCenter: parent.verticalCenter
-                            // A Repeater's parent is the Repeater, not the
-                            // track, so the geometry comes from `seek`.
-                            x: bar.dur() > 0
-                                ? (Math.min(modelData.start, bar.dur()) / bar.dur()) * seek.width
-                                : 0
-                            width: bar.dur() > 0
-                                ? Math.max(0, Math.min(modelData.end, bar.dur())
-                                    - Math.min(modelData.start, bar.dur()))
-                                    / bar.dur() * seek.width
-                                : 0
-                            height: 4
-                            radius: 2
-                            color: Theme.glassBorderHover
-                        }
-                    }
-
-                    // Fallback fill, used only while mpv reports no ranges (a
-                    // load in its first moments, or the preview player).
-                    Rectangle {
-                        visible: bar.seekableSpans().length === 0
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: parent.width * Math.min(bar.bufferedFraction, 1)
-                        height: 4
-                        radius: 2
-                        color: Theme.glassBorderHover
                     }
 
                     // Played Progress
                     Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         width: parent.width * seek.fraction
-                        height: 4
-                        radius: 2
-                        color: Theme.accent
+                        height: bar.trackHeight
+                        radius: height / 2
+                        gradient: Gradient {
+                            orientation: Gradient.Horizontal
+                            GradientStop { position: 0.0; color: Theme.accent }
+                            GradientStop { position: 1.0; color: Theme.accentHover }
+                        }
+                    }
+
+                    // Cached ranges -- the black cache bar from the prototype,
+                    // the mpv look: a dark stripe through the track's center
+                    // marking what mpv's demuxer holds right now. It is a
+                    // MOVING window around the playhead, not a "cached so
+                    // far" fill: the back edge slides forward as mpv evicts
+                    // its 16MiB back buffer, the leading edge grows while the
+                    // torrent feeds the ~30s read-ahead -- the whole stripe
+                    // travels with playback. It rides ON TOP of the played
+                    // layer so the moving back edge stays visible over the
+                    // red fill instead of vanishing under it. The Cache chip
+                    // still counts down what is ahead of the playhead.
+                    Repeater {
+                        model: bar.cachedSpans()
+
+                        delegate: Rectangle {
+                            required property var modelData
+
+                            visible: bar.dur() > 0 && modelData.end > modelData.start
+                            anchors.verticalCenter: parent.verticalCenter
+                            x: (modelData.start / bar.dur()) * seek.width
+                            width: Math.max(2,
+                                ((Math.min(modelData.end, bar.dur())
+                                  - Math.min(modelData.start, bar.dur()))
+                                 / bar.dur()) * seek.width)
+                            height: bar.stripeHeight
+                            radius: height / 2
+                            color: bar.cacheStripe
+                        }
                     }
 
                     // Embedded Chapter Markers
@@ -429,6 +508,116 @@ Item {
                     font.pixelSize: 11
                     font.family: "monospace"
                     font.bold: true
+                }
+
+                // ---- live transfer chips (torrent streaming only) ----------
+                //
+                // They replace the stats bar that used to sit under the video
+                // (removed): the numbers that matter while streaming now live
+                // in the player bar itself, the way mpv's OSC does it.
+                // `torrentStats` is null for local files, which hides all
+                // three -- a local file has no swarm and no cache pressure.
+
+                // Remaining cache ahead of the playhead (mpv's
+                // `cache-duration` via the backend's `cacheAhead` property):
+                // grows while the torrent delivers data faster than playback
+                // consumes it, shrinks as the playhead advances, jumps back up
+                // on a backward seek inside a cached span. The dot colors by
+                // how safely playback can continue: green >= 45s, amber >= 12s,
+                // red below.
+                Rectangle {
+                    visible: bar.torrentStats !== null && bar.dur() > 0
+                    implicitWidth: cacheChipRow.implicitWidth + 14
+                    height: 22
+                    radius: 11
+                    color: Theme.glassFillHover
+                    border.width: 1
+                    border.color: Theme.glassBorder
+
+                    Row {
+                        id: cacheChipRow
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        Rectangle {
+                            width: 6; height: 6; radius: 3
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: bar.cacheHealthColor(bar.cacheAheadSeconds())
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Cache " + bar.fmtCacheAhead(bar.cacheAheadSeconds())
+                            color: Theme.ink
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
+                    }
+                }
+
+                // Download rate. The engine reports one speed per torrent
+                // (MiB/s); for a single-episode stream that is this file's
+                // rate. "—" while nothing is arriving.
+                Rectangle {
+                    visible: bar.torrentStats !== null
+                    implicitWidth: speedChipRow.implicitWidth + 14
+                    height: 22
+                    radius: 11
+                    color: Theme.glassFillHover
+                    border.width: 1
+                    border.color: Theme.glassBorder
+
+                    Row {
+                        id: speedChipRow
+                        anchors.centerIn: parent
+                        spacing: 5
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "\u2193"
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            font.bold: true
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: bar.speedLabel()
+                            color: Theme.ink
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
+                    }
+                }
+
+                // Peers currently transferring pieces. "…" while the swarm is
+                // still handshaking, "0" once the trackers found nobody.
+                Rectangle {
+                    visible: bar.torrentStats !== null
+                    implicitWidth: peersChipRow.implicitWidth + 14
+                    height: 22
+                    radius: 11
+                    color: Theme.glassFillHover
+                    border.width: 1
+                    border.color: Theme.glassBorder
+
+                    Row {
+                        id: peersChipRow
+                        anchors.centerIn: parent
+                        spacing: 5
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: bar.peersLabel()
+                            color: Theme.ink
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "peers"
+                            color: Theme.inkMuted
+                            font.pixelSize: 10
+                        }
+                    }
                 }
             }
 
