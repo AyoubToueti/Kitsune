@@ -217,6 +217,13 @@ pub mod qobject {
         #[cxx_name = "getStreamUrl"]
         fn get_stream_url(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64);
 
+        /// Whether the torrent currently streams from the RAM buffer. The
+        /// scrub-preview player checks this before loading a stream: every
+        /// preview seek downloads a 32 MiB window into the shared buffer.
+        #[qinvokable]
+        #[cxx_name = "isRamStreaming"]
+        fn is_ram_streaming(self: Pin<&mut Self>, torrent_id: i64) -> bool;
+
         /// Select `file_idx`, wait until the selection is in force, warm both
         /// ends of the file, and return the URL to play.
         ///
@@ -2568,6 +2575,13 @@ impl qobject::Backend {
                 tracing::warn!("set_only_files for torrent {id} failed: {err:#}");
             }
         });
+    }
+
+    fn is_ram_streaming(self: Pin<&mut Self>, torrent_id: i64) -> bool {
+        if torrent_id < 0 {
+            return false;
+        }
+        self.rust().player.is_ram_streaming(torrent_id as usize)
     }
 
     fn get_stream_url(self: Pin<&mut Self>, torrent_id: i64, file_idx: i64) {

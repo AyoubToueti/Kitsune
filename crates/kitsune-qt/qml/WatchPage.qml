@@ -400,7 +400,9 @@ Item {
                 anchors.margins: 14
                 z: 25
                 player: player
+                backend: page.backend
                 playingUrl: page.playingUrl
+                torrentId: page.torrentId
                 fullscreen: false
                 // Same live chips (cache / speed / peers) as the watch modal.
                 torrentStats: page.progress

@@ -700,6 +700,17 @@ impl PlayerState {
         self.session_snapshot()?.engine.ram_stats()
     }
 
+    /// Whether torrent `id` is currently backed by the RAM streaming pool.
+    ///
+    /// The scrub-preview player must not touch RAM streams: every preview
+    /// seek makes the engine download a whole 32 MiB window at the hovered
+    /// position, stealing bandwidth from the real playback and churning the
+    /// buffer with data nobody watches. Disk downloads can afford it.
+    pub fn is_ram_streaming(&self, id: usize) -> bool {
+        self.session_snapshot()
+            .is_some_and(|s| s.engine.is_ram_backed(id))
+    }
+
     /// The bandwidth caps from settings, converted to bytes per second.
     ///
     /// KiB/s in the settings file, bytes/s in librqbit. A zero, absent, or

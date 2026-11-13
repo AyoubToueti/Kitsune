@@ -62,6 +62,10 @@ pub struct TorrentProgress {
     pub peers_queued: u32,
     /// Peers known but not yet connected.
     pub peers_seen: u32,
+    /// The shared RAM streaming buffer's stats, when this torrent streams
+    /// from RAM. `None` for disk downloads. The frontend uses this for a
+    /// "buffer 84 MiB / 256 MiB" readout and to surface ghost re-downloads.
+    pub ram_buffer: Option<RamPoolStats>,
 }
 
 /// Map librqbit's `TorrentStats` onto the frontend-facing [`TorrentProgress`].
@@ -123,6 +127,7 @@ pub fn summarize(stats: &librqbit::TorrentStats) -> TorrentProgress {
         peers_connecting,
         peers_queued,
         peers_seen,
+        ram_buffer: None,
     }
 }
 
@@ -607,7 +612,15 @@ impl TorrentEngine {
     /// removed torrent is not a failure to report.
     pub fn progress(&self, id: usize) -> Option<TorrentProgress> {
         let handle = self.session.get(id.into())?;
-        Some(summarize(&handle.stats()))
+        let ram_buffer = if self.is_ram_backed(id) {
+            self.ram.as_ref().map(|pool| pool.stats())
+        } else {
+            None
+        };
+        Some(TorrentProgress {
+            ram_buffer,
+            ..summarize(&handle.stats())
+        })
     }
 
     /// The underlying session, for building the HTTP `Api` facade.

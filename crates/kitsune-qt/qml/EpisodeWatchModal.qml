@@ -2394,7 +2394,9 @@ Popup {
                             }
 
                             player: playerLoader.item
+                            backend: modal.backend
                             playingUrl: modal.playingUrl
+                            torrentId: modal.localPlayback ? -1 : modal.torrentId
                             // The live transfer chips (cache / speed / peers)
                             // read this. Null for local files: a downloaded
                             // file has no swarm, so those chips would be

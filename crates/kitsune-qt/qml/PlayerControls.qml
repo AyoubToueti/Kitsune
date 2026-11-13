@@ -7,7 +7,13 @@ Item {
     id: bar
 
     property var player: null
+    property var backend: null
     property string playingUrl: ""
+    // The streaming torrent's id (negative for local files). RAM streams
+    // refuse the scrub preview: every preview seek downloads a 32 MiB window
+    // of the shared RAM buffer at the hovered position, stealing bandwidth
+    // from real playback and churning the buffer with data nobody watches.
+    property int torrentId: -1
     property bool fullscreen: false
     property var chapterList: []
     property bool showRemainingTime: false
@@ -174,6 +180,11 @@ Item {
         return Theme.healthGreen
     }
 
+    // Bytes as whole MiB, for the RAM buffer chip.
+    function fmtMib(bytes) {
+        return String(Math.round((bytes || 0) / (1024 * 1024)))
+    }
+
     // Download rate in MiB/s (the engine's per-torrent rate; the backend
     // converts already). "\u2014" while nothing is arriving: paused, stalled,
     // or still handshaking with the swarm.
@@ -313,6 +324,12 @@ Item {
                                     visible: (seek.hovering || seek.dragging) && bar.dur() > 0
 
                                     function setupPreview() {
+                                        // RAM streams never feed the preview:
+                                        // the frame candy is not worth 32 MiB
+                                        // of buffer churn per hover position.
+                                        if (bar.backend && bar.torrentId >= 0
+                                                && bar.backend.isRamStreaming(bar.torrentId))
+                                            return
                                         setProperty("pause", true)
                                         setProperty("mute", true)
                                         setProperty("aid", "no")
@@ -328,6 +345,9 @@ Item {
                                 Connections {
                                     target: bar
                                     function onPlayingUrlChanged() {
+                                        if (bar.backend && bar.torrentId >= 0
+                                                && bar.backend.isRamStreaming(bar.torrentId))
+                                            return
                                         if (previewPlayer && previewPlayer.renderReady
                                                 && bar.playingUrl.length > 0)
                                             previewPlayer.command(["loadfile", bar.playingUrl, "replace"])
@@ -547,6 +567,48 @@ Item {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             text: "Cache " + bar.fmtCacheAhead(bar.cacheAheadSeconds())
+                            color: Theme.ink
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
+                    }
+                }
+
+                // RAM buffer occupancy, RAM streaming only. Shows how much
+                // of the shared buffer the pool holds and, when a piece had
+                // to be re-downloaded after eviction, an amber dot so the
+                // user can tell a hiccup apart from a dying swarm.
+                Rectangle {
+                    visible: bar.torrentStats !== null && bar.torrentStats.ramBuffer !== undefined
+                        && bar.torrentStats.ramBuffer !== null
+                    implicitWidth: ramChipRow.implicitWidth + 14
+                    height: 22
+                    radius: 11
+                    color: Theme.glassFillHover
+                    border.width: 1
+                    border.color: Theme.glassBorder
+
+                    Row {
+                        id: ramChipRow
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        Rectangle {
+                            width: 6; height: 6; radius: 3
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: (bar.torrentStats !== null
+                                    && bar.torrentStats.ramBuffer
+                                    && bar.torrentStats.ramBuffer.ghostReads > 0)
+                                   ? Theme.healthYellow
+                                   : Theme.healthGreen
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: {
+                                const rb = bar.torrentStats.ramBuffer
+                                return "Buffer " + bar.fmtMib(rb.storedBytes) + " / "
+                                    + bar.fmtMib(rb.limitBytes) + " MiB"
+                            }
                             color: Theme.ink
                             font.pixelSize: 10
                             font.bold: true
