@@ -32,3 +32,15 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# librqbit is VENDORED: vendor/librqbit holds a patched copy of crates.io's
+# librqbit 9.0.1. The stock crate kills an HTTP stream the moment a read hits
+# a piece that RAM eviction removed but the `have` bitfield still claims is
+# present ("not resident (evicted)") -- with empty `only_files` selection the
+# bitfield is never repaired, so every mpv retry dies on the same ghost piece
+# and the player black-screens. The vendored copy instead re-queues missing
+# pieces and makes readers wait for re-download, plus a watchdog that kicks
+# backoff-stalled peers on resume. Patches live in
+# patches/librqbit-streaming-fixes.patch; see vendor/librqbit/README.md.
+[patch.crates-io]
+librqbit = { path = "vendor/librqbit" }
