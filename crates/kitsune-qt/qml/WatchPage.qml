@@ -406,6 +406,8 @@ Item {
                 fullscreen: false
                 // Same live chips (cache / speed / peers) as the watch modal.
                 torrentStats: page.progress
+                fileIdx: page.chosenIdx
+                files: page.files
                 opacity: (page.stage === "play" && (page.fullUiVisible || page.seekOnlyVisible)) ? 1.0 : 0.0
                 visible: opacity > 0.0
                 timelineOnly: page.peekLatched && !page.fullUiVisible
