@@ -239,7 +239,10 @@ async fn ram_stream_delivers_exact_bytes_without_touching_the_disk() -> Result<(
     // ---- 3. The leecher: the RAM-mode engine under test ----
     let engine = TorrentEngine::start(
         EngineConfig::new(&leech_dir)
-            .with_ram(RamBufferConfig { buffer_bytes: BUFFER_BYTES })
+            .with_ram(RamBufferConfig {
+                buffer_bytes: BUFFER_BYTES,
+                ..RamBufferConfig::default_buffer()
+            })
             .with_initial_peers(vec![seeder_addr])
             .without_dht(),
     )
@@ -391,3 +394,400 @@ async fn ram_stream_delivers_exact_bytes_without_touching_the_disk() -> Result<(
 /// the import honest even though this test asks the OS for a port.
 #[allow(dead_code)]
 const _PORT_SANITY: u16 = DEFAULT_STREAM_PORT;
+
+/// THE regression test for the mid-episode black screen.
+///
+/// A 16 MiB buffer and a zero read-grace window mean the early region a
+/// player already streamed gets evicted while the have-bitfield still claims
+/// it ("ghost piece"). Before the fix, the next Range request into that
+/// region hit `pread` -> "not resident (evicted)", the HTTP body died
+/// mid-transfer and the player black-screened, unrecoverably: the bitfield
+/// never learned the piece was gone and no peer was ever re-asked. Now the
+/// stream must transparently re-download and deliver the exact bytes.
+///
+/// ```text
+/// cargo test --test ram_stream_e2e -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "binds loopback sockets; run explicitly"]
+async fn seek_back_into_evicted_data_recovers_by_re_downloading() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("librqbit=info")),
+        )
+        .with_target(false)
+        .try_init();
+
+    let tmp = tempfile::tempdir()?;
+    let seed_dir = tmp.path().join("seed");
+    let leech_dir = tmp.path().join("leech");
+    std::fs::create_dir_all(&seed_dir)?;
+    std::fs::create_dir_all(&leech_dir)?;
+
+    let source_path = seed_dir.join("episode.bin");
+    let _expected_hash = write_source(&source_path)?;
+
+    let spawner = librqbit::spawn_utils::BlockingSpawner::new(4);
+    let created = librqbit::create_torrent(
+        &source_path,
+        librqbit::CreateTorrentOptions {
+            name: None,
+            trackers: Vec::new(),
+            piece_length: Some(PIECE_LEN),
+        },
+        &spawner,
+    )
+    .await
+    .context("failed to create the test torrent")?;
+    let torrent_bytes = created
+        .as_bytes()
+        .context("failed to serialise the test torrent")?;
+    let torrent_path = tmp.path().join("test.torrent");
+    std::fs::write(&torrent_path, &torrent_bytes)?;
+
+    // The seeder, identical to the main test: its own session, DHT off.
+    let seed_session = librqbit::Session::new_with_opts(
+        seed_dir.clone(),
+        librqbit::SessionOptions {
+            dht: None,
+            disable_trackers: true,
+            listen: Some(librqbit::ListenerOptions {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    .context("seeder session failed to start")?;
+    let seeder_addr = seed_session
+        .listen_addr()
+        .context("seeder did not report a listen address")?;
+
+    let response = seed_session
+        .add_torrent(
+            librqbit::AddTorrent::from_bytes(torrent_bytes.clone()),
+            Some(librqbit::AddTorrentOptions {
+                overwrite: true,
+                output_folder: Some(seed_dir.display().to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .context("failed to add the torrent to the seeder")?;
+    let seed_handle = response
+        .into_handle()
+        .context("seeder got no torrent handle")?;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if seed_handle.stats().finished {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("seeder never finished checking its file");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // The leecher: SMALL buffer (16 MiB < the 32 MiB stream window) and a
+    // ZERO read grace, so every read piece becomes evictable the moment a
+    // later write needs room. This is deliberately below the recommended
+    // floor: the point is to force the ghost path, which the fix makes
+    // survivable.
+    const TINY_BUFFER: u64 = 16 * 1024 * 1024;
+    let engine = TorrentEngine::start(
+        EngineConfig::new(&leech_dir)
+            .with_ram(RamBufferConfig {
+                buffer_bytes: TINY_BUFFER,
+                read_grace: std::time::Duration::ZERO,
+                ..RamBufferConfig::default_buffer()
+            })
+            .with_initial_peers(vec![seeder_addr])
+            .without_dht(),
+    )
+    .await
+    .context("leecher engine failed to start")?;
+
+    let id = engine
+        .add_torrent_file(&torrent_path)
+        .await
+        .context("failed to add the torrent in RAM mode")?;
+    wait_for_metadata(&engine, id).await?;
+
+    let bridge = HttpBridge::start(api_for(engine.session()), 0).await?;
+    let url = bridge.url_for(id, 0);
+    let client = reqwest::Client::new();
+
+    // Read a ranged span and FNV it; the closure shape keeps the three
+    // transfers below uniform.
+    let read_range = |from: u64, len: u64| {
+        let url = url.clone();
+        let client = client.clone();
+        async move {
+            let mut response = client
+                .get(&url)
+                .header(reqwest::header::RANGE, format!("bytes={from}-{}", from + len - 1))
+                .send()
+                .await?
+                .error_for_status()?;
+            assert_eq!(response.status(), 206, "ranged request must answer 206");
+            let (hash, total) = fnv_of_response(&mut response).await?;
+            Ok::<_, anyhow::Error>((hash, total))
+        }
+    };
+    let expected_at = |from: u64, len: u64| -> Result<u64> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::io::BufReader::new(std::fs::File::open(&source_path)?);
+        file.seek(SeekFrom::Start(from))?;
+        let mut buf = vec![0u8; len as usize];
+        file.read_exact(&mut buf)?;
+        Ok(fnv1a(&buf, FNV_OFFSET))
+    };
+
+    // Pass 1: sequential playback over the first 40 MiB.
+    let (h1, t1) = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        read_range(0, 40 * 1024 * 1024),
+    )
+    .await
+    .context("first pass timed out")??;
+    assert_eq!(t1, 40 * 1024 * 1024);
+    assert_eq!(h1, expected_at(0, 40 * 1024 * 1024)?, "pass 1 bytes");
+
+    // Pass 2: a later span churns the tiny pool, evicting pass 1's early
+    // region (zero grace makes every read piece stale immediately).
+    let (h2, t2) = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        read_range(48 * 1024 * 1024, 16 * 1024 * 1024),
+    )
+    .await
+    .context("churn pass timed out")??;
+    assert_eq!(t2, 16 * 1024 * 1024);
+    assert_eq!(h2, expected_at(48 * 1024 * 1024, 16 * 1024 * 1024)?, "pass 2 bytes");
+
+    // THE seek back: 8 MiB, deep inside what pass 1 streamed and pass 2
+    // evicted. The old code killed the stream here; the fixed one must
+    // re-download and still deliver exact bytes.
+    const SEEK_FROM: u64 = 8 * 1024 * 1024;
+    const SEEK_LEN: u64 = 2 * 1024 * 1024;
+    let (h3, t3) = tokio::time::timeout(
+        std::time::Duration::from_secs(300),
+        read_range(SEEK_FROM, SEEK_LEN),
+    )
+    .await
+    .context("seek-back transfer timed out (ghost recovery failed?)")??;
+    assert_eq!(t3, SEEK_LEN, "the seek-back must complete, not die mid-body");
+    assert_eq!(h3, expected_at(SEEK_FROM, SEEK_LEN)?, "seek-back bytes");
+
+    // The ghost path must have been exercised: without it this test is not
+    // pinning anything.
+    let pool = engine.ram_pool().expect("RAM mode must expose the pool");
+    let stats = pool.stats();
+    println!(
+        "pool: {}/{} bytes, evictions={}, ghost_reads={}",
+        stats.stored_bytes, stats.limit_bytes, stats.evictions, stats.ghost_reads
+    );
+    assert!(
+        stats.ghost_reads > 0,
+        "the seek-back must have hit evicted pieces (the ghost path) for this test to mean anything"
+    );
+
+    // And nothing was written to disk, even through re-downloads.
+    assert_eq!(count_files(&leech_dir), 0, "RAM streaming must not touch disk");
+
+    engine.remove_torrent(id).await?;
+    bridge.shutdown();
+    engine.stop().await;
+    seed_session.stop().await;
+    Ok(())
+}
+
+/// THE regression test for the slow resume after a long pause.
+///
+/// While nobody reads, the seeder connection has nothing to request: the
+/// peer idles out, dies, and is rescheduled with librqbit's exponential
+/// backoff (10s -> 60s -> 6min -> ...). A player resuming after a pause
+/// opens a fresh range request, whose first read hits a piece nobody has --
+/// before the fix it would then pend until the next backoff-fired reconnect
+/// (potentially minutes), which is exactly the "paused too long, takes
+/// forever to start again" report. Now the blocked read kicks the dead
+/// peers: their backoff is ignored and they re-queue for immediate
+/// reconnect, so the bytes arrive in seconds.
+///
+/// The 45s idle is long enough for at least two die/reconnect cycles, which
+/// grows the backoff past 60s -- comfortably beyond this test's 40s read
+/// deadline if the kick did not exist.
+///
+/// ```text
+/// cargo test --test ram_stream_e2e -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "binds loopback sockets; run explicitly"]
+async fn read_after_long_idle_recovers_without_waiting_out_peer_backoff() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("librqbit=info")),
+        )
+        .with_target(false)
+        .try_init();
+
+    let tmp = tempfile::tempdir()?;
+    let seed_dir = tmp.path().join("seed");
+    let leech_dir = tmp.path().join("leech");
+    std::fs::create_dir_all(&seed_dir)?;
+    std::fs::create_dir_all(&leech_dir)?;
+
+    let source_path = seed_dir.join("episode.bin");
+    let _expected_hash = write_source(&source_path)?;
+
+    let spawner = librqbit::spawn_utils::BlockingSpawner::new(4);
+    let created = librqbit::create_torrent(
+        &source_path,
+        librqbit::CreateTorrentOptions {
+            name: None,
+            trackers: Vec::new(),
+            piece_length: Some(PIECE_LEN),
+        },
+        &spawner,
+    )
+    .await
+    .context("failed to create the test torrent")?;
+    let torrent_bytes = created
+        .as_bytes()
+        .context("failed to serialise the test torrent")?;
+    let torrent_path = tmp.path().join("test.torrent");
+    std::fs::write(&torrent_path, &torrent_bytes)?;
+
+    let seed_session = librqbit::Session::new_with_opts(
+        seed_dir.clone(),
+        librqbit::SessionOptions {
+            dht: None,
+            disable_trackers: true,
+            listen: Some(librqbit::ListenerOptions {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    .context("seeder session failed to start")?;
+    let seeder_addr = seed_session
+        .listen_addr()
+        .context("seeder did not report a listen address")?;
+
+    let response = seed_session
+        .add_torrent(
+            librqbit::AddTorrent::from_bytes(torrent_bytes.clone()),
+            Some(librqbit::AddTorrentOptions {
+                overwrite: true,
+                output_folder: Some(seed_dir.display().to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .context("failed to add the torrent to the seeder")?;
+    let seed_handle = response
+        .into_handle()
+        .context("seeder got no torrent handle")?;
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if seed_handle.stats().finished {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("seeder never finished checking its file");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+
+    // A generous buffer with the default read grace: no eviction, so the
+    // ONLY recovery mechanism under test is the dead-peer kick. The idle
+    // must not be able to succeed through the ghost path or a cache hit.
+    let engine = TorrentEngine::start(
+        EngineConfig::new(&leech_dir)
+            .with_ram(RamBufferConfig {
+                buffer_bytes: BUFFER_BYTES,
+                ..RamBufferConfig::default_buffer()
+            })
+            .with_initial_peers(vec![seeder_addr])
+            .without_dht(),
+    )
+    .await
+    .context("leecher engine failed to start")?;
+
+    let id = engine
+        .add_torrent_file(&torrent_path)
+        .await
+        .context("failed to add the torrent in RAM mode")?;
+    wait_for_metadata(&engine, id).await?;
+
+    let bridge = HttpBridge::start(api_for(engine.session()), 0).await?;
+    let url = bridge.url_for(id, 0);
+    let client = reqwest::Client::new();
+
+    let read_range = |from: u64, len: u64| {
+        let url = url.clone();
+        let client = client.clone();
+        async move {
+            let mut response = client
+                .get(&url)
+                .header("Range", format!("bytes={from}-{}", from + len - 1))
+                .send()
+                .await
+                .context("range request failed")?;
+            anyhow::ensure!(response.status() == 206, "expected 206, got {}", response.status());
+            let (hash, total) = fnv_of_response(&mut response).await?;
+            anyhow::ensure!(total == len, "expected {len} bytes, got {total}");
+            Ok(hash)
+        }
+    };
+
+    // 1. Fill the first window: 32 MiB. The seeder connects, downloads, and
+    //    once the window is complete has nothing left to request.
+    let expected = |from: u64, len: u64| -> Result<u64> {
+        let data = std::fs::read(&source_path)?;
+        let start = from as usize;
+        Ok(fnv1a(&data[start..start + len as usize], FNV_OFFSET))
+    };
+
+    let first = read_range(0, 32 * 1024 * 1024).await.context("first read")?;
+    assert_eq!(first, expected(0, 32 * 1024 * 1024)?, "first read corrupted");
+
+    // 2. The long pause: no reads at all. The seeder connection idles out,
+    //    dies, reconnects on the 10s backoff, idles out again -- and the
+    //    next reconnect is scheduled 60s+ out.
+    tokio::time::sleep(std::time::Duration::from_secs(45)).await;
+
+    // 3. Resume: a fresh range request into never-downloaded territory.
+    //    The first read pends on a missing piece, which must kick the dead
+    //    peers instead of waiting out their backoff.
+    const RESUME_FROM: u64 = 32 * 1024 * 1024;
+    const RESUME_LEN: u64 = 8 * 1024 * 1024;
+    let started = std::time::Instant::now();
+    let second = tokio::time::timeout(std::time::Duration::from_secs(40), read_range(RESUME_FROM, RESUME_LEN))
+        .await
+        .context("resumed read took longer than 40s: the dead-peer kick did not fire")?
+        .context("resumed read failed")?;
+    println!(
+        "resumed read recovered in {:.1}s",
+        started.elapsed().as_secs_f32()
+    );
+    assert_eq!(
+        second,
+        expected(RESUME_FROM, RESUME_LEN)?,
+        "resumed read corrupted"
+    );
+
+    assert_eq!(count_files(&leech_dir), 0, "RAM streaming must not touch disk");
+
+    engine.remove_torrent(id).await?;
+    bridge.shutdown();
+    engine.stop().await;
+    seed_session.stop().await;
+    Ok(())
+}
