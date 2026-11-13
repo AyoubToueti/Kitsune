@@ -20,17 +20,28 @@
 //!
 //! # Eviction and re-download
 //!
-//! Pieces are LRU over their last use (a write, a read, or piece completion).
-//! With files deselected, librqbit downloads only the window around each open
-//! reader (its streaming queue), so the freshly-written look-ahead is always
-//! newer than the played-through region behind the reader -- LRU therefore
-//! evicts exactly what the reader has already consumed. If the reader seeks
-//! back to an evicted piece, librqbit's bitfield still claims it ("have"),
-//! the read fails with a distinctive error, and the failure is counted
-//! (`ghost_reads`); librqbit exposes no public API to clear that bit, so the
-//! recovery is re-adding the torrent, which re-checks what RAM actually
-//! holds and re-downloads the rest. The keep-ahead window makes this rare:
-//! it only happens on seeks further back than everything read recently.
+//! Eviction is tiered rather than plain LRU, because a single LRU order
+//! cannot protect both ends of the reader's working set at once: mpv keeps a
+//! ~64 MB demuxer cache and re-reads pieces up to a minute behind the read
+//! head, while librqbit's stream window keeps writing 32 MiB of fresh
+//! look-ahead. The tiers, in eviction order:
+//!
+//! 1. never-read pieces that have sat unread past [`UNREAD_STALE`] --
+//!    abandoned preload data (e.g. a hidden player that jumped to a distant
+//!    position and stopped reading);
+//! 2. read pieces whose last read is older than [`READ_GRACE`] -- the
+//!    played-through region, oldest read first;
+//! 3. never-read pieces that are still fresh -- the look-ahead window;
+//! 4. read pieces still inside the grace window, as an absolute last resort
+//!    to keep the cap invariant.
+//!
+//! Tiers 3-4 preserve forward progress; tiers 1-2 sacrifice data the reader
+//! has visibly moved away from. If a reader nevertheless touches an evicted
+//! piece, the read fails with a "not resident" error and the read is counted
+//! (`ghost_reads`); the vendored librqbit then clears the stale have-bit,
+//! re-queues the piece and waits for the re-download instead of killing the
+//! stream, so a seek back into dropped data costs a buffer rather than the
+//! whole episode.
 //!
 //! # Disk hygiene
 //!
@@ -42,6 +53,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use librqbit::storage::{BoxStorageFactory, StorageFactory, StorageFactoryExt, TorrentStorage};
@@ -64,13 +76,27 @@ pub const DEFAULT_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
 pub struct RamBufferConfig {
     /// Hard cap on bytes the pool may hold, across all RAM torrents.
     pub buffer_bytes: u64,
+    /// How long a never-read piece may sit before eviction treats it as
+    /// abandoned preload data. Defaults to [`UNREAD_STALE`].
+    pub unread_stale: Duration,
+    /// How long a read piece stays eviction-protected after its last read.
+    /// Defaults to [`READ_GRACE`]; zero disables the protection.
+    pub read_grace: Duration,
+}
+
+/// The tier windows every config gets unless overridden.
+const fn default_tuning() -> (Duration, Duration) {
+    (UNREAD_STALE, READ_GRACE)
 }
 
 impl RamBufferConfig {
     /// The prototype default: 256 MiB.
     pub fn default_buffer() -> Self {
+        let (unread_stale, read_grace) = default_tuning();
         Self {
             buffer_bytes: DEFAULT_BUFFER_BYTES,
+            unread_stale,
+            read_grace,
         }
     }
 
@@ -84,8 +110,11 @@ impl RamBufferConfig {
     /// value).
     pub fn from_mib(mib: u32) -> Self {
         let mib = mib.clamp(48, 4096);
+        let (unread_stale, read_grace) = default_tuning();
         Self {
             buffer_bytes: u64::from(mib) * 1024 * 1024,
+            unread_stale,
+            read_grace,
         }
     }
 }
@@ -105,11 +134,33 @@ struct TorrentEntry {
 #[derive(Clone)]
 struct PieceEntry {
     data: Vec<u8>,
-    /// Logical clock stamp of the last write/read/completion. LRU order is
-    /// a plain minimum-scan over this; pools hold a few hundred pieces at
-    /// most (256 MiB of 1-4 MiB pieces), so the O(n) scan is noise.
+    /// Logical clock stamp of the last write/read/completion. Orders pieces
+    /// within an eviction tier; pools hold a few hundred pieces at most
+    /// (256 MiB of 1-4 MiB pieces), so the O(n) scan is noise.
     last_use: u64,
+    /// Wall clock of the most recent write. Pieces that were written but
+    /// never read are look-ahead or idle-reader preloads; how long they have
+    /// sat unread decides how expendable they are (see `make_room`).
+    written_at: Instant,
+    /// Wall clock of the most recent read, if the piece was ever read.
+    read_at: Option<Instant>,
 }
+
+/// How long a never-read piece may sit before it is treated as abandoned
+/// preload data and evicted ahead of everything else. A stream look-ahead
+/// (32 MiB window, consumed at reading speed) is read well inside this; a
+/// parked hidden player preloading a distant region is not.
+const UNREAD_STALE: Duration = Duration::from_secs(60);
+
+/// How long a read piece stays eviction-protected after its last read.
+///
+/// mpv keeps a demuxer cache (~64 MB in practice) and re-reads pieces it has
+/// already streamed when its own cache no longer covers them -- up to about a
+/// minute behind the read head. Evicting anything read more recently than
+/// this is what produced the mid-episode black screen (ghost reads on the
+/// piece the reader was still consuming); this grace keeps such pieces
+/// resident, sized so that mpv's re-reads hit live data.
+const READ_GRACE: Duration = Duration::from_secs(75);
 
 /// A snapshot of pool counters, for progress UI and tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
@@ -139,6 +190,11 @@ pub struct RamPool {
     inner: Mutex<PoolInner>,
     /// Monotonic clock for LRU stamps, outside the lock (cheap atomic).
     clock: AtomicU64,
+    /// Eviction tiers, mirroring [`UNREAD_STALE`] and [`READ_GRACE`], in
+    /// milliseconds. Atomics rather than plain fields because the pool lives
+    /// behind an `Arc`; tests shrink the windows instead of sleeping minutes.
+    unread_stale_ms: AtomicU64,
+    read_grace_ms: AtomicU64,
 }
 
 struct PoolInner {
@@ -168,6 +224,8 @@ impl RamPool {
                 by_info_hash: HashMap::new(),
             }),
             clock: AtomicU64::new(1),
+            unread_stale_ms: AtomicU64::new(config.unread_stale.as_millis() as u64),
+            read_grace_ms: AtomicU64::new(config.read_grace.as_millis() as u64),
         }
     }
 
@@ -366,6 +424,7 @@ impl TorrentStorage for RamStorage {
             }
             buf[at..at + len].copy_from_slice(&entry.data[within_usz..end]);
             entry.last_use = self.pool.tick();
+            entry.read_at = Some(Instant::now());
         }
         Ok(())
     }
@@ -389,6 +448,8 @@ impl TorrentStorage for RamStorage {
                     PieceEntry {
                         data: vec![0u8; full_len],
                         last_use: 0,
+                        written_at: Instant::now(),
+                        read_at: None,
                     },
                 );
                 g.stored_bytes += full_len as u64;
@@ -412,6 +473,7 @@ impl TorrentStorage for RamStorage {
             }
             entry.data[within_usz..end].copy_from_slice(&buf[at..at + len]);
             entry.last_use = self.pool.tick();
+            entry.written_at = Instant::now();
         }
         Ok(())
     }
@@ -450,22 +512,31 @@ impl TorrentStorage for RamStorage {
 
     fn on_piece_completed(&self, piece: ValidPieceIndex) -> Result<()> {
         // Touch so freshly verified pieces are the last eviction candidates.
+        // For a never-read piece this also restarts its unread-stale clock:
+        // the look-ahead age that matters starts when the piece is complete,
+        // not when its first chunk landed.
         let mut g = self.pool.lock();
         if let Some(entry) = g.pieces.get_mut(&(self.torrent_key, piece.get())) {
             entry.last_use = self.pool.tick();
+            if entry.read_at.is_none() {
+                entry.written_at = Instant::now();
+            }
         }
         Ok(())
     }
 }
 
 impl RamStorage {
-    /// Evict LRU pieces until `incoming` bytes fit under the cap.
+    /// Evict pieces until `incoming` bytes fit under the cap.
     ///
     /// `avoid` is the piece being written; it is never evicted by its own
-    /// allocation. If everything resident is newer than the incoming write
-    /// (a flooded swarm outrunning the reader), the oldest piece regardless
-    /// -- the cap is a hard invariant, and the alternative (failing the
-    /// write) would stall the download loop.
+    /// allocation. Victims are chosen by tier (see the module docs): abandoned
+    /// preload first, then the played-through region, then the fresh
+    /// look-ahead, then grace-protected reads as a last resort. The tiers are
+    /// wall-clock based, intra-tier order is the logical LRU stamp. If
+    /// everything resident is protected (a flooded swarm outrunning the
+    /// reader), the oldest piece regardless -- the cap is a hard invariant,
+    /// and the alternative (failing the write) would stall the download loop.
     fn make_room(&self, g: &mut MutexGuard<'_, PoolInner>, incoming: usize, avoid: u32) {
         let incoming = incoming as u64;
         let limit = self.pool.limit_bytes;
@@ -475,14 +546,47 @@ impl RamStorage {
             return;
         }
 
+        let unread_stale = Duration::from_millis(self.pool.unread_stale_ms.load(Ordering::Relaxed));
+        let read_grace = Duration::from_millis(self.pool.read_grace_ms.load(Ordering::Relaxed));
         while g.stored_bytes + incoming > limit {
-            let Some(victim) = g
+            let now = Instant::now();
+            let candidates = g
                 .pieces
                 .iter()
-                .filter(|((_, piece), _)| *piece != avoid)
-                .min_by_key(|(_, entry)| entry.last_use)
+                .filter(|((_, piece), _)| *piece != avoid);
+
+            // Tier 1: never read, and has sat unread long enough to be
+            // abandoned preload rather than a live look-ahead.
+            let victim = candidates
+                .clone()
+                .filter(|(_, e)| {
+                    e.read_at.is_none() && now.duration_since(e.written_at) > unread_stale
+                })
+                .min_by_key(|(_, e)| e.last_use)
                 .map(|(k, _)| *k)
-            else {
+                // Tier 2: read pieces the reader has visibly moved past --
+                // nothing has read them within the grace window.
+                .or_else(|| {
+                    candidates
+                        .clone()
+                        .filter(|(_, e)| {
+                            e.read_at.is_some_and(|r| now.duration_since(r) > read_grace)
+                        })
+                        .min_by_key(|(_, e)| e.last_use)
+                        .map(|(k, _)| *k)
+                })
+                // Tier 3: fresh look-ahead, oldest write first.
+                .or_else(|| {
+                    candidates
+                        .clone()
+                        .filter(|(_, e)| e.read_at.is_none())
+                        .min_by_key(|(_, e)| e.last_use)
+                        .map(|(k, _)| *k)
+                })
+                // Tier 4: grace-protected reads -- absolute last resort.
+                .or_else(|| candidates.min_by_key(|(_, e)| e.last_use).map(|(k, _)| *k));
+
+            let Some(victim) = victim else {
                 break;
             };
 
@@ -592,7 +696,10 @@ mod tests {
             acc += len;
         }
 
-        let pool = Arc::new(RamPool::new(RamBufferConfig { buffer_bytes }));
+        let pool = Arc::new(RamPool::new(RamBufferConfig {
+            buffer_bytes,
+            ..RamBufferConfig::default_buffer()
+        }));
         let key = NEXT_TORRENT_KEY.fetch_add(1, Ordering::Relaxed);
         let storage = RamStorage {
             pool: pool.clone(),
@@ -794,6 +901,106 @@ mod tests {
         assert!(storage.pread_exact(0, 0, &mut probe).is_err(), "oldest write evicted");
         storage.pread_exact(0, PIECE as u64, &mut probe).unwrap();
         storage.pread_exact(0, 2 * PIECE as u64, &mut probe).unwrap();
+    }
+
+    #[test]
+    fn stale_unread_preload_evicts_before_fresh_lookahead() {
+        // The mid-episode black screen scenario: a hidden player parked at a
+        // distant position preloads region A (written once, never read),
+        // while the active reader's stream window (region B, also unread) is
+        // being downloaded. Once region A has sat unread past the stale
+        // window it must evict first, even though region B was written
+        // EARLIER (older LRU stamp).
+        let cap = 2 * PIECE as u64;
+        let (pool, storage) = make_storage(&[1 << 20], PIECE, cap);
+        pool.unread_stale_ms.store(50, Ordering::Relaxed);
+
+        // Region A: the hidden player's preload (written first).
+        storage.pwrite_all(0, 0, &fill(PIECE as usize, 1)).unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        // Region B: the active reader's fresh look-ahead.
+        storage
+            .pwrite_all(0, PIECE as u64, &fill(PIECE as usize, 2))
+            .unwrap();
+
+        // Overflow: a third write must evict the abandoned preload (piece 0),
+        // keeping the fresh look-ahead (piece 1) the reader is about to
+        // consume.
+        storage
+            .pwrite_all(0, 2 * PIECE as u64, &fill(PIECE as usize, 3))
+            .unwrap();
+
+        let mut probe = [0u8; 4];
+        assert!(storage.pread_exact(0, 0, &mut probe).is_err(), "stale preload evicted");
+        storage.pread_exact(0, PIECE as u64, &mut probe).unwrap();
+        storage.pread_exact(0, 2 * PIECE as u64, &mut probe).unwrap();
+    }
+
+    #[test]
+    fn recently_read_piece_survives_unread_pressure() {
+        // The actual crash: mpv re-read a piece it had consumed ~60s earlier,
+        // but the pool evicted it for newer unread writes. A read piece
+        // within the grace window must be the LAST resort, evicted only after
+        // every unread piece is gone.
+        let cap = 2 * PIECE as u64;
+        let (pool, storage) = make_storage(&[1 << 20], PIECE, cap);
+        pool.read_grace_ms.store(75_000, Ordering::Relaxed);
+
+        storage.pwrite_all(0, 0, &fill(PIECE as usize, 1)).unwrap();
+        let mut probe = [0u8; 4];
+        storage.pread_exact(0, 0, &mut probe).unwrap();
+
+        // Two unread writes overflow the 2-piece cap. Both are unread and
+        // fresh: tier 3 must eat them (oldest first) BEFORE the grace-
+        // protected read piece.
+        storage
+            .pwrite_all(0, PIECE as u64, &fill(PIECE as usize, 2))
+            .unwrap();
+        storage
+            .pwrite_all(0, 2 * PIECE as u64, &fill(PIECE as usize, 3))
+            .unwrap();
+        storage
+            .pwrite_all(0, 3 * PIECE as u64, &fill(PIECE as usize, 4))
+            .unwrap();
+
+        // The read piece is still resident: mpv's re-read hits live data.
+        storage.pread_exact(0, 0, &mut probe).unwrap();
+    }
+
+    #[test]
+    fn stale_reads_evict_after_stale_preload_but_before_fresh_lookahead() {
+        // Once a read piece ages past the grace window it becomes tier 2:
+        // evicted after abandoned preload (tier 1) but before the fresh
+        // look-ahead (tier 3), because losing the look-ahead means a
+        // guaranteed re-download while the stale read is only speculative.
+        let cap = 3 * PIECE as u64;
+        let (pool, storage) = make_storage(&[1 << 20], PIECE, cap);
+        pool.read_grace_ms.store(50, Ordering::Relaxed);
+        pool.unread_stale_ms.store(3_600_000, Ordering::Relaxed); // keep tier 1 empty
+
+        // Piece 0: read, then left to age past the grace window.
+        storage.pwrite_all(0, 0, &fill(PIECE as usize, 1)).unwrap();
+        let mut probe = [0u8; 4];
+        storage.pread_exact(0, 0, &mut probe).unwrap();
+        std::thread::sleep(Duration::from_millis(80));
+        // Pieces 1-2: fresh look-ahead, written after the read.
+        storage
+            .pwrite_all(0, PIECE as u64, &fill(PIECE as usize, 2))
+            .unwrap();
+        storage
+            .pwrite_all(0, 2 * PIECE as u64, &fill(PIECE as usize, 3))
+            .unwrap();
+
+        // Overflow with a fresh unread write: tier 1 is empty, tier 2 (the
+        // stale read, piece 0) must go before tier 3 (fresh look-ahead).
+        storage
+            .pwrite_all(0, 3 * PIECE as u64, &fill(PIECE as usize, 4))
+            .unwrap();
+
+        assert!(storage.pread_exact(0, 0, &mut probe).is_err(), "stale read evicted");
+        storage.pread_exact(0, PIECE as u64, &mut probe).unwrap();
+        storage.pread_exact(0, 2 * PIECE as u64, &mut probe).unwrap();
+        storage.pread_exact(0, 3 * PIECE as u64, &mut probe).unwrap();
     }
 
     #[test]
