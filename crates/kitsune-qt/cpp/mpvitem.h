@@ -252,6 +252,11 @@ signals:
   /// The demuxer's seekable ranges changed, so the buffered bar should redraw.
   void seekableRangesChanged();
   void chapterListChanged();
+  /// A file finished or died. `reason` is one of mpv's END_FILE reasons
+  /// ("eof", "stop", "quit", "error", "redirect", "unknown"); `error` is
+  /// mpv's error text, empty unless the reason is "error". QML uses this to
+  /// reload a stream that died mid-playback instead of showing a black frame.
+  void endFile(QString reason, QString error);
 
 private slots:
   void doUpdate();

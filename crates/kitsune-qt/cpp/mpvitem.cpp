@@ -808,6 +808,9 @@ MpvObject::drainMpvEvents()
           qDebug("[mpv] END_FILE reason=%s (after %lldms)", reason,
                  static_cast<long long>(msSinceLoad()));
         }
+        // QML decides what a file end means (next episode on eof, reload on
+        // error); the event itself is transport.
+        emit endFile(QString::fromUtf8(reason), QString::fromUtf8(error));
         break;
       }
 

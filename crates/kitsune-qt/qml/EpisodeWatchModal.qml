@@ -118,10 +118,38 @@ Popup {
         }
     }
 
+    Timer {
+        id: reloadApply
+        interval: 400
+        repeat: true
+        running: modal.reloadSeekTarget >= 0
+        onTriggered: {
+            const p = playerLoader.item
+            if (!p) return
+            if ((p.duration || 0) > 0) {
+                p.command(["seek", String(modal.reloadSeekTarget), "absolute"])
+                modal.reloadSeekTarget = -1
+                reloadApply.stop()
+            }
+        }
+    }
+
     property int torrentId: -1
     // Local playback reuses the torrent file list and player stage, but every
     // row is a completed download and no torrent/peer UI is shown.
     property bool localPlayback: false
+
+    // --- dead-stream auto-recovery ----------------------------------------
+    //
+    // A streaming file can die mid-playback (the HTTP body errors out). When
+    // that happened the modal used to sit on a black frame forever. mpv now
+    // reports END_FILE with reason "error"; the stream is reloaded at the
+    // last playhead instead. Attempts are capped so a genuinely broken URL
+    // cannot spin into an endless reload loop.
+    property real lastPlayhead: 0
+    property int reloadAttempts: 0
+    property real reloadSeekTarget: -1
+    readonly property int reloadAttemptsMax: 3
     property var files: []
     property int chosenIdx: -1
     property string playingUrl: ""
@@ -766,6 +794,7 @@ Popup {
     function loadStream() {
         const p = playerLoader.item
         if (p === null || modal.playingUrl.length === 0) return
+        modal.reloadAttempts = 0
         p.command(["loadfile", modal.playingUrl, "replace"])
     }
 
@@ -2095,6 +2124,34 @@ Popup {
                             onLoaded: {
                                 modal.loadStream()
                                 modal.applySubMargin()
+                            }
+                        }
+
+                        // A stream that dies mid-playback (HTTP body error)
+                        // used to leave a silent black frame. Reload it at the
+                        // last playhead; a fresh episode resets the counter.
+                        Connections {
+                            target: playerLoader.item
+                            function onStateChanged() {
+                                const p = playerLoader.item
+                                if (p && (p.position || 0) > 0)
+                                    modal.lastPlayhead = p.position
+                            }
+                            function onEndFile(reason, error) {
+                                if (reason !== "error") return
+                                if (modal.localPlayback || modal.playingUrl.length === 0) return
+                                if (playerLoader.item === null) return
+                                if (modal.reloadAttempts >= modal.reloadAttemptsMax) {
+                                    console.warn("stream died and reload attempts are exhausted:",
+                                                 error)
+                                    return
+                                }
+                                modal.reloadAttempts++
+                                console.warn("stream died mid-playback, reloading at",
+                                             modal.lastPlayhead.toFixed(1) + "s:", error)
+                                playerLoader.item.command(["loadfile", modal.playingUrl, "replace"])
+                                if (modal.lastPlayhead > 0)
+                                    modal.reloadSeekTarget = modal.lastPlayhead
                             }
                         }
 
