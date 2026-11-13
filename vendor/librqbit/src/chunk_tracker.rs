@@ -269,6 +269,34 @@ impl ChunkTracker {
         }
     }
 
+    // Re-queue a "ghost" piece: one whose `have` bit is set, but whose bytes
+    // the storage cannot actually provide. This happens with volatile storage
+    // (e.g. a RAM cache that evicted the piece while the bitfield still claims
+    // it is present): `mark_piece_broken_if_not_have` bails in that case, so a
+    // ghost piece can never be re-downloaded and every read of it fails
+    // forever.
+    //
+    // Clears the lie: un-sets `have`, re-queues the piece, invalidates its
+    // chunk status and recomputes the derived counters so everything stays in
+    // sync with the bitfield. Returns true if the piece was previously marked
+    // as have (i.e. this call un-finished the torrent).
+    pub(crate) fn mark_piece_ghost_broken(&mut self, index: ValidPieceIndex, file_infos: &FileInfos) -> bool {
+        let id = index.get() as usize;
+        let was_have = self.have.as_slice()[id];
+        if was_have {
+            debug!("un-marking ghost piece={} as have, re-queueing for re-download", index);
+            self.have.as_slice_mut().set(id, false);
+            // have/hns/per_file_bytes must stay in sync with the bitfield.
+            self.recalculate_per_file_bytes(file_infos);
+            self.hns = self.calc_hns();
+        }
+        self.queue_pieces.set(id, true);
+        if let Some(s) = self.chunk_status.get_mut(self.lengths.chunk_range(index)) {
+            s.fill(false);
+        }
+        was_have
+    }
+
     pub fn mark_piece_downloaded(&mut self, idx: ValidPieceIndex) {
         let id = idx.get() as usize;
         if !self.have.as_slice()[id] {

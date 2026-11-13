@@ -6,6 +6,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     task::{Poll, Waker},
+    time::Duration,
     time::Instant,
 };
 
@@ -17,7 +18,7 @@ use tokio::{
     io::{AsyncRead, AsyncSeek},
     sync::OwnedSemaphorePermit,
 };
-use tracing::{debug, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::{ManagedTorrent, file_info::FileInfo, storage::TorrentStorage};
 
@@ -28,12 +29,39 @@ type StreamId = usize;
 // 32 mb lookahead by default.
 const PER_STREAM_BUF_DEFAULT: u64 = 32 * 1024 * 1024;
 
+// How many consecutive ghost reads a stream tolerates before erroring out.
+// Each miss re-queues the piece for re-download, so this bound corresponds to
+// that many failed re-download attempts in a row.
+const GHOST_MISSES_LIMIT: u32 = 32;
+
+// True if the error is a "piece not resident" storage failure: the bitfield
+// says we have the piece, but the storage cannot provide it. Identified by
+// message rather than a typed marker because storage implementations are
+// pluggable and live behind `&dyn TorrentStorage`. The RAM storage (and any
+// other volatile storage) must phrase this as "not resident".
+fn is_piece_not_resident(e: &anyhow::Error) -> bool {
+    e.chain().any(|err| err.to_string().contains("not resident"))
+}
+
 struct StreamState {
     file_id: usize,
     file_len: u64,
     file_abs_offset: u64,
     position: u64,
     waker: Option<Waker>,
+    // When the stream first started waiting for its current piece to arrive.
+    // Reset every time the waker is re-registered; the stream watchdog uses
+    // the age to wake streams that have been waiting suspiciously long, so
+    // that recovery machinery (dead-peer kicks) runs even when no piece ever
+    // completes to wake the stream naturally.
+    pending_since: Option<Instant>,
+    // How many times in a row a read of this stream hit a piece that the
+    // have-bitfield claims is present but the storage cannot provide ("ghost
+    // piece", see mark_piece_ghost_broken). Reset on any successful read.
+    // Serves as a livelock guard: if the piece cannot be re-downloaded (or
+    // keeps getting evicted again) this many times in a row, the stream
+    // surfaces an error instead of spinning forever.
+    ghost_misses: u32,
 }
 
 impl StreamState {
@@ -66,7 +94,36 @@ impl TorrentStreams {
         if let Some(mut s) = self.streams.get_mut(&stream_id) {
             let vm = s.value_mut();
             vm.waker = Some(waker);
+            if vm.pending_since.is_none() {
+                vm.pending_since = Some(Instant::now());
+            }
         }
+    }
+
+    /// Wake streams that have been waiting for their current piece longer
+    /// than `threshold`. Returns whether anything was woken.
+    ///
+    /// A pending stream is normally woken when its piece completes. If no
+    /// piece ever completes (stalled peers waiting out a death backoff), the
+    /// stream would sleep forever: nothing else re-checks it. Waking it makes
+    /// its poll run again, which re-registers the waker and re-runs recovery
+    /// kicks, bounding the stall to a few seconds per cycle.
+    pub(crate) fn wake_stalled_streams(&self, threshold: Duration) -> bool {
+        let now = Instant::now();
+        let mut woken = false;
+        for mut w in self.streams.iter_mut() {
+            let s = w.value_mut();
+            if let Some(since) = s.pending_since
+                && now.duration_since(since) >= threshold
+                && let Some(waker) = s.waker.take()
+            {
+                s.pending_since = None;
+                debug!(stream_id = *w.key(), "watchdog waking stalled stream");
+                waker.wake();
+                woken = true;
+            }
+        }
+        woken
     }
 
     // Interleave 1st, 2nd etc pieces from each active stream in turn until they get 1/10th of the file .
@@ -107,15 +164,17 @@ impl TorrentStreams {
         lengths: &Lengths,
     ) {
         for mut w in self.streams.iter_mut() {
-            if w.value().current_piece(lengths).map(|p| p.id) == Some(piece_id)
-                && let Some(waker) = w.value_mut().waker.take()
-            {
-                debug!(
-                    stream_id = *w.key(),
-                    piece_id = piece_id.get(),
-                    "waking stream"
-                );
-                waker.wake();
+            if w.value().current_piece(lengths).map(|p| p.id) == Some(piece_id) {
+                let s = w.value_mut();
+                if let Some(waker) = s.waker.take() {
+                    s.pending_since = None;
+                    debug!(
+                        stream_id = *w.key(),
+                        piece_id = piece_id.get(),
+                        "waking stream"
+                    );
+                    waker.wake();
+                }
             }
         }
     }
@@ -199,6 +258,11 @@ impl AsyncRead for FileStream {
         }));
         if !have {
             debug!(stream_id = self.stream_id, file_id = self.file_id, piece_id = %current.id, "poll pending, not have");
+            // The reader is blocked on data nobody may be fetching: dead peers
+            // would otherwise wait out an exponential backoff that grew long
+            // while nobody was reading (10s -> 60s -> 6min -> ...), making a
+            // resumed player stall for minutes. Re-queue them now.
+            self.torrent.live().map(|live| live.kick_dead_peers());
             return Poll::Pending;
         }
 
@@ -215,18 +279,89 @@ impl AsyncRead for FileStream {
         let buf = &mut buf[..bytes_to_read];
 
         let start = Instant::now();
-        poll_try_io!(poll_try_io!(self.torrent.shared.spawner.block_in_place(
-            || {
-                self.torrent.with_storage_and_file(
-                    self.file_id,
-                    |files, _fi| {
-                        files.pread_exact(self.file_id, self.position, buf)?;
-                        Ok::<_, anyhow::Error>(())
-                    },
-                    &self.metadata,
-                )
+        let read_result = self.torrent.shared.spawner.block_in_place(|| {
+            self.torrent.with_storage_and_file(
+                self.file_id,
+                |files, _fi| {
+                    files.pread_exact(self.file_id, self.position, buf)?;
+                    Ok::<_, anyhow::Error>(())
+                },
+                &self.metadata,
+            )
+        });
+
+        let mut read_result = match read_result {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e),
+            Err(e) => Some(e),
+        };
+
+        if let Some(e) = read_result.take()
+            && is_piece_not_resident(&e)
+        {
+            // Ghost read: the have-bitfield says we have the piece, but the
+            // storage does not (e.g. it was evicted from a RAM cache while the
+            // bitfield still claims otherwise). Killing the stream here would
+            // be unrecoverable: every retry hits the same ghost, since the
+            // bitfield never gets repaired and the piece never re-downloads.
+            // Instead, un-mark the piece and wait for it to re-download.
+            warn!(
+                stream_id = self.stream_id,
+                file_id = self.file_id,
+                piece = current.id.get(),
+                "ghost read: piece marked have but not resident in storage; re-queueing for re-download, stream will wait"
+            );
+
+            let give_up = {
+                let mut s = match self.streams.streams.get_mut(&self.stream_id) {
+                    Some(s) => s,
+                    None => {
+                        let e = std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            anyhow::anyhow!("stream state missing"),
+                        );
+                        return Poll::Ready(Err(e));
+                    }
+                };
+                s.ghost_misses += 1;
+                s.ghost_misses > GHOST_MISSES_LIMIT
+            };
+
+            if give_up {
+                let e = std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    anyhow::anyhow!(
+                        "piece {} could not be re-downloaded after {} consecutive attempts",
+                        current.id.get(),
+                        GHOST_MISSES_LIMIT
+                    ),
+                );
+                error!(stream_id = self.stream_id, "stream error {e}");
+                return Poll::Ready(Err(e));
             }
-        )));
+
+            self.torrent.live().map(|live| {
+                live.mark_piece_ghost_broken(current.id);
+                // Same rationale as the plain "not have" path: the piece was
+                // un-marked, so someone must download it, and dead peers would
+                // sit out their backoff otherwise.
+                live.kick_dead_peers();
+            });
+
+            self.streams
+                .register_waker(self.stream_id, cx.waker().clone());
+            debug!(
+                stream_id = self.stream_id,
+                piece = current.id.get(),
+                "poll pending, waiting for ghost piece re-download"
+            );
+            return Poll::Pending;
+        }
+
+        if let Some(e) = read_result {
+            debug!("stream error {e:#}");
+            return Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::Other, e)));
+        }
 
         trace!(
             buflen = buf.len(),
@@ -235,6 +370,11 @@ impl AsyncRead for FileStream {
             read_time = ?start.elapsed(),
             "will write bytes"
         );
+
+        self.streams
+            .streams
+            .get_mut(&self.stream_id)
+            .map(|mut s| s.ghost_misses = 0);
 
         self.as_mut().advance(bytes_to_read as u64);
         tbuf.advance(bytes_to_read);
@@ -365,8 +505,10 @@ impl ManagedTorrent {
                 file_id,
                 position: 0,
                 waker: None,
+                pending_since: None,
                 file_len: fd_len,
                 file_abs_offset: fd_offset,
+                ghost_misses: 0,
             },
         );
 

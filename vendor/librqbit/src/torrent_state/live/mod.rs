@@ -172,6 +172,11 @@ impl TorrentStateLocked {
 
 const FLUSH_BITV_EVERY_BYTES: u64 = 16 * 1024 * 1024;
 
+/// How long a stream may wait for its current piece before the stream
+/// watchdog wakes it (see the stream_watchdog task). Generous enough that
+/// normal piece arrivals (well under a second) never trigger it.
+const STALLED_STREAM_THRESHOLD: Duration = Duration::from_secs(4);
+
 pub enum AddIncomingPeerResult {
     Added,
     AlreadyActive,
@@ -214,6 +219,10 @@ pub struct TorrentStateLive {
         ChunkInfo,
     )>,
     ratelimits: Limits,
+
+    // Last time a stream reader kicked the dead peers (see `kick_dead_peers`).
+    // Without the throttle, every blocked read would re-queue them.
+    last_dead_peer_kick: Mutex<Option<Instant>>,
 }
 
 impl TorrentStateLive {
@@ -295,6 +304,7 @@ impl TorrentStateLive {
                 .collect(),
             ratelimit_upload_tx,
             ratelimits,
+            last_dead_peer_kick: Mutex::new(None),
         });
 
         state.spawn(
@@ -331,6 +341,34 @@ impl TorrentStateLive {
             debug_span!(parent: state.shared.span.clone(), "peer_adder"),
             format!("[{}]peer_adder", state.shared.id),
             state.clone().task_peer_adder(peer_queue_rx),
+        );
+
+        state.spawn(
+            debug_span!(parent: state.shared.span.clone(), "stream_watchdog"),
+            format!("[{}]stream_watchdog", state.shared.id),
+            {
+                let state = Arc::downgrade(&state);
+                async move {
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let state = match state.upgrade() {
+                            Some(state) => state,
+                            None => return Ok(()),
+                        };
+                        // A stream waiting for a missing piece is normally
+                        // woken when the piece completes. If the swarm is
+                        // stalled (peers waiting out a death backoff that
+                        // grew while nobody was reading), no piece completes
+                        // and the stream would sleep forever. Wake it: its
+                        // poll re-registers and re-runs the dead-peer kick,
+                        // which reconnects stalled peers within seconds
+                        // instead of waiting out minutes of backoff.
+                        if state.streams.wake_stalled_streams(STALLED_STREAM_THRESHOLD) {
+                            state.kick_dead_peers();
+                        }
+                    }
+                }
+            },
         );
 
         state.spawn(
@@ -811,6 +849,32 @@ impl TorrentStateLive {
         Ok(())
     }
 
+    // Repair a "ghost" piece: one the have-bitfield claims is present, but the
+    // storage cannot actually provide (e.g. evicted from a RAM cache). Clears
+    // the stale bit and re-queues the piece, then reconnects peers if that
+    // un-finished us. Without this a ghost piece is unreadable forever, and
+    // every HTTP stream that touches it dies.
+    //
+    // Returns true if the piece had previously been marked as have.
+    pub(crate) fn mark_piece_ghost_broken(&self, piece: ValidPieceIndex) -> bool {
+        let mut g = self.lock_write("mark_piece_ghost_broken");
+        let pt = match g.get_pieces_mut() {
+            Ok(pt) => pt,
+            Err(_) => return false,
+        };
+        let was_have =
+            pt.chunks_mut()
+                .mark_piece_ghost_broken(piece, &self.metadata.file_infos);
+        // Prevent deadlocks.
+        drop(g);
+        if was_have {
+            // The torrent is no longer fully have: get peers back so the
+            // piece can actually be re-downloaded.
+            self.reconnect_all_not_needed_peers();
+        }
+        was_have
+    }
+
     // If we have all selected pieces but not necessarily all pieces.
     pub(crate) fn is_finished(&self) -> bool {
         self.get_hns().map(|h| h.finished()).unwrap_or_default()
@@ -829,10 +893,10 @@ impl TorrentStateLive {
     // We might have the torrent "finished" i.e. no selected files. But if someone is streaming files despite
     // them being selected, we aren't fully "finished".
     fn is_finished_and_no_active_streams(&self) -> bool {
-        self.is_finished()
-            && !self.has_active_streams_unfinished_files(
-                &self.lock_read("is_finished_and_dont_need_peers"),
-            )
+        let streams_check = self.has_active_streams_unfinished_files(
+            &self.lock_read("is_finished_and_dont_need_peers"),
+        );
+        self.is_finished() && !streams_check
     }
 
     fn on_piece_completed(&self, id: ValidPieceIndex) -> anyhow::Result<()> {
@@ -905,6 +969,53 @@ impl TorrentStateLive {
             .map(|socket_addr| self.peer_queue_tx.send(socket_addr))
             .take_while(|r| r.is_ok())
             .last();
+    }
+
+    /// Re-queue every dead peer right away, ignoring its reconnect backoff.
+    ///
+    /// Called by a stream reader that is blocked on a piece it does not have.
+    /// Without this, a peer that idled out while nobody was reading sits on an
+    /// exponential backoff that doubles a few times (10s -> 60s -> 6min -> 36min
+    /// for the default builder): after a long pause, a resumed player would
+    /// wait out the whole remaining delay before the first reconnect, even
+    /// though the peer is reachable and has the data.
+    ///
+    /// Throttled so the per-read polling of an active reader cannot cause a
+    /// connect storm; while a reader is blocked this still retries at most
+    /// every few seconds, which is the intended behavior.
+    ///
+    /// Only touches the peers map, never the global state lock -- a blocked
+    /// read may arrive while chunk-tracker locks are in flight.
+    pub(crate) fn kick_dead_peers(&self) {
+        const KICK_COOLDOWN: Duration = Duration::from_secs(5);
+        let now = Instant::now();
+        {
+            let mut last = self.last_dead_peer_kick.lock();
+            if last.is_some_and(|t| now.duration_since(t) < KICK_COOLDOWN) {
+                return;
+            }
+            *last = Some(now);
+        }
+
+        let mut kicked = 0;
+        let mut addrs = Vec::new();
+        for mut pe in self.peers.states.iter_mut() {
+            let addr = *pe.key();
+            let peer = pe.value_mut();
+            if !matches!(peer.get_state(), PeerState::Dead) {
+                continue;
+            }
+            peer.stats.reset_backoff();
+            peer.set_state(PeerState::Queued, &self.peers);
+            addrs.push(addr);
+            kicked += 1;
+        }
+        for addr in addrs {
+            let _ = self.peer_queue_tx.send(addr);
+        }
+        if kicked > 0 {
+            debug!(kicked, "re-queued dead peers for immediate reconnect");
+        }
     }
 
     async fn task_send_pex_to_peer(
