@@ -2451,6 +2451,8 @@ Popup {
                             // file has no swarm, so those chips would be
                             // noise.
                             torrentStats: modal.localPlayback ? null : modal.progress
+                            fileIdx: modal.chosenIdx
+                            files: modal.files
                             fullscreen: modal.fullscreen
                             onOpenSettings: modal.settingsOpen = !modal.settingsOpen
                             onToggleFullscreen: modal.toggleFullscreen()

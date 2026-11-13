@@ -24,6 +24,12 @@ Item {
     // Null for local files, which hides the transfer chips -- a local file
     // has no swarm, and its whole timeline is already on disk.
     property var torrentStats: null
+    // Which file of the torrent is playing and the torrent's file list, for
+    // the "cached X / Y" chip (classic disk streaming only). The engine
+    // reports per-file done-bytes but not per-file totals, so the total has
+    // to come from the list.
+    property int fileIdx: -1
+    property var files: []
 
     signal openSettings()
     signal toggleFullscreen()
@@ -183,6 +189,37 @@ Item {
     // Bytes as whole MiB, for the RAM buffer chip.
     function fmtMib(bytes) {
         return String(Math.round((bytes || 0) / (1024 * 1024)))
+    }
+
+    // Bytes in the largest unit that keeps the number readable (MB/GB...),
+    // for the "cached X / Y" chip: a 1.3 GiB episode in MiB would read
+    // "1288 / 1360" and hide the point.
+    function fmtBytes(bytes) {
+        if (!bytes || bytes <= 0) return "0 B"
+        const units = ["B", "KB", "MB", "GB", "TB"]
+        let v = bytes, u = 0
+        while (v >= 1024 && u < units.length - 1) { v /= 1024; u++ }
+        return v.toFixed(v < 10 && u > 0 ? 1 : 0) + " " + units[u]
+    }
+
+    // The playing file's downloaded/total bytes, for classic (disk)
+    // streaming: how much of the episode is actually on the drive. Null when
+    // anything is missing -- RAM streaming (the buffer chip covers it), a
+    // local file (no torrent), or a file whose total is not known yet.
+    function cachedInfo() {
+        if (bar.torrentStats === null || bar.fileIdx < 0) return null
+        if (!(bar.files && bar.files.length > 0)) return null
+        if (bar.torrentId >= 0 && bar.backend
+                && bar.backend.isRamStreaming(bar.torrentId)) return null
+        const per = bar.torrentStats.fileProgress
+        if (!per || per.length <= bar.fileIdx) return null
+        let total = 0
+        for (let i = 0; i < bar.files.length; i++) {
+            if (bar.files[i] && bar.files[i].idx === bar.fileIdx)
+                total = bar.files[i].lengthBytes
+        }
+        if (total <= 0) return null
+        return { done: per[bar.fileIdx] || 0, total: total }
     }
 
     // Download rate in MiB/s (the engine's per-torrent rate; the backend
@@ -615,6 +652,47 @@ Item {
                                 const rb = bar.torrentStats.ramBuffer
                                 return "Buffer " + bar.fmtMib(rb.storedBytes) + " / "
                                     + bar.fmtMib(rb.limitBytes) + " MiB"
+                            }
+                            color: Theme.ink
+                            font.pixelSize: 10
+                            font.bold: true
+                        }
+                    }
+                }
+
+                // Cached bytes of the playing file, classic (disk) streaming
+                // only: how much of the episode is on the drive. Sits left of
+                // the speed chip so the pair reads "324 MB / 1.3 GB ↓2.2".
+                // RAM streams show the buffer chip instead; a local file is
+                // entirely on disk already.
+                Rectangle {
+                    readonly property var info: bar.cachedInfo()
+                    visible: info !== null
+                    implicitWidth: cachedChipRow.implicitWidth + 14
+                    height: 22
+                    radius: 11
+                    color: Theme.glassFillHover
+                    border.width: 1
+                    border.color: Theme.glassBorder
+
+                    Row {
+                        id: cachedChipRow
+                        anchors.centerIn: parent
+                        spacing: 5
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "\u2935"
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            font.bold: true
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: {
+                                const info = cachedChipRow.parent.info
+                                if (info === null) return ""
+                                return bar.fmtBytes(info.done) + " / " + bar.fmtBytes(info.total)
                             }
                             color: Theme.ink
                             font.pixelSize: 10
