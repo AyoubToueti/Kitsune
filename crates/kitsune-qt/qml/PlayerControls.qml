@@ -605,6 +605,13 @@ Item {
                         Text {
                             anchors.verticalCenter: parent.verticalCenter
                             text: {
+                                // QML evaluates bindings even while the chip
+                                // is invisible, so torrentStats can be null
+                                // here (before the torrent attaches, or for a
+                                // local file) -- guard like the visible
+                                // binding above.
+                                if (!bar.torrentStats || !bar.torrentStats.ramBuffer)
+                                    return ""
                                 const rb = bar.torrentStats.ramBuffer
                                 return "Buffer " + bar.fmtMib(rb.storedBytes) + " / "
                                     + bar.fmtMib(rb.limitBytes) + " MiB"

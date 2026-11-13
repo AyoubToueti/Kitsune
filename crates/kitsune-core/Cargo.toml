@@ -40,8 +40,12 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 # diagnostics::metrics reads this process's CPU and RAM (cross-platform:
-# /proc on Linux, native APIs elsewhere).
-sysinfo = "0.39"
+# /proc on Linux, native APIs elsewhere). `linux-tmpfs` keeps tmpfs mounts in
+# the disk list: torrent::engine's free-space probe must see the tmpfs that
+# scripts/dev/low-disk.sh mounts, or every check degrades to "assume there
+# is room" and a full RAM disk is discovered by ENOSPC mid-download instead
+# of refused up front.
+sysinfo = { version = "0.39", features = ["linux-tmpfs"] }
 # diagnostics::logging resolves the OS log directory (and the token store will
 # need it too).
 dirs = "6"

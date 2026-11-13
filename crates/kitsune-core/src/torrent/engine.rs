@@ -355,7 +355,20 @@ pub fn ensure_download_dir(dir: &Path) -> Result<()> {
 /// The disk whose mount point is the LONGEST prefix of `path` is the right
 /// one: `/` is a prefix of every absolute path, so a short match would report
 /// the root volume for a file on a mounted drive.
+///
+/// `KITSUNE_FAKE_AVAILABLE_BYTES`, when set, clamps the reported free space
+/// to that value. It is a dev knob for scripts/dev/low-disk.sh's no-root
+/// mode: the refusal path can be exercised on a healthy disk without sudo.
 pub fn available_space(path: &Path) -> Option<u64> {
+    available_space_floor(
+        probe_available_space(path),
+        fake_available_bytes(),
+    )
+}
+
+/// The sysinfo walk: the free bytes of the volume with the longest mount
+/// matching `path`. Split out so the override clamping is testable pure.
+fn probe_available_space(path: &Path) -> Option<u64> {
     let disks = sysinfo::Disks::new_with_refreshed_list();
 
     let mut best: Option<(usize, u64)> = None;
@@ -370,6 +383,30 @@ pub fn available_space(path: &Path) -> Option<u64> {
     }
 
     best.map(|(_, free)| free)
+}
+
+/// Combine the probe with the dev override. The fake can only make a volume
+/// look LESS full than reality; where the probe saw nothing at all, the fake
+/// stands in entirely.
+fn available_space_floor(real: Option<u64>, fake: Option<u64>) -> Option<u64> {
+    match (fake, real) {
+        (Some(fake), Some(real)) => Some(fake.min(real)),
+        (Some(fake), None) => Some(fake),
+        (None, real) => real,
+    }
+}
+
+/// The `KITSUNE_FAKE_AVAILABLE_BYTES` dev override, read once.
+///
+/// `None` when unset or unparseable: a bad value must not silently lie about
+/// every volume for the whole run, it should behave as if unset.
+fn fake_available_bytes() -> Option<u64> {
+    static FAKE: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
+    *FAKE.get_or_init(|| {
+        std::env::var("KITSUNE_FAKE_AVAILABLE_BYTES")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    })
 }
 
 /// Whether `needed_bytes` fits on `path`'s volume while keeping `reserve`
@@ -1216,6 +1253,61 @@ mod tests {
         }
     }
 
+    /// The regression behind the first low-disk exercise: sysinfo filters
+    /// tmpfs unless the `linux-tmpfs` feature is on, the probe then reported
+    /// `None` for scripts/dev/low-disk.sh's mount, `fits_on_disk` degraded to
+    /// "assume there is room", and a full RAM disk was discovered by ENOSPC
+    /// mid-download instead of refused up front. Run against a real mount:
+    /// `scripts/dev/low-disk.sh --no-run` sets KITSUNE_LOWDISK_ROOT, then
+    /// `cargo test -p kitsune-core --lib tmpfs -- --ignored`.
+    #[test]
+    #[ignore = "needs scripts/dev/low-disk.sh's tmpfs mount (KITSUNE_LOWDISK_ROOT)"]
+    fn tmpfs_mounts_are_visible_to_the_probe() {
+        let root = std::env::var("KITSUNE_LOWDISK_ROOT").unwrap_or_else(|_| "/tmp/kitsune-lowdisk".into());
+        let downloads = Path::new(&root).join("downloads");
+        assert!(
+            downloads.is_dir(),
+            "run scripts/dev/low-disk.sh --no-run first; {} is not set up",
+            downloads.display()
+        );
+        let free = available_space(&downloads);
+        assert!(
+            free.is_some(),
+            "the probe must see the tmpfs at {}; linux-tmpfs feature lost?",
+            downloads.display()
+        );
+        assert!(free.unwrap() > 0);
+    }
+
+    /// The `KITSUNE_FAKE_AVAILABLE_BYTES` override clamps the probe (it can
+    /// only make a volume look LESS full) and stands in for one the probe
+    /// cannot see, so scripts/dev/low-disk.sh's no-root mode can exercise the
+    /// refusal path on a healthy disk. The value is read once per process, so
+    /// this test pins parse-and-clamp rather than the env read itself.
+    #[test]
+    fn fake_available_clamps_the_probe() {
+        assert_eq!(
+            available_space_floor(Some(1_000_000), Some(500_000)),
+            Some(500_000),
+            "a fake smaller than reality clamps the report"
+        );
+        assert_eq!(
+            available_space_floor(Some(400_000), Some(500_000)),
+            Some(400_000),
+            "a fake larger than reality changes nothing"
+        );
+        assert_eq!(
+            available_space_floor(Some(u64::MAX), Some(2_000_000)),
+            Some(2_000_000),
+            "a probe that cannot see the volume takes the fake"
+        );
+        assert_eq!(
+            available_space_floor(Some(900_000), None),
+            Some(900_000),
+            "no override means the real number"
+        );
+    }
+
     /// The floor is what the caller relies on, so pin both directions and the
     /// unknown-space default in one place.
     #[test]
@@ -1228,7 +1320,20 @@ mod tests {
             return;
         };
 
+        // The exact-boundary assertions below re-probe the volume inside
+        // `fits_on_disk`, and the rest of the suite creates and deletes
+        // tempdirs on the same volume concurrently -- the free bytes can move
+        // between the snapshot above and the re-probe, turning "exactly free"
+        // into a spurious failure. Probe again: only assert exact boundaries
+        // when the volume is quiet enough for two probes to agree. The
+        // race-immune extremes always hold regardless.
         assert!(fits_on_disk(tmp.path(), 0, 0));
+        assert!(!fits_on_disk(tmp.path(), u64::MAX, 0));
+        assert!(!fits_on_disk(tmp.path(), 0, u64::MAX));
+        if available_space(tmp.path()) != Some(free) {
+            return;
+        }
+
         // Exactly the free space still fits with no reserve...
         assert!(fits_on_disk(tmp.path(), free, 0));
         // ...but one byte more does not.

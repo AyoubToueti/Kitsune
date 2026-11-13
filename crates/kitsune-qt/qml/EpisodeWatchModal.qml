@@ -158,6 +158,19 @@ Popup {
     property bool paused: false
     property bool settingsOpen: false
 
+    // The engine's failure message while the stream is up, from the stats
+    // poll (TorrentProgress.error). librqbit fatals on unrecoverable write
+    // errors -- a full disk being the usual one -- and after that every
+    // stream request returns HTTP 500, so reloading cannot help: the modal
+    // shows this instead of burning the reload budget.
+    readonly property string engineError: {
+        if (progress === null || progress.error === undefined) return ""
+        return progress.error || ""
+    }
+    // True when that failure names the disk (wording varies by OS).
+    readonly property bool engineErrorDiskFull:
+        /(no space left|not enough space|disk full|enospc)/i.test(engineError)
+
     // Set when the backend had to stream from RAM because the disk was too
     // full. Cleared on open and on close so a later play starts clean.
     property bool ramFallback: false
@@ -2130,6 +2143,10 @@ Popup {
                         // A stream that dies mid-playback (HTTP body error)
                         // used to leave a silent black frame. Reload it at the
                         // last playhead; a fresh episode resets the counter.
+                        // A torrent the ENGINE gave up on (fatal write error,
+                        // full disk) is never coming back -- every reload
+                        // just fetches HTTP 500 -- so the budget is not spent
+                        // on it and the banner explains why playback stopped.
                         Connections {
                             target: playerLoader.item
                             function onStateChanged() {
@@ -2141,6 +2158,7 @@ Popup {
                                 if (reason !== "error") return
                                 if (modal.localPlayback || modal.playingUrl.length === 0) return
                                 if (playerLoader.item === null) return
+                                if (modal.engineError !== "") return
                                 if (modal.reloadAttempts >= modal.reloadAttemptsMax) {
                                     console.warn("stream died and reload attempts are exhausted:",
                                                  error)
@@ -2152,6 +2170,37 @@ Popup {
                                 playerLoader.item.command(["loadfile", modal.playingUrl, "replace"])
                                 if (modal.lastPlayhead > 0)
                                     modal.reloadSeekTarget = modal.lastPlayhead
+                            }
+                        }
+
+                        // Shown when the torrent engine reported a fatal error
+                        // while this stream was up -- a full disk being the
+                        // usual cause. Pinned like the RAM-fallback note.
+                        Rectangle {
+                            anchors.top: parent.top
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.topMargin: 14
+                            z: 20
+                            visible: modal.stage === "play"
+                                && !modal.localPlayback
+                                && modal.engineError !== ""
+                            width: engineErrorNote.implicitWidth + 24
+                            height: engineErrorNote.implicitHeight + 14
+                            radius: 8
+                            color: Theme.surfaceRaised
+                            border.width: 1
+                            border.color: Theme.healthRed
+
+                            Text {
+                                id: engineErrorNote
+                                anchors.centerIn: parent
+                                text: {
+                                    if (!modal.engineErrorDiskFull)
+                                        return "Playback stopped \u2014 " + modal.engineError
+                                    return "Playback stopped \u2014 the disk is full"
+                                }
+                                color: Theme.ink
+                                font.pixelSize: 11
                             }
                         }
 
