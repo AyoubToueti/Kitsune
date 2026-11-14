@@ -131,19 +131,30 @@ impl PieceTracker {
         P: Fn(ValidPieceIndex) -> bool,
         S: Fn(ValidPieceIndex) -> bool,
     {
+        // Collect the priority pieces once: the streaming queues are needed
+        // both for the reserve path below and by the steal paths (see
+        // try_steal).
+        let priority: Vec<ValidPieceIndex> = {
+            let mut seen = HashSet::new();
+            req.priority_pieces
+                .by_ref()
+                .filter(|p| seen.insert(*p))
+                .collect()
+        };
+
         // 1. Try steal with 10x threshold (very slow peer)
-        if let Some(result) = self.try_steal(&req, 10.0) {
+        if let Some(result) = self.try_steal(&req, 10.0, &priority) {
             return result;
         }
 
         // 2. Try reserve from priority_pieces then queued pieces
         // First check priority pieces that aren't already downloaded or in-flight
-        for piece in &mut req.priority_pieces {
-            if !self.chunks.is_piece_have(piece)
-                && !self.inflight.contains_key(&piece)
-                && (req.peer_has_piece)(piece)
+        for piece in &priority {
+            if !self.chunks.is_piece_have(*piece)
+                && !self.inflight.contains_key(piece)
+                && (req.peer_has_piece)(*piece)
             {
-                return self.reserve_piece(piece, req.peer);
+                return self.reserve_piece(*piece, req.peer);
             }
         }
 
@@ -161,7 +172,7 @@ impl PieceTracker {
         }
 
         // 3. Try steal with 3x threshold (moderately slow peer)
-        if let Some(result) = self.try_steal(&req, 3.0) {
+        if let Some(result) = self.try_steal(&req, 3.0, &priority) {
             return result;
         }
 
@@ -182,10 +193,19 @@ impl PieceTracker {
     }
 
     /// Try to steal a piece from a slower peer.
+    ///
+    /// Among the inflight pieces the stealing peer can serve and that have
+    /// overstayed their threshold, pieces a STREAM is currently waiting on
+    /// win first: a stalled seek target is what the player is blocked on, so
+    /// "steal the globally oldest piece" would keep grabbing sequential-
+    /// frontier pieces instead and leave the stream waiting for tens of
+    /// seconds (observed live: a 4 MiB seek piece stuck 41s behind slow-peer
+    /// churn while free peers kept stealing unrelated, older pieces).
     fn try_steal<I, P, S>(
         &mut self,
         req: &AcquireRequest<I, P, S>,
         threshold: f64,
+        priority: &[ValidPieceIndex],
     ) -> Option<AcquireResult>
     where
         I: Iterator<Item = ValidPieceIndex>,
@@ -195,16 +215,24 @@ impl PieceTracker {
         let my_avg = req.peer_avg_time?;
         let min_elapsed = Duration::from_secs_f64(my_avg.as_secs_f64() * threshold);
 
-        // Find the slowest piece from another peer that exceeds threshold
-        // and that the stealing peer actually has (can download)
-        let (piece, old_peer, _) = self
+        // Inflight pieces this peer could take over, oldest first.
+        let mut candidates: Vec<(ValidPieceIndex, PeerHandle, Duration)> = self
             .inflight
             .iter()
             .filter(|(_, info)| info.peer != req.peer)
             .filter(|(p, _)| (req.peer_has_piece)(**p))
             .map(|(p, info)| (*p, info.peer, info.started.elapsed()))
             .filter(|(_, _, elapsed)| *elapsed >= min_elapsed)
-            .max_by_key(|(_, _, elapsed)| *elapsed)?;
+            .collect();
+        candidates.sort_by(|a, b| b.2.cmp(&a.2));
+
+        // A piece a stream is blocked on first (still oldest-first within
+        // that set), otherwise the globally oldest as before.
+        let (piece, old_peer, _) = candidates
+            .iter()
+            .find(|(p, _, _)| priority.contains(p))
+            .or_else(|| candidates.first())?
+            .clone();
 
         // Check can_steal (e.g., per_piece_lock)
         if !(req.can_steal)(piece) {
@@ -804,6 +832,85 @@ mod tests {
                 assert_eq!(tracker.get_inflight(piece_0).unwrap().peer, peer_a);
             }
             _ => panic!("Expected Stolen, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_steal_prefers_stream_wanted_piece_over_globally_oldest() {
+        // Regression for the observed 41s seek stall: piece 2 was inflight
+        // with a slow peer and a STREAM was blocked waiting for it, while an
+        // unrelated older piece (0) was also inflight. The old steal logic
+        // always picked the globally-oldest inflight piece (0), so free peers
+        // never took over the stream's piece. Now the stream's piece wins.
+        let chunks = make_test_chunk_tracker(5);
+        let mut tracker = PieceTracker::new(chunks);
+
+        let file_infos = make_test_file_infos(5);
+        let file_priorities = make_default_file_priorities(&file_infos);
+
+        let slow_peer = peer(1);
+        let fast_peer = peer(2);
+
+        // Slow peer reserves piece 0 (globally oldest).
+        let piece_0 = match tracker.acquire_piece(AcquireRequest {
+            peer: slow_peer,
+            peer_avg_time: None,
+            priority_pieces: std::iter::empty(),
+            file_priorities: &file_priorities,
+            file_infos: &file_infos,
+            peer_has_piece: |_| true,
+            can_steal: |_| true,
+        }) {
+            AcquireResult::Reserved(p) => {
+                assert_eq!(p.get(), 0);
+                p
+            }
+            _ => panic!("Expected Reserved"),
+        };
+
+        // Slow peer also ends up with piece 2 (the stream's target): reserve
+        // pieces until it lands there.
+        let mut piece_2 = None;
+        for _ in 0..3 {
+            if let AcquireResult::Reserved(p) = tracker.acquire_piece(AcquireRequest {
+                peer: slow_peer,
+                peer_avg_time: None,
+                priority_pieces: std::iter::empty(),
+                file_priorities: &file_priorities,
+                file_infos: &file_infos,
+                peer_has_piece: |_| true,
+                can_steal: |_| true,
+            }) {
+                if p.get() == 2 {
+                    piece_2 = Some(p);
+                    break;
+                }
+            }
+        }
+        let piece_2 = piece_2.expect("slow peer never got piece 2");
+
+        // Piece 0 has been inflight longer than piece 2.
+        std::thread::sleep(Duration::from_millis(20));
+
+        // A free fast peer acquires: the stream wants piece 2, so even though
+        // piece 0 is older, piece 2 must be stolen first.
+        let result = tracker.acquire_piece(AcquireRequest {
+            peer: fast_peer,
+            peer_avg_time: Some(Duration::from_millis(1)), // tiny avg: any elapsed steals
+            priority_pieces: std::iter::once(piece_2),
+            file_priorities: &file_priorities,
+            file_infos: &file_infos,
+            peer_has_piece: |_| true,
+            can_steal: |_| true,
+        });
+
+        match result {
+            AcquireResult::Stolen { piece, from_peer } => {
+                assert_eq!(piece, piece_2, "the stream's piece must be stolen first");
+                assert_eq!(from_peer, slow_peer);
+                assert_eq!(tracker.get_inflight(piece_0).unwrap().peer, slow_peer);
+            }
+            other => panic!("Expected Stolen(piece 2), got {:?}", other),
         }
     }
 }
