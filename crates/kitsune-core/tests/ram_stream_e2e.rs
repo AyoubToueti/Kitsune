@@ -791,3 +791,260 @@ async fn read_after_long_idle_recovers_without_waiting_out_peer_backoff() -> Res
     seed_session.stop().await;
     Ok(())
 }
+
+/// Headless stand-in for the reported "first backward seek freezes ~10s with
+/// no buffering popup" in classic (disk) streaming. mpv seeks by opening a
+/// NEW range request and only then dropping the old connection, so the
+/// faithful repro is: one connection reading sequentially (the "player"),
+/// a SECOND connection whose range points BACK into already-downloaded
+/// territory, opened while the first is still alive -- measure its
+/// time-to-first-byte. The target region is on disk, so the answer should be
+/// near-instant; a multi-second TTFB is the engine bug this test hunts.
+///
+/// A forward range past the downloaded frontier is measured too, as the
+/// documented counterpoint: THAT one legitimately waits for pieces.
+///
+/// ```text
+/// cargo test --test ram_stream_e2e classic_backward_seek -- --ignored --nocapture
+/// ```
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "binds loopback sockets; run explicitly"]
+async fn classic_backward_seek_while_first_connection_is_open_answers_fast() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("librqbit=info")),
+        )
+        .with_target(false)
+        .try_init();
+
+    let tmp = tempfile::tempdir()?;
+    let seed_dir = tmp.path().join("seed");
+    let leech_dir = tmp.path().join("leech");
+    std::fs::create_dir_all(&seed_dir)?;
+    std::fs::create_dir_all(&leech_dir)?;
+
+    let source_path = seed_dir.join("episode.bin");
+    write_source(&source_path)?;
+
+    let spawner = librqbit::spawn_utils::BlockingSpawner::new(4);
+    let created = librqbit::create_torrent(
+        &source_path,
+        librqbit::CreateTorrentOptions {
+            name: None,
+            trackers: Vec::new(),
+            piece_length: Some(PIECE_LEN),
+        },
+        &spawner,
+    )
+    .await
+    .context("failed to create the test torrent")?;
+    let torrent_bytes = created
+        .as_bytes()
+        .context("failed to serialise the test torrent")?;
+    let torrent_path = tmp.path().join("test.torrent");
+    std::fs::write(&torrent_path, &torrent_bytes)?;
+
+    let seed_session = librqbit::Session::new_with_opts(
+        seed_dir.clone(),
+        librqbit::SessionOptions {
+            dht: None,
+            disable_trackers: true,
+            listen: Some(librqbit::ListenerOptions {
+                listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    )
+    .await
+    .context("seeder session failed to start")?;
+    let seeder_addr = seed_session
+        .listen_addr()
+        .context("seeder did not report a listen address")?;
+
+    let response = seed_session
+        .add_torrent(
+            librqbit::AddTorrent::from_bytes(torrent_bytes.clone()),
+            Some(librqbit::AddTorrentOptions {
+                overwrite: true,
+                output_folder: Some(seed_dir.display().to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .context("failed to add the torrent to the seeder")?;
+    let _seed_handle = response
+        .into_handle()
+        .context("seeder got no torrent handle")?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !_seed_handle.stats().finished {
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "seeder never finished checking its file"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    println!("seeder ready on {seeder_addr}");
+
+    // CLASSIC mode on purpose: no `.with_ram(..)`. Pieces land on the disk
+    // in the leech dir, exactly like a real episode stream.
+    let engine = TorrentEngine::start(
+        EngineConfig::new(&leech_dir)
+            .with_initial_peers(vec![seeder_addr])
+            .without_dht(),
+    )
+    .await
+    .context("leecher engine failed to start")?;
+    let id = engine
+        .add_torrent_file(&torrent_path)
+        .await
+        .context("failed to add the torrent in classic mode")?;
+    wait_for_metadata(&engine, id).await?;
+
+    let bridge = HttpBridge::start(api_for(engine.session()), 0).await?;
+    let url = bridge.url_for(id, 0);
+    let client = reqwest::Client::new();
+
+    // ---- connection A: the "player", reading sequentially with playback
+    // pacing (small chunks, pauses). It stays OPEN for the whole test.
+    let a_task = {
+        let url = url.clone();
+        let client = client.clone();
+        tokio::spawn(async move {
+            let mut response = client.get(&url).send().await?.error_for_status()?;
+            let mut got = 0u64;
+            while got < 24 * 1024 * 1024 {
+                let chunk = response
+                    .chunk()
+                    .await?
+                    .context("connection A hit EOF early")?;
+                got += chunk.len() as u64;
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Ok::<_, anyhow::Error>(got)
+        })
+    };
+
+    // ---- wait until the disk holds at least 40 MiB (back offset = 8 MiB
+    // and forward probe = 56 MiB both then bracket the frontier).
+    let handle = engine
+        .session()
+        .get(id.into())
+        .context("torrent handle missing")?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let progress = handle.stats().progress_bytes;
+        if progress >= 40 * 1024 * 1024 {
+            println!("frontier: {progress} bytes on disk");
+            break;
+        }
+        anyhow::ensure!(
+            tokio::time::Instant::now() < deadline,
+            "download never reached 40 MiB (progress={progress})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let expected = |from: u64, len: u64| -> Result<u64> {
+        let data = std::fs::read(&source_path)?;
+        let start = from as usize;
+        Ok(fnv1a(&data[start..start + len as usize], FNV_OFFSET))
+    };
+
+    // ---- connection B: the BACKWARD seek. 8 MiB, comfortably inside what
+    // connection A has already streamed and what the disk holds. The TTFB
+    // is the number the whole test is about.
+    const BACK_FROM: u64 = 8 * 1024 * 1024;
+    const BACK_LEN: u64 = 2 * 1024 * 1024;
+    let started = std::time::Instant::now();
+    let mut backward = client
+        .get(&url)
+        .header(
+            "Range",
+            format!("bytes={BACK_FROM}-{}", BACK_FROM + BACK_LEN - 1),
+        )
+        .send()
+        .await
+        .context("backward range request failed")?;
+    anyhow::ensure!(
+        backward.status() == 206,
+        "backward range: expected 206, got {}",
+        backward.status()
+    );
+    let first_chunk = std::time::Instant::now()
+        .checked_duration_since(started)
+        .unwrap_or_default();
+    let (back_hash, back_total) = fnv_of_response(&mut backward).await?;
+    println!(
+        "backward seek: TTFB={:.3}s, total={:.3}s, {} bytes",
+        first_chunk.as_secs_f32(),
+        started.elapsed().as_secs_f32(),
+        back_total
+    );
+    anyhow::ensure!(back_total == BACK_LEN, "backward read short: {back_total}");
+    anyhow::ensure!(
+        back_hash == expected(BACK_FROM, BACK_LEN)?,
+        "backward read corrupted"
+    );
+    anyhow::ensure!(
+        first_chunk < std::time::Duration::from_secs(2),
+        "backward seek into downloaded data took {:.3}s to first byte -- the 10s stall, reproduced headless",
+        first_chunk.as_secs_f32()
+    );
+
+    // ---- the forward counterpoint: a range PAST the downloaded frontier.
+    // This one legitimately waits for pieces; just record the wait and
+    // verify the bytes are exact once they arrive.
+    const FWD_FROM: u64 = 56 * 1024 * 1024;
+    const FWD_LEN: u64 = 2 * 1024 * 1024;
+    let started = std::time::Instant::now();
+    let fwd_probe = async {
+        let mut response = client
+            .get(&url)
+            .header(
+                "Range",
+                format!("bytes={FWD_FROM}-{}", FWD_FROM + FWD_LEN - 1),
+            )
+            .send()
+            .await
+            .context("forward range request failed")?;
+        anyhow::ensure!(
+            response.status() == 206,
+            "forward range: expected 206, got {}",
+            response.status()
+        );
+        let ttfb = started.elapsed();
+        let (hash, total) = fnv_of_response(&mut response).await?;
+        Ok::<_, anyhow::Error>((hash, total, ttfb))
+    };
+    let (fwd_hash, fwd_total, fwd_ttfb) = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        fwd_probe,
+    )
+    .await
+    .context("forward range into un-downloaded territory timed out")??;
+    println!(
+        "forward seek past frontier: TTFB={:.3}s, total={:.3}s",
+        fwd_ttfb.as_secs_f32(),
+        started.elapsed().as_secs_f32()
+    );
+    anyhow::ensure!(fwd_total == FWD_LEN, "forward read short: {fwd_total}");
+    anyhow::ensure!(
+        fwd_hash == expected(FWD_FROM, FWD_LEN)?,
+        "forward read corrupted"
+    );
+
+    // Connection A finished its 24 MiB "playback" without dying.
+    let a_total = tokio::time::timeout(std::time::Duration::from_secs(30), a_task)
+        .await
+        .context("connection A did not finish")?
+        .context("connection A failed")??;
+    println!("connection A streamed {a_total} bytes and stayed alive");
+
+    engine.remove_torrent(id).await?;
+    bridge.shutdown();
+    engine.stop().await;
+    seed_session.stop().await;
+    Ok(())
+}
