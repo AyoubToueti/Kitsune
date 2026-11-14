@@ -222,6 +222,23 @@ Item {
         return { done: per[bar.fileIdx] || 0, total: total }
     }
 
+    // On-disk download coverage for classic (disk) streaming, as a span the
+    // same shape the demuxer stripe consumes: from the START of the episode
+    // to how much has been downloaded. The engine reports done bytes per
+    // file and the timeline runs in seconds, so the byte fraction doubles as
+    // the time fraction -- within one episode the bitrate is close enough to
+    // uniform for the stripe to track reality. Null (and no stripe) for RAM
+    // streaming (its chip + window stripe tell that story), local files
+    // (everything is on disk already) and unknown totals.
+    function diskSpans() {
+        const info = bar.cachedInfo()
+        const d = bar.dur()
+        if (!info || d <= 0) return []
+        const frac = Math.min(1, info.done / info.total)
+        if (frac <= 0) return []
+        return [{ start: 0, end: frac * d }]
+    }
+
     // Download rate in MiB/s (the engine's per-torrent rate; the backend
     // converts already). "\u2014" while nothing is arriving: paused, stalled,
     // or still handshaking with the swarm.
@@ -250,6 +267,10 @@ Item {
     // black line through the track -- the mpv look -- that stays readable on
     // both the dark glass track and the light one.
     readonly property color cacheStripe: Qt.rgba(0, 0, 0, 0.82)
+    // The on-disk coverage stripe: a dim white fill, YouTube's buffered-bar
+    // vocabulary -- "this is on the drive" -- so it reads underneath the
+    // black mpv cache stripe instead of fighting it for attention.
+    readonly property color diskStripe: Qt.rgba(1, 1, 1, 0.26)
     // The stripe runs thinner than the track it sits in: 3px inside the
     // grown (7px) hovered track, 2px inside the idle (4px) one, exactly like
     // the prototype's seek row.
@@ -455,6 +476,31 @@ Item {
                         height: bar.trackHeight
                         radius: height / 2
                         color: Theme.glassFillHover
+                    }
+
+                    // On-disk coverage -- classic (disk) streaming only.
+                    // Grows from the START of the timeline with the download
+                    // (the black stripe below is mpv's moving demuxer window;
+                    // this one is what is already on the drive and therefore
+                    // instantly seekable). Drawn UNDER the played fill so the
+                    // watched part keeps its gradient, and UNDER the black
+                    // demuxer stripe so both read at once.
+                    Repeater {
+                        model: bar.diskSpans()
+
+                        delegate: Rectangle {
+                            required property var modelData
+
+                            visible: bar.dur() > 0 && modelData.end > modelData.start
+                            anchors.verticalCenter: parent.verticalCenter
+                            x: (modelData.start / bar.dur()) * seek.width
+                            width: ((Math.min(modelData.end, bar.dur())
+                                     - Math.min(modelData.start, bar.dur()))
+                                    / bar.dur()) * seek.width
+                            height: bar.stripeHeight
+                            radius: height / 2
+                            color: bar.diskStripe
+                        }
                     }
 
                     // Played Progress
