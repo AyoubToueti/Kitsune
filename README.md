@@ -21,8 +21,8 @@ Every release ships a portable AppImage, a Debian/Ubuntu `.deb`, and a
 Fedora/openSUSE `.rpm`.
 
     # AppImage — runs on any distro
-    chmod +x Kitsune_*_amd64.AppImage
-    ./Kitsune_*_amd64.AppImage
+    chmod +x Kitsune-*-x86_64.AppImage
+    ./Kitsune-*-x86_64.AppImage
 
     # Debian / Ubuntu
     sudo apt install ./kitsune_*_amd64.deb
@@ -144,12 +144,17 @@ The version lives in one place: `[workspace.package] version` in the root
 `Cargo.toml`. Both crates inherit it, and Cargo regenerates `Cargo.lock` from it.
 
     # bump it (also updates the two Cargo.lock entries)
-    node scripts/sync-version.mjs 0.2.0
+    node scripts/sync-version.mjs 1.0.0
+
+Generate the changelog through the **AI Changelog** workflow
+(`.github/workflows/changelog.yml`), then merge its PR. For the first release,
+run it with `range=HEAD` so the whole backend history is covered; later runs can
+leave the range empty to use the last tag.
 
 Then commit, tag, and push — the tag triggers the release workflow:
 
-    git commit -am "release: v0.2.0"
-    git tag v0.2.0
+    git commit -am "release: v1.0.0"
+    git tag v1.0.0
     git push origin main --tags
 
 The tag **must** match the version; `qt-release.yml` derives the installer

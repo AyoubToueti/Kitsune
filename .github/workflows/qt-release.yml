@@ -1,11 +1,10 @@
 name: qt-release
 
-# Build the Qt/CXX-Qt frontend for Linux and Windows and attach the installers
-# to the release for the pushed tag.
+# Build the Qt6/QML frontend for Linux and Windows and attach the installers to
+# the draft release for the pushed tag.
 #
-# Runs alongside release.yml (the Tauri pipeline) on the same tag: both add
-# assets to the same draft release, with distinct filenames. That keeps "one
-# version number, two frontends" honest -- pushing v0.2.0 publishes both.
+# This is the only shipping frontend: the Tauri/SvelteKit app was retired in
+# PR #1, so a v* tag produces exactly one set of artifacts.
 #
 # The version comes from the tag, not from any file, so a tag can never ship a
 # binary whose own version says something else.
@@ -131,6 +130,19 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          body: |
+            **Kitsune ${{ steps.ver.outputs.version }}** is the first Qt 6 / QML release.
+
+            The backend is the same one built throughout the project: AniList and
+            Jikan metadata, Nyaa release search with Sonarr-derived ranking,
+            librqbit torrent streaming with health monitoring, local lists and
+            continue-watching, AniList sign-in, downloads, and embedded libmpv
+            playback.
+
+            The frontend has been rewritten from Tauri/SvelteKit to Qt 6 + QML
+            (CXX-Qt). Pick the installer for your platform below.
+
+            Full changelog: [CHANGELOG.md](https://github.com/AyoubToueti/Kitsune/blob/main/CHANGELOG.md)
           files: out/*
 
   build-windows:
@@ -563,4 +575,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
+          body: |
+            **Kitsune ${{ steps.ver.outputs.version }}** is the first Qt 6 / QML release.
+
+            The backend is the same one built throughout the project: AniList and
+            Jikan metadata, Nyaa release search with Sonarr-derived ranking,
+            librqbit torrent streaming with health monitoring, local lists and
+            continue-watching, AniList sign-in, downloads, and embedded libmpv
+            playback.
+
+            The frontend has been rewritten from Tauri/SvelteKit to Qt 6 + QML
+            (CXX-Qt). Pick the installer for your platform below.
+
+            Full changelog: [CHANGELOG.md](https://github.com/AyoubToueti/Kitsune/blob/main/CHANGELOG.md)
           files: "Kitsune_*_x64-setup.exe"

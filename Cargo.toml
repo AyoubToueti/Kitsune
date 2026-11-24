@@ -19,7 +19,7 @@ members = ["crates/kitsune-core", "crates/kitsune-qt"]
 # Bump with: cargo set-version --workspace X.Y.Z (or edit this line, then let
 # the next build rewrite Cargo.lock).
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 
 # Release profile lives HERE, not in a member. Cargo ignores a [profile.*]
