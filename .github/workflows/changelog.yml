@@ -1,0 +1,25 @@
+name: AI Changelog
+
+on:
+  workflow_dispatch: # Lets you trigger it manually with a button click
+
+permissions:
+  contents: write
+  models: read
+  pull-requests: write
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog and open PR
+        uses: decoded-cipher/auto-changelog@v1
+        with:
+          output_path: CHANGELOG.md
+          create_pr: true
+          changelog_branch: auto/changelog
+          base_branch: main
