@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate changelog and open PR
-        uses: decoded-cipher/auto-changelog@v1
+        uses: decoded-cipher/auto-changelog@ce67adee794e2602d0850a290bccffd9cb3ee1f9 # v1.1.0
         with:
           range: ${{ inputs.range }}
           output_path: CHANGELOG.md
