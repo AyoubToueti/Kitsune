@@ -2,6 +2,11 @@ name: AI Changelog
 
 on:
   workflow_dispatch: # Lets you trigger it manually with a button click
+    inputs:
+      range:
+        description: "Git range to cover (use HEAD for the full history). Leave empty for last tag..HEAD."
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -19,6 +24,7 @@ jobs:
       - name: Generate changelog and open PR
         uses: decoded-cipher/auto-changelog@v1
         with:
+          range: ${{ inputs.range }}
           output_path: CHANGELOG.md
           create_pr: true
           changelog_branch: auto/changelog
