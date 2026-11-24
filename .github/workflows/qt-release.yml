@@ -100,13 +100,15 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          # nfpm reads ${VERSION} from the environment. `GOBIN` keeps it off
-          # the system prefix without sudo.
+          # nfpm reads ${VERSION} and ${SYS_LIBC} from the environment. `GOBIN`
+          # keeps it off the system prefix without sudo. The libc package name
+          # differs between Debian (libc6) and Fedora/openSUSE (glibc), so set
+          # it per package format.
           curl -fsSL https://github.com/goreleaser/nfpm/releases/download/v2.41.1/nfpm_2.41.1_Linux_x86_64.tar.gz \
             | tar xz -C /tmp nfpm
           sudo install -m 0755 /tmp/nfpm /usr/local/bin/nfpm
-          nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p deb
-          nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p rpm
+          SYS_LIBC=libc6 nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p deb
+          SYS_LIBC=glibc nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p rpm
 
       - name: Collect artifacts
         run: |
