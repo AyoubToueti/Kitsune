@@ -131,16 +131,46 @@ jobs:
         with:
           draft: true
           body: |
-            **Kitsune ${{ steps.ver.outputs.version }}** is the first Qt 6 / QML release.
+            **Kitsune ${{ steps.ver.outputs.version }}** is the first public release of
+            Kitsune, a desktop anime streaming app.
 
-            The backend is the same one built throughout the project: AniList and
-            Jikan metadata, Nyaa release search with Sonarr-derived ranking,
-            librqbit torrent streaming with health monitoring, local lists and
-            continue-watching, AniList sign-in, downloads, and embedded libmpv
-            playback.
+            Kitsune brings discovery, search, and playback together in one place.
+            Browse and search anime metadata powered by
+            [AniList](https://anilist.co) (with [Jikan](https://jikan.moe) for
+            episode lists), find matching releases on [Nyaa](https://nyaa.si), and
+            stream them directly from torrents — without leaving the app.
 
-            The frontend has been rewritten from Tauri/SvelteKit to Qt 6 + QML
-            (CXX-Qt). Pick the installer for your platform below.
+            ### What you can do
+
+            - **Discover** — trending rails, curated shelves, top charts, and a genre grid.
+            - **Search & filter** — filter by genre, season, year, format, status, and
+              streaming resolution.
+            - **Details** — synopsis, metadata, related and recommended titles, trailer
+              cards, and external streaming links.
+            - **Stream** — Nyaa release search, Sonarr-derived ranking, swarm-health
+              checks, and playback through librqbit with live stream monitoring.
+            - **Track** — continue-watching, watch progress, resume, and per-title list
+              status (watching / completed / planned / and more).
+            - **Sign in** — AniList OAuth through a `kitsune://` deep link; the token
+              persists across restarts.
+            - **Play your way** — use the embedded libmpv player, or hand a stream off to
+              a local player such as [mpv](https://mpv.io).
+            - **Downloads** — keep episodes locally for offline playback.
+
+            The frontend is built with Qt 6 + QML through
+            [CXX-Qt](https://kdab.github.io/cxx-qt/), with the application logic in
+            Rust. Kitsune was originally built with Tauri/SvelteKit; 1.0.0 is the
+            first release of the Qt/QML rewrite. The backend is the same one developed
+            throughout the project, so this release consolidates the full feature set
+            under the new UI.
+
+            ### Install
+
+            - **Linux** — AppImage, Debian/Ubuntu `.deb`, or Fedora/openSUSE `.rpm`.
+              libmpv is bundled with the AppImage, `.deb`, and `.rpm` builds. The
+              AppImage needs FUSE 2 (or run it with
+              `--appimage-extract-and-run`).
+            - **Windows** — `Kitsune_*_x64-setup.exe` bundles Qt and libmpv.
 
             Full changelog: [CHANGELOG.md](https://github.com/AyoubToueti/Kitsune/blob/main/CHANGELOG.md)
           files: out/*
@@ -576,16 +606,46 @@ jobs:
         with:
           draft: true
           body: |
-            **Kitsune ${{ steps.ver.outputs.version }}** is the first Qt 6 / QML release.
+            **Kitsune ${{ steps.ver.outputs.version }}** is the first public release of
+            Kitsune, a desktop anime streaming app.
 
-            The backend is the same one built throughout the project: AniList and
-            Jikan metadata, Nyaa release search with Sonarr-derived ranking,
-            librqbit torrent streaming with health monitoring, local lists and
-            continue-watching, AniList sign-in, downloads, and embedded libmpv
-            playback.
+            Kitsune brings discovery, search, and playback together in one place.
+            Browse and search anime metadata powered by
+            [AniList](https://anilist.co) (with [Jikan](https://jikan.moe) for
+            episode lists), find matching releases on [Nyaa](https://nyaa.si), and
+            stream them directly from torrents — without leaving the app.
 
-            The frontend has been rewritten from Tauri/SvelteKit to Qt 6 + QML
-            (CXX-Qt). Pick the installer for your platform below.
+            ### What you can do
+
+            - **Discover** — trending rails, curated shelves, top charts, and a genre grid.
+            - **Search & filter** — filter by genre, season, year, format, status, and
+              streaming resolution.
+            - **Details** — synopsis, metadata, related and recommended titles, trailer
+              cards, and external streaming links.
+            - **Stream** — Nyaa release search, Sonarr-derived ranking, swarm-health
+              checks, and playback through librqbit with live stream monitoring.
+            - **Track** — continue-watching, watch progress, resume, and per-title list
+              status (watching / completed / planned / and more).
+            - **Sign in** — AniList OAuth through a `kitsune://` deep link; the token
+              persists across restarts.
+            - **Play your way** — use the embedded libmpv player, or hand a stream off to
+              a local player such as [mpv](https://mpv.io).
+            - **Downloads** — keep episodes locally for offline playback.
+
+            The frontend is built with Qt 6 + QML through
+            [CXX-Qt](https://kdab.github.io/cxx-qt/), with the application logic in
+            Rust. Kitsune was originally built with Tauri/SvelteKit; 1.0.0 is the
+            first release of the Qt/QML rewrite. The backend is the same one developed
+            throughout the project, so this release consolidates the full feature set
+            under the new UI.
+
+            ### Install
+
+            - **Linux** — AppImage, Debian/Ubuntu `.deb`, or Fedora/openSUSE `.rpm`.
+              libmpv is bundled with the AppImage, `.deb`, and `.rpm` builds. The
+              AppImage needs FUSE 2 (or run it with
+              `--appimage-extract-and-run`).
+            - **Windows** — `Kitsune_*_x64-setup.exe` bundles Qt and libmpv.
 
             Full changelog: [CHANGELOG.md](https://github.com/AyoubToueti/Kitsune/blob/main/CHANGELOG.md)
           files: "Kitsune_*_x64-setup.exe"

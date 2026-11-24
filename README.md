@@ -34,8 +34,8 @@ Fedora/openSUSE `.rpm`.
 > installed, either install it (`libfuse2t64` on Ubuntu 24.04+) or run the
 > AppImage with `--appimage-extract-and-run`.
 
-Playback runs through an embedded libmpv, so `libmpv` must be installed
-(`libmpv2` on Debian/Ubuntu, `mpv-libs` on Fedora).
+Playback runs through an embedded libmpv, bundled with the AppImage, `.deb`,
+and `.rpm` builds.
 
 ### Windows
 
