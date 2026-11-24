@@ -1,16 +1,27 @@
-name: AI Changelog
+name: Changelog
+
+# Generate CHANGELOG.md from the git history and open a PR with the result.
+#
+# This replaces the former AI Changelog action: GitHub Models was retired on
+# 2026-07-30, so that workflow could no longer produce a changelog.
+#
+# For the first release, run with range=HEAD so the whole backend history is
+# covered. Later releases can leave the range empty to use last tag..HEAD.
 
 on:
-  workflow_dispatch: # Lets you trigger it manually with a button click
+  workflow_dispatch:
     inputs:
       range:
-        description: "Git range to cover (use HEAD for the full history). Leave empty for last tag..HEAD."
+        description: "Git range (leave empty for last tag..HEAD; use HEAD for full history)."
+        required: false
+        default: ""
+      version:
+        description: "Version label for the changelog section (e.g. 1.0.0)."
         required: false
         default: ""
 
 permissions:
   contents: write
-  models: read
   pull-requests: write
 
 jobs:
@@ -21,11 +32,35 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Generate changelog and open PR
-        uses: decoded-cipher/auto-changelog@ce67adee794e2602d0850a290bccffd9cb3ee1f9 # v1.1.0
-        with:
-          range: ${{ inputs.range }}
-          output_path: CHANGELOG.md
-          create_pr: true
-          changelog_branch: auto/changelog
-          base_branch: main
+      - name: Generate CHANGELOG.md
+        env:
+          RANGE: ${{ inputs.range }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ -n "$RANGE" ]; then args+=("$RANGE"); fi
+          if [ -n "$VERSION" ]; then args+=(--version "$VERSION"); fi
+          node scripts/changelog.mjs "${args[@]}" --output CHANGELOG.md
+
+      - name: Open or update the changelog PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- CHANGELOG.md; then
+            echo "CHANGELOG.md is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B auto/changelog
+          git add CHANGELOG.md
+          git commit -m "chore: update CHANGELOG.md [skip ci]"
+          git push --force origin auto/changelog
+          gh pr create \
+            --base main \
+            --head auto/changelog \
+            --title "chore: update CHANGELOG.md" \
+            --body "Generated from the git history." \
+            || echo "PR already exists; branch updated."

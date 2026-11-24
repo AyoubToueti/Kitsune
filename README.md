@@ -146,10 +146,11 @@ The version lives in one place: `[workspace.package] version` in the root
     # bump it (also updates the two Cargo.lock entries)
     node scripts/sync-version.mjs 1.0.0
 
-Generate the changelog through the **AI Changelog** workflow
-(`.github/workflows/changelog.yml`), then merge its PR. For the first release,
-run it with `range=HEAD` so the whole backend history is covered; later runs can
-leave the range empty to use the last tag.
+Generate the changelog from the git history (or run the **Changelog** workflow,
+which opens a PR with the result):
+
+    node scripts/changelog.mjs HEAD --version 1.0.0  # first release: full history
+    node scripts/changelog.mjs --version 1.1.0       # later: last tag..HEAD
 
 Then commit, tag, and push — the tag triggers the release workflow:
 
