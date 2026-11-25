@@ -122,10 +122,17 @@ Popup {
                 ? s.resumeRewindSeconds : 20
             popup.binaryUnitsValue = s.useBinaryUnits === true
             popup.titleLanguageValue = s.titleLanguage || "english"
+            // Absent means "the default", which is RAM: an existing reader
+            // must keep the behaviour they already have.
+            popup.ramStreamingValue = s.ramStreaming !== false
+            popup.ramBufferValue = (s.ramBufferMib >= 48) ? s.ramBufferMib : 256
+            ramBufferBox.value = popup.ramBufferValue
             popup.loading = false
         }
         function onSettingsFailed(message) {
             popup.loading = false
+            // Not a streaming outcome: a restart would not fix a bad payload.
+            popup.restartOffered = false
             status.text = "Failed: " + message
         }
         function onAuthStatusReady(signedInNow) {
@@ -137,6 +144,24 @@ Popup {
             // them, or a failure raised elsewhere prints in the footer of a
             // popup the reader is not looking at.
             if (!popup.opened) return
+            popup.restartOffered = false
+            status.text = message
+        }
+        function onStreamingModeApplied(applied, message) {
+            // Also a broadcast-ish signal, but it only ever answers this
+            // popup's own request, so the closed-popup guard is about the
+            // note rather than the session.
+            popup.streamingNote = message
+            // Whatever the outcome, the footer is now talking about the
+            // streaming mode -- so offer the restart beside that message. The
+            // change always takes effect after a relaunch, applied live or
+            // not.
+            popup.restartOffered = true
+            if (!popup.opened) return
+            status.text = message
+        }
+        function onRestartFailed(message) {
+            popup.restartOffered = false
             status.text = message
         }
     }
@@ -154,6 +179,16 @@ Popup {
 
     // Whether the speed test reads in MiB/s rather than Mbps.
     property bool binaryUnitsValue: false
+
+    // Stream playback into RAM instead of writing pieces to disk.
+    property bool ramStreamingValue: true
+    // Size of that RAM buffer, in MiB.
+    property int ramBufferValue: 256
+    // Result of the last attempt to apply a mode change.
+    property string streamingNote: ""
+    // True while the footer carries a streaming-mode message, which is when
+    // a restart button belongs beside it.
+    property bool restartOffered: false
 
     // Player shortcut overrides, action -> key sequence. Edited by the
     // Shortcuts section and written back inside `current`.
@@ -246,7 +281,19 @@ Popup {
         s.resumeBehavior = popup.resumeValue
         s.useBinaryUnits = popup.binaryUnitsValue
         s.titleLanguage = popup.titleLanguageValue
+        s.ramStreaming = popup.ramStreamingValue
+        s.ramBufferMib = Math.round(ramBufferBox.value)
         backend.setSettings(JSON.stringify(s))
+    }
+
+    /// Save the mode change, then ask the backend to restart the session.
+    ///
+    /// Two steps because the mode is baked into a session when it starts:
+    /// `setSettings` only writes the file, and `applyStreamingMode` decides
+    /// whether the running session can be replaced.
+    function saveAndApplyStreaming() {
+        popup.save()
+        if (backend) backend.applyStreamingMode()
     }
 
     FolderDialog {
@@ -1026,6 +1073,107 @@ Popup {
                     }
                 }
 
+                // --- Streaming mode --------------------------------------
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 24
+                    Layout.rightMargin: 24
+                    implicitHeight: streamCol.implicitHeight + 28
+                    radius: 10
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.borderSubtle
+
+                    ColumnLayout {
+                        id: streamCol
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.margins: 14
+                        spacing: 10
+
+                        Text {
+                            text: "STREAMING"
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "Stream episodes into RAM (no disk writes)"
+                                color: Theme.ink
+                                font.pixelSize: 12
+                            }
+
+                            ThemedSwitch {
+                                id: ramSwitch
+                                checked: popup.ramStreamingValue
+                                onToggled: {
+                                    popup.ramStreamingValue = checked
+                                    popup.saveAndApplyStreaming()
+                                }
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "On, pieces are held in memory and nothing is written to disk. "
+                                + "Off is the classic mode: pieces download to the directory above "
+                                + "and the player streams them from there."
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "If the disk is too full for a classic play, it falls back to RAM "
+                                + "automatically so the episode still starts."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 8
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: "RAM buffer (MiB)"
+                                color: popup.ramStreamingValue ? Theme.ink : Theme.inkFaint
+                                font.pixelSize: 12
+                                font.bold: true
+                            }
+
+                            ThemedSpinBox {
+                                id: ramBufferBox
+                                from: 48
+                                to: 4096
+                                // The buffer only exists in RAM mode, so
+                                // editing its size there would be a no-op.
+                                enabled: popup.ramStreamingValue
+                                onEdited: popup.saveAndApplyStreaming()
+                            }
+                        }
+
+                        Text {
+                            Layout.fillWidth: true
+                            text: "Shared by every stream at once; 48 MiB is the floor one piece needs."
+                            color: Theme.inkFaint
+                            font.pixelSize: 10
+                            wrapMode: Text.WordWrap
+                        }
+
+                    }
+                }
+
                 // --- Internet speed test ---------------------------------
                 Rectangle {
                     Layout.fillWidth: true
@@ -1243,9 +1391,43 @@ Popup {
                 id: status
                 anchors.left: parent.left
                 anchors.leftMargin: 24
+                anchors.right: restartButton.visible ? restartButton.left : parent.right
+                anchors.rightMargin: restartButton.visible ? 12 : 24
                 anchors.verticalCenter: parent.verticalCenter
                 color: Theme.danger
                 font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+
+            // Sits beside the streaming-mode message rather than inside the
+            // STREAMING card: the footer is where the outcome of the change is
+            // reported, so the way to act on it belongs there too.
+            Rectangle {
+                id: restartButton
+                anchors.right: parent.right
+                anchors.rightMargin: 24
+                anchors.verticalCenter: parent.verticalCenter
+                width: 110
+                height: 32
+                radius: 8
+                visible: popup.restartOffered
+                color: restartMouse.containsMouse ? Theme.accentHover : Theme.accent
+
+                Text {
+                    anchors.centerIn: parent
+                    text: "Restart now"
+                    color: "white"
+                    font.pixelSize: 12
+                    font.bold: true
+                }
+
+                MouseArea {
+                    id: restartMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: popup.backend.restartApp()
+                }
             }
 
             // Changes save as they happen, so the footer only carries status.

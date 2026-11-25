@@ -115,7 +115,10 @@ impl HttpBridge {
     /// Stop serving.
     ///
     /// Aborts the server task; the socket is released when the task drops.
-    pub fn shutdown(self) {
+    /// Takes `&self` because `JoinHandle::abort` does: the bridge is held
+    /// behind an `Arc` by the player state, so a consuming method could not be
+    /// called on a restart.
+    pub fn shutdown(&self) {
         self.task.abort();
     }
 }

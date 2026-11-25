@@ -26,12 +26,18 @@ on:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "vendor/**"
+      - "patches/**"
+      - "scripts/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "vendor/**"
+      - "patches/**"
+      - "scripts/**"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 

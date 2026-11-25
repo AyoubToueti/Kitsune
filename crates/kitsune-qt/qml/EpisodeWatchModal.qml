@@ -118,10 +118,38 @@ Popup {
         }
     }
 
+    Timer {
+        id: reloadApply
+        interval: 400
+        repeat: true
+        running: modal.reloadSeekTarget >= 0
+        onTriggered: {
+            const p = playerLoader.item
+            if (!p) return
+            if ((p.duration || 0) > 0) {
+                p.command(["seek", String(modal.reloadSeekTarget), "absolute"])
+                modal.reloadSeekTarget = -1
+                reloadApply.stop()
+            }
+        }
+    }
+
     property int torrentId: -1
     // Local playback reuses the torrent file list and player stage, but every
     // row is a completed download and no torrent/peer UI is shown.
     property bool localPlayback: false
+
+    // --- dead-stream auto-recovery ----------------------------------------
+    //
+    // A streaming file can die mid-playback (the HTTP body errors out). When
+    // that happened the modal used to sit on a black frame forever. mpv now
+    // reports END_FILE with reason "error"; the stream is reloaded at the
+    // last playhead instead. Attempts are capped so a genuinely broken URL
+    // cannot spin into an endless reload loop.
+    property real lastPlayhead: 0
+    property int reloadAttempts: 0
+    property real reloadSeekTarget: -1
+    readonly property int reloadAttemptsMax: 3
     property var files: []
     property int chosenIdx: -1
     property string playingUrl: ""
@@ -129,9 +157,23 @@ Popup {
     property var progress: null
     property bool paused: false
     property bool settingsOpen: false
-    property var speedHistory: []
-    property real lastBytes: 0
-    property int staleSeconds: 0
+
+    // The engine's failure message while the stream is up, from the stats
+    // poll (TorrentProgress.error). librqbit fatals on unrecoverable write
+    // errors -- a full disk being the usual one -- and after that every
+    // stream request returns HTTP 500, so reloading cannot help: the modal
+    // shows this instead of burning the reload budget.
+    readonly property string engineError: {
+        if (progress === null || progress.error === undefined) return ""
+        return progress.error || ""
+    }
+    // True when that failure names the disk (wording varies by OS).
+    readonly property bool engineErrorDiskFull:
+        /(no space left|not enough space|disk full|enospc)/i.test(engineError)
+
+    // Set when the backend had to stream from RAM because the disk was too
+    // full. Cleared on open and on close so a later play starts clean.
+    property bool ramFallback: false
 
     // Slide-over drawer that lists every file of a multi-file release.
     property bool filesDrawerOpen: false
@@ -591,6 +633,7 @@ Popup {
         // in flight from the previous open.
         modal.searchGeneration += 1
         modal.localPlayback = false
+        modal.ramFallback = false
         modal.animeProvider = provider || "anilist"
         modal.loadedAnimeId = 0
         modal.loadedEpisode = 0
@@ -764,6 +807,7 @@ Popup {
     function loadStream() {
         const p = playerLoader.item
         if (p === null || modal.playingUrl.length === 0) return
+        modal.reloadAttempts = 0
         p.command(["loadfile", modal.playingUrl, "replace"])
     }
 
@@ -773,21 +817,6 @@ Popup {
         let v = bytes, u = 0
         while (v >= 1024 && u < units.length - 1) { v /= 1024; u++ }
         return v.toFixed(v < 10 && u > 0 ? 1 : 0) + " " + units[u]
-    }
-
-    function formatSpeed(mbps) {
-        if (!mbps || mbps <= 0) return "\u2014"
-        return mbps.toFixed(1) + " MiB/s"
-    }
-
-    function formatEta(seconds) {
-        if (seconds === null || seconds === undefined || seconds <= 0) return "\u2014"
-        const h = Math.floor(seconds / 3600)
-        const m = Math.floor((seconds % 3600) / 60)
-        const s = Math.floor(seconds % 60)
-        if (h > 0) return h + "h " + m + "m"
-        if (m > 0) return m + "m " + s + "s"
-        return s + "s"
     }
 
     function percent(f) {
@@ -804,43 +833,6 @@ Popup {
         }
         if (total <= 0) return 0
         return Math.min(done / total, 1)
-    }
-
-    function torrentFraction() {
-        if (modal.progress === null) return 0
-        const total = modal.progress.totalBytes || 0
-        if (total <= 0) return 0
-        return Math.min((modal.progress.progressBytes || 0) / total, 1)
-    }
-
-    function chosenBytes() {
-        if (modal.progress === null || modal.chosenIdx < 0) return 0
-        const per = modal.progress.fileProgress || []
-        return per[modal.chosenIdx] || 0
-    }
-
-    function chosenTotal() {
-        for (const f of modal.files) if (f.idx === modal.chosenIdx) return f.lengthBytes
-        return 0
-    }
-
-    function connectionLabel() {
-        if (modal.progress === null) return "Waiting for stats\u2026"
-        if (modal.progress.state === "error") return "Error"
-        if (modal.paused || modal.progress.state === "paused") return "Paused"
-        if (modal.progress.peersLive > 0) return "Connected (" + modal.progress.peersLive + " peers)"
-        if (modal.progress.peersConnecting > 0 || modal.progress.peersQueued > 0) return "Connecting\u2026"
-        return "Searching for peers"
-    }
-
-    function healthLabel() {
-        if (modal.progress === null) return "\u2014"
-        if (modal.progress.state === "error") return "Error"
-        if (modal.paused) return "Paused"
-        if (modal.staleSeconds >= 10) return "Stalled"
-        if (modal.progress.peersLive >= 3) return "Healthy"
-        if (modal.progress.peersLive > 0) return "Weak"
-        return "Searching"
     }
 
     function badgeColor(index) {
@@ -1086,7 +1078,6 @@ Popup {
         files = []
         playingUrl = ""
         progress = null
-        speedHistory = []
         searching = false
         error = ""
         stage = "releases"
@@ -1103,7 +1094,6 @@ Popup {
         chosenIdx = -1
         files = []
         progress = null
-        speedHistory = []
         searching = false
         stage = "releases"
         resumeLast = false
@@ -1416,10 +1406,20 @@ Popup {
         }
 
         function onStreamUrlReady(torrentId, fileIdx, url) {
-            if (torrentId !== modal.torrentId || fileIdx !== modal.chosenIdx) return
+            // The id can DIFFER from `modal.torrentId`: the exact disk-space
+            // check re-adds the torrent in RAM, which allocates a new id. The
+            // file index is the reliable identity here, so match on it and
+            // adopt whatever id the backend is actually streaming -- otherwise
+            // the teardown below would remove a torrent that no longer exists
+            // and leak the live one.
+            if (fileIdx !== modal.chosenIdx) return
+            if (torrentId !== modal.torrentId) {
+                if (!modal.ramFallback) return
+                modal.torrentId = torrentId
+            }
             modal.playingUrl = url
             modal.stage = "play"
-            modal.backend.holdTorrent(modal.torrentId)
+            modal.backend.holdTorrent(torrentId)
             modal.loadStream()
             if (modal.backend && modal.animeId > 0) {
                 // NOT `recordLastPlayed` here: the stream has only just been
@@ -1448,6 +1448,16 @@ Popup {
             modal.requestResume()
         }
 
+        function onStreamingFallback(reason) {
+            // Only "lowDiskSpace" exists today; an unknown value still shows
+            // the generic note rather than nothing, because the fallback
+            // happened either way.
+            modal.ramFallback = true
+            if (reason !== "lowDiskSpace") {
+                console.log("streaming fallback:", reason)
+            }
+        }
+
         function onWatchPositionsReady(json) {
             const all = JSON.parse(json) || {}
             const saved = all[String(modal.animeId)]
@@ -1464,18 +1474,6 @@ Popup {
         function onTorrentStatsReady(json) {
             const next = JSON.parse(json)
             if (next === null) return
-
-            const bytes = next.progressBytes || 0
-            if (bytes === modal.lastBytes) {
-                modal.staleSeconds += 0.5
-            } else {
-                modal.staleSeconds = 0
-                modal.lastBytes = bytes
-            }
-            const hist = modal.speedHistory.slice()
-            hist.push(next.downloadMbps || 0)
-            while (hist.length > 30) hist.shift()
-            modal.speedHistory = hist
 
             modal.progress = next
         }
@@ -2142,6 +2140,95 @@ Popup {
                             }
                         }
 
+                        // A stream that dies mid-playback (HTTP body error)
+                        // used to leave a silent black frame. Reload it at the
+                        // last playhead; a fresh episode resets the counter.
+                        // A torrent the ENGINE gave up on (fatal write error,
+                        // full disk) is never coming back -- every reload
+                        // just fetches HTTP 500 -- so the budget is not spent
+                        // on it and the banner explains why playback stopped.
+                        Connections {
+                            target: playerLoader.item
+                            function onStateChanged() {
+                                const p = playerLoader.item
+                                if (p && (p.position || 0) > 0)
+                                    modal.lastPlayhead = p.position
+                            }
+                            function onEndFile(reason, error) {
+                                if (reason !== "error") return
+                                if (modal.localPlayback || modal.playingUrl.length === 0) return
+                                if (playerLoader.item === null) return
+                                if (modal.engineError !== "") return
+                                if (modal.reloadAttempts >= modal.reloadAttemptsMax) {
+                                    console.warn("stream died and reload attempts are exhausted:",
+                                                 error)
+                                    return
+                                }
+                                modal.reloadAttempts++
+                                console.warn("stream died mid-playback, reloading at",
+                                             modal.lastPlayhead.toFixed(1) + "s:", error)
+                                playerLoader.item.command(["loadfile", modal.playingUrl, "replace"])
+                                if (modal.lastPlayhead > 0)
+                                    modal.reloadSeekTarget = modal.lastPlayhead
+                            }
+                        }
+
+                        // Shown when the torrent engine reported a fatal error
+                        // while this stream was up -- a full disk being the
+                        // usual cause. Pinned like the RAM-fallback note.
+                        Rectangle {
+                            anchors.top: parent.top
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.topMargin: 14
+                            z: 20
+                            visible: modal.stage === "play"
+                                && !modal.localPlayback
+                                && modal.engineError !== ""
+                            width: engineErrorNote.implicitWidth + 24
+                            height: engineErrorNote.implicitHeight + 14
+                            radius: 8
+                            color: Theme.surfaceRaised
+                            border.width: 1
+                            border.color: Theme.healthRed
+
+                            Text {
+                                id: engineErrorNote
+                                anchors.centerIn: parent
+                                text: {
+                                    if (!modal.engineErrorDiskFull)
+                                        return "Playback stopped \u2014 " + modal.engineError
+                                    return "Playback stopped \u2014 the disk is full"
+                                }
+                                color: Theme.ink
+                                font.pixelSize: 11
+                            }
+                        }
+
+                        // Shown only when the disk was too full and playback
+                        // went to RAM instead. Pinned to the top of the video
+                        // so it does not fight the controls at the bottom.
+                        Rectangle {
+                            anchors.top: parent.top
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.topMargin: 14
+                            z: 20
+                            visible: modal.ramFallback && modal.stage === "play"
+                            width: fallbackNote.implicitWidth + 24
+                            height: fallbackNote.implicitHeight + 14
+                            radius: 8
+                            color: Theme.surfaceRaised
+                            border.width: 1
+                            border.color: Theme.borderSubtle
+
+                            Text {
+                                id: fallbackNote
+                                anchors.centerIn: parent
+                                text: "Low disk space \u2014 streaming from RAM this time"
+                                color: Theme.ink
+                                font.pixelSize: 11
+                            }
+                        }
+
                         MouseArea {
                             id: viewportMouseArea
                             anchors.fill: parent
@@ -2356,8 +2443,16 @@ Popup {
                             }
 
                             player: playerLoader.item
+                            backend: modal.backend
                             playingUrl: modal.playingUrl
-                            bufferedFraction: modal.fileFraction()
+                            torrentId: modal.localPlayback ? -1 : modal.torrentId
+                            // The live transfer chips (cache / speed / peers)
+                            // read this. Null for local files: a downloaded
+                            // file has no swarm, so those chips would be
+                            // noise.
+                            torrentStats: modal.localPlayback ? null : modal.progress
+                            fileIdx: modal.chosenIdx
+                            files: modal.files
                             fullscreen: modal.fullscreen
                             onOpenSettings: modal.settingsOpen = !modal.settingsOpen
                             onToggleFullscreen: modal.toggleFullscreen()
@@ -2690,135 +2785,6 @@ Popup {
                         }
                     }
 
-                    GlassPanel {
-                        Layout.fillWidth: true
-                        visible: !modal.fullscreen && !modal.localPlayback
-                        implicitHeight: torrentStatsCol.implicitHeight + 16
-                        strong: true
-
-                        ColumnLayout {
-                            id: torrentStatsCol
-                            anchors.fill: parent
-                            anchors.margins: 10
-                            spacing: 8
-
-                            RowLayout {
-                                Layout.fillWidth: true
-
-                                Rectangle {
-                                    width: 8; height: 8; radius: 4
-                                    color: modal.paused ? Theme.inkFaint
-                                        : (modal.fileFraction() >= 1 ? Theme.healthGreen : Theme.accent)
-                                }
-                                Text {
-                                    text: modal.paused ? "Paused"
-                                        : (modal.stage === "play"
-                                            ? (modal.playerBuffering() ? "Buffering\u2026" : "Playing")
-                                            : (modal.fileFraction() >= 1 ? "Fully buffered" : "Buffering\u2026"))
-                                    color: Theme.ink
-                                    font.pixelSize: 12
-                                    font.bold: true
-                                }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    text: modal.percent(modal.fileFraction()) + "%"
-                                    color: Theme.accent
-                                    font.pixelSize: 12
-                                    font.bold: true
-                                }
-                                Rectangle {
-                                    width: 24; height: 24; radius: 6
-                                    color: pauseMouse.containsMouse ? Theme.glassFillHover : "transparent"
-                                    border.width: 1; border.color: Theme.glassBorder
-                                    PlayerIcon {
-                                        anchors.centerIn: parent
-                                        kind: modal.paused ? "play" : "pause"
-                                        color: Theme.inkMuted
-                                        width: 12; height: 12
-                                    }
-                                    MouseArea {
-                                        id: pauseMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: modal.togglePause()
-                                    }
-                                }
-                                Rectangle {
-                                    width: 24; height: 24; radius: 6
-                                    color: cancelMouse.containsMouse ? Theme.glassFillHover : "transparent"
-                                    border.width: 1; border.color: Theme.glassBorder
-                                    PlayerIcon {
-                                        anchors.centerIn: parent
-                                        kind: "stop"
-                                        color: Theme.inkMuted
-                                        width: 11; height: 11
-                                    }
-                                    MouseArea {
-                                        id: cancelMouse
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: modal.backToReleases()
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                height: 4
-                                radius: 2
-                                color: Theme.glassBorder
-                                Rectangle {
-                                    width: parent.width * modal.fileFraction()
-                                    height: parent.height
-                                    radius: 2
-                                    color: Theme.accent
-                                }
-                            }
-
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Text {
-                                    text: modal.formatSize(modal.chosenBytes()) + " / " + modal.formatSize(modal.chosenTotal())
-                                    color: Theme.inkFaint
-                                    font.pixelSize: 10
-                                }
-                                Item { Layout.fillWidth: true }
-                                Text {
-                                    text: "whole torrent " + modal.percent(modal.torrentFraction()) + "%"
-                                    color: Theme.inkFaint
-                                    font.pixelSize: 10
-                                }
-                            }
-
-                            Row {
-                                spacing: 14
-                                Text {
-                                    text: "Peers " + modal.connectionLabel()
-                                    color: Theme.inkMuted
-                                    font.pixelSize: 10
-                                }
-                                Text {
-                                    text: "Down " + modal.formatSpeed(modal.progress ? modal.progress.downloadMbps : 0)
-                                    color: Theme.inkMuted
-                                    font.pixelSize: 10
-                                }
-                                Text {
-                                    text: "ETA " + modal.formatEta(modal.progress ? modal.progress.etaSeconds : 0)
-                                    color: Theme.inkMuted
-                                    font.pixelSize: 10
-                                }
-                                Text {
-                                    text: "Health " + modal.healthLabel()
-                                    color: modal.healthLabel() === "Healthy" ? Theme.healthGreen : Theme.inkMuted
-                                    font.pixelSize: 10
-                                    font.bold: true
-                                }
-                            }
-                        }
-                    }
-
                     RowLayout {
                         Layout.fillWidth: true
                         visible: !modal.fullscreen
@@ -3015,11 +2981,24 @@ Popup {
                         anchors.bottom: parent.bottom
                         anchors.margins: 8
                         width: Math.min(400, drawerLayer.width - 40)
-                        x: modal.filesDrawerOpen ? drawerLayer.width - width - 8 : drawerLayer.width
                         radius: 8
                         strong: true
-                        Behavior on x {
+                        x: drawerLayer.width
+
+                        states: State {
+                            name: "open"
+                            when: modal.filesDrawerOpen
+                            PropertyChanges {
+                                target: drawerPanel
+                                x: drawerLayer.width - drawerPanel.width - 8
+                            }
+                        }
+
+                        // Only fires on an actual state change (open<->closed). The slide is
+                        // animated; the closed-position resize is not.
+                        transitions: Transition {
                             NumberAnimation {
+                                properties: "x"
                                 duration: Theme.animationsEnabled ? 240 : 0
                                 easing.type: Easing.OutCubic
                             }

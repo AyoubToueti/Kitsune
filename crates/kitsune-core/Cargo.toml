@@ -23,6 +23,12 @@ anyhow = "1.0.104"
 # logging setup.
 librqbit = { version = "9.0.1", features = ["http-api", "tracing-subscriber-utils"] }
 librqbit-dualstack-sockets = "0.7.0"
+# torrent::ram_storage uses `Lengths`/`ValidPieceIndex`/`Id20` directly, and
+# `create_torrent` in the RAM streaming E2E test needs `BlockingSpawner`.
+# Version-matched with librqbit's own so the types unify.
+librqbit-core = "9.0.1"
+# The RAM pool's locks: matches librqbit's own locking (no poisoning, cheap).
+parking_lot = "0.12"
 # `net` for the bridge's TcpListener, `sync`/`time` for the engine's locks and
 # poll loops, `rt` for spawning the bridge task.
 tokio = { version = "1.53.1", features = ["rt", "sync", "time", "net"] }
@@ -34,8 +40,12 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 # diagnostics::metrics reads this process's CPU and RAM (cross-platform:
-# /proc on Linux, native APIs elsewhere).
-sysinfo = "0.39"
+# /proc on Linux, native APIs elsewhere). `linux-tmpfs` keeps tmpfs mounts in
+# the disk list: torrent::engine's free-space probe must see the tmpfs that
+# scripts/dev/low-disk.sh mounts, or every check degrades to "assume there
+# is room" and a full RAM disk is discovered by ENOSPC mid-download instead
+# of refused up front.
+sysinfo = { version = "0.39", features = ["linux-tmpfs"] }
 # diagnostics::logging resolves the OS log directory (and the token store will
 # need it too).
 dirs = "6"

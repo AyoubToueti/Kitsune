@@ -72,19 +72,35 @@ class MpvObject : public QQuickFramebufferObject
   Q_PROPERTY(bool cacheEof READ cacheEof NOTIFY stateChanged)
   /// mpv's own cache-fill percentage, 0..100; -1 when not reported.
   Q_PROPERTY(int cacheBufferingPercent READ cacheBufferingPercent NOTIFY stateChanged)
+  /// Seconds of media buffered AHEAD of the playback position -- the REMAINING
+  /// cache, never the cumulative span cached since the file start.
+  ///
+  /// This is the number PotPlayer shows as "Cache: 3m11s": how long the video
+  /// could keep playing from the demuxer cache if the network died right now.
+  /// It grows while the torrent delivers faster than playback consumes it and
+  /// shrinks as the playhead advances. Sourced from mpv's `demuxer-cache-state`
+  /// `cache-duration` (exact media time, not a byte-count estimate);
+  /// `demuxer-cache-time` minus the playhead is only the fallback for builds
+  /// lacking that field, because `demuxer-cache-time` is the buffered-end
+  /// TIMESTAMP and reading it raw reports the span from the file start.
+  /// 0 while nothing is cached ahead.
+  Q_PROPERTY(double cacheAhead READ cacheAhead NOTIFY stateChanged)
   /// Milliseconds from `loadfile` to the first frame actually being shown.
   ///
   /// Zero until the first frame arrives. Turns "it takes ages to start" into a
   /// number, so a fix can be proven rather than assumed.
   Q_PROPERTY(qint64 timeToFirstFrameMs READ timeToFirstFrameMs NOTIFY stateChanged)
-  /// The time ranges mpv can seek to WITHOUT touching the network, as an
-  /// array of `{ start, end }` objects in seconds.
+  /// The time ranges mpv's demuxer can serve WITHOUT touching the network,
+  /// as an array of `{ start, end }` objects in seconds.
   ///
-  /// This is the honest "grey bar": mpv reports the demuxer cache's own
-  /// seekable ranges, so a seek inside one is served from memory. Drawing the
-  /// buffer from the torrent's byte progress instead is a lie -- bytes can be
-  /// downloaded out of order (or be the wrong file entirely) and say nothing
-  /// about what the demuxer holds.
+  /// This is the demuxer's cache window: a seek inside one of these ranges
+  /// is served from memory. It is deliberately a MOVING window around the
+  /// playhead -- mpv keeps only a ~30s read window (`demuxer-readahead-secs`)
+  /// and a 16MiB back buffer (`demuxer-max-back-bytes`), so the back edge
+  /// slides forward as old data is evicted and the leading edge tracks the
+  /// read-ahead fill. The seek bar draws exactly these ranges as the cache
+  /// stripe (see `PlayerControls.cachedSpans`), so the stripe travels with
+  /// playback the way mpv's own cache display does.
   Q_PROPERTY(QVariantList seekableRanges READ seekableRanges NOTIFY seekableRangesChanged)
 
   // --- event-driven state ------------------------------------------------
@@ -155,6 +171,7 @@ class MpvObject : public QQuickFramebufferObject
   qint64 cache_forward_bytes_ = 0;
   bool cache_eof_ = false;
   int cache_buffering_percent_ = -1;
+  double cache_ahead_seconds_ = 0.0;
 
   /// Latest `seekable-ranges` from `demuxer-cache-state`, normalised to
   /// `[{ start, end }]`. Cached so QML can redraw the buffered bar without a
@@ -207,6 +224,7 @@ public:
   qint64 cacheForwardBytes() const { return cache_forward_bytes_; }
   bool cacheEof() const { return cache_eof_; }
   int cacheBufferingPercent() const { return cache_buffering_percent_; }
+  double cacheAhead() const { return cache_ahead_seconds_; }
   qint64 timeToFirstFrameMs() const { return time_to_first_frame_ms_; }
   QVariantList chapterList() const { return chapterList_; }
   bool renderReady() const { return renderReady_; }
@@ -234,6 +252,11 @@ signals:
   /// The demuxer's seekable ranges changed, so the buffered bar should redraw.
   void seekableRangesChanged();
   void chapterListChanged();
+  /// A file finished or died. `reason` is one of mpv's END_FILE reasons
+  /// ("eof", "stop", "quit", "error", "redirect", "unknown"); `error` is
+  /// mpv's error text, empty unless the reason is "error". QML uses this to
+  /// reload a stream that died mid-playback instead of showing a black frame.
+  void endFile(QString reason, QString error);
 
 private slots:
   void doUpdate();
