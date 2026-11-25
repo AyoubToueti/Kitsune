@@ -21,8 +21,8 @@ Every release ships a portable AppImage, a Debian/Ubuntu `.deb`, and a
 Fedora/openSUSE `.rpm`.
 
     # AppImage — runs on any distro
-    chmod +x Kitsune_*_amd64.AppImage
-    ./Kitsune_*_amd64.AppImage
+    chmod +x Kitsune-*-x86_64.AppImage
+    ./Kitsune-*-x86_64.AppImage
 
     # Debian / Ubuntu
     sudo apt install ./kitsune_*_amd64.deb
@@ -34,8 +34,8 @@ Fedora/openSUSE `.rpm`.
 > installed, either install it (`libfuse2t64` on Ubuntu 24.04+) or run the
 > AppImage with `--appimage-extract-and-run`.
 
-Playback runs through an embedded libmpv, so `libmpv` must be installed
-(`libmpv2` on Debian/Ubuntu, `mpv-libs` on Fedora).
+Playback runs through an embedded libmpv, bundled with the AppImage, `.deb`,
+and `.rpm` builds.
 
 ### Windows
 
@@ -144,12 +144,18 @@ The version lives in one place: `[workspace.package] version` in the root
 `Cargo.toml`. Both crates inherit it, and Cargo regenerates `Cargo.lock` from it.
 
     # bump it (also updates the two Cargo.lock entries)
-    node scripts/sync-version.mjs 0.2.0
+    node scripts/sync-version.mjs 1.0.0
+
+Generate the changelog from the git history (or run the **Changelog** workflow,
+which opens a PR with the result):
+
+    node scripts/changelog.mjs HEAD --version 1.0.0  # first release: full history
+    node scripts/changelog.mjs --version 1.1.0       # later: last tag..HEAD
 
 Then commit, tag, and push — the tag triggers the release workflow:
 
-    git commit -am "release: v0.2.0"
-    git tag v0.2.0
+    git commit -am "release: v1.0.0"
+    git tag v1.0.0
     git push origin main --tags
 
 The tag **must** match the version; `qt-release.yml` derives the installer

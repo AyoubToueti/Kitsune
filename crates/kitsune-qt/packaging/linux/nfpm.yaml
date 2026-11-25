@@ -3,11 +3,11 @@
 # Run from the repo root after `cargo build -p kitsune-qt --release` and after
 # the appimage/ step has populated ./dist/AppDir:
 #
-#   nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p deb
-#   nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p rpm
+#   SYS_LIBC=libc6 nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p deb
+#   SYS_LIBC=glibc nfpm package -f crates/kitsune-qt/packaging/linux/nfpm.yaml -p rpm
 #
 # The ${...} values are substituted from the environment by nfpm itself, so
-# the release workflow exports VERSION and DIST before invoking it.
+# the release workflow exports VERSION and SYS_LIBC before invoking it.
 name: kitsune
 arch: amd64
 platform: linux
@@ -24,12 +24,10 @@ homepage: https://github.com/AyoubToueti/Kitsune
 license: MIT
 
 depends:
-  # libmpv is loaded at runtime through dlopen-free direct linking, so it has
-  # to be present as a shared library. Everything else is bundled by linuxdeploy.
-  - libmpv2
-  # GStreamer is NOT needed here: unlike the Tauri build, playback goes through
-  # libmpv rather than the WebKitGTK media stack.
-  - libc6
+  # linuxdeploy bundles libmpv, ffmpeg, and the Qt runtime into dist/AppDir, and
+  # the binary's RUNPATH ($ORIGIN/../lib) finds them there. Only libc comes from
+  # the host. Debian names it libc6; Fedora/openSUSE name it glibc.
+  - ${SYS_LIBC}
 
 contents:
   # The launcher goes on PATH; the real binary and its Qt tree live under
