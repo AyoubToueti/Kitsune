@@ -40,7 +40,8 @@ strip = true
 # bitfield is never repaired, so every mpv retry dies on the same ghost piece
 # and the player black-screens. The vendored copy instead re-queues missing
 # pieces and makes readers wait for re-download, plus a watchdog that kicks
-# backoff-stalled peers on resume. Patches live in
+# backoff-stalled peers on resume and stream-aware piece stealing that
+# prioritizes the piece the player is blocked on. Patches live in
 # patches/librqbit-streaming-fixes.patch; see vendor/librqbit/README.md.
 [patch.crates-io]
 librqbit = { path = "vendor/librqbit" }

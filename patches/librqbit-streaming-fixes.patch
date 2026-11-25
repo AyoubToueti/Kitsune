@@ -1,14 +1,14 @@
 diff --git a/vendor/librqbit/README.md b/vendor/librqbit/README.md
-index 45d21ca..892e80b 100644
+index 45d21ca..bfcff30 100644
 --- a/vendor/librqbit/README.md
 +++ b/vendor/librqbit/README.md
-@@ -1,5 +1,41 @@
+@@ -1,5 +1,54 @@
  # librqbit
  
 +> **PATCHED COPY — do not pull upstream changes over this blindly.**
 +>
 +> Kitsune vendors librqbit 9.0.1 (`[patch.crates-io]` in the workspace root)
-+> with two behavioural fixes, kept as `patches/librqbit-streaming-fixes.patch`
++> with three behavioural fixes, kept as `patches/librqbit-streaming-fixes.patch`
 +> and re-applied by `scripts/update-vendor.sh` on updates:
 +>
 +> - **Ghost-read repair** (the mid-episode black screen): a stream read that
@@ -33,6 +33,19 @@ index 45d21ca..892e80b 100644
 +>     wakes streams that have waited >4s for their current piece.
 +>   - `src/torrent_state/streaming.rs` — a `pending_since` stamp per stream
 +>     feeds the watchdog.
++> - **Stream-aware piece stealing** (the long seek stall): when a stream
++>   seeks to a not-yet-downloaded position, its target piece can sit
++>   in-flight with a slow peer for tens of seconds (observed: 41s), because
++>   `try_steal` always picked the globally-oldest in-flight piece — free
++>   fast peers kept stealing unrelated sequential-frontier pieces instead of
++>   the one the player was blocked on.
++>   - `src/piece_tracker.rs` — `acquire_piece` collects the streaming
++>     priority set once, and `try_steal` prefers pieces a stream is currently
++>     waiting on (oldest-first within that set, same staleness thresholds,
++>     falling back to the global-oldest behaviour when no stream piece is
++>     eligible). Regression test:
++>     `piece_tracker::tests::
++>     test_steal_prefers_stream_wanted_piece_over_globally_oldest`.
 +>
 +> Companion app-side hardening lives in
 +> `crates/kitsune-core/src/torrent/ram_storage.rs` (tiered eviction that
