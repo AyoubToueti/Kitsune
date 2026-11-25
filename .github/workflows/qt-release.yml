@@ -133,8 +133,7 @@ jobs:
         with:
           draft: true
           body: |
-            **Kitsune ${{ steps.ver.outputs.version }}** is the first public release of
-            Kitsune, a desktop anime streaming app.
+            **Kitsune ${{ steps.ver.outputs.version }}** is a desktop anime streaming app.
 
             Kitsune brings discovery, search, and playback together in one place.
             Browse and search anime metadata powered by
@@ -151,6 +150,8 @@ jobs:
               cards, and external streaming links.
             - **Stream** — Nyaa release search, Sonarr-derived ranking, swarm-health
               checks, and playback through librqbit with live stream monitoring.
+            - **RAM streaming** — stream through a bounded in-memory buffer by default,
+              with disk mode and automatic fallback when space runs low.
             - **Track** — continue-watching, watch progress, resume, and per-title list
               status (watching / completed / planned / and more).
             - **Sign in** — AniList OAuth through a `kitsune://` deep link; the token
@@ -161,10 +162,10 @@ jobs:
 
             The frontend is built with Qt 6 + QML through
             [CXX-Qt](https://kdab.github.io/cxx-qt/), with the application logic in
-            Rust. Kitsune was originally built with Tauri/SvelteKit; 1.0.0 is the
+            Rust. Kitsune was originally built with Tauri/SvelteKit; 1.0.0 was the
             first release of the Qt/QML rewrite. The backend is the same one developed
-            throughout the project, so this release consolidates the full feature set
-            under the new UI.
+            throughout the project, so each release consolidates the full feature set
+            under the Qt UI.
 
             ### Install
 
@@ -608,8 +609,7 @@ jobs:
         with:
           draft: true
           body: |
-            **Kitsune ${{ steps.ver.outputs.version }}** is the first public release of
-            Kitsune, a desktop anime streaming app.
+            **Kitsune ${{ steps.ver.outputs.version }}** is a desktop anime streaming app.
 
             Kitsune brings discovery, search, and playback together in one place.
             Browse and search anime metadata powered by
@@ -626,6 +626,8 @@ jobs:
               cards, and external streaming links.
             - **Stream** — Nyaa release search, Sonarr-derived ranking, swarm-health
               checks, and playback through librqbit with live stream monitoring.
+            - **RAM streaming** — stream through a bounded in-memory buffer by default,
+              with disk mode and automatic fallback when space runs low.
             - **Track** — continue-watching, watch progress, resume, and per-title list
               status (watching / completed / planned / and more).
             - **Sign in** — AniList OAuth through a `kitsune://` deep link; the token
@@ -636,10 +638,10 @@ jobs:
 
             The frontend is built with Qt 6 + QML through
             [CXX-Qt](https://kdab.github.io/cxx-qt/), with the application logic in
-            Rust. Kitsune was originally built with Tauri/SvelteKit; 1.0.0 is the
+            Rust. Kitsune was originally built with Tauri/SvelteKit; 1.0.0 was the
             first release of the Qt/QML rewrite. The backend is the same one developed
-            throughout the project, so this release consolidates the full feature set
-            under the new UI.
+            throughout the project, so each release consolidates the full feature set
+            under the Qt UI.
 
             ### Install
 

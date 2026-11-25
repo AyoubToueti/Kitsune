@@ -16,7 +16,7 @@
 // 2026-07-30, so its endpoint now returns a plain-text "OK" that is not JSON.
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -193,5 +193,36 @@ if (maintenance) {
     "</details>\n";
 }
 
-writeFileSync(join(ROOT, output), changelog);
+// Keep older release sections: a range such as v1.0.0..HEAD only describes the
+// new release, but the generated file is the project's whole changelog. Split
+// the existing file on `## ` headings, drop the section for this run (and any
+// stale Unreleased section), and append the rest after the new section.
+const outputPath = join(ROOT, output);
+const title = version || "Unreleased";
+const drop = new Set([title]);
+if (version) drop.add("Unreleased");
+
+if (existsSync(outputPath)) {
+  const previous = readFileSync(outputPath, "utf8");
+  const first = previous.search(/^## /m);
+  if (first !== -1) {
+    const kept = previous
+      .slice(first)
+      .split(/^## /m)
+      .filter(Boolean)
+      .map((section) => `## ${section.trim()}`)
+      .filter((section) => {
+        const heading = section.slice(3).split("\n", 1)[0].trim();
+        return ![...drop].some(
+          (name) => heading === name || heading.startsWith(`${name} `),
+        );
+      })
+      .map((section) => section.trimEnd())
+      .join("\n\n");
+
+    if (kept) changelog += `\n${kept}\n`;
+  }
+}
+
+writeFileSync(outputPath, changelog);
 console.log(`wrote ${output} (${commits.length} commits, range ${range})`);

@@ -53,6 +53,8 @@ runtime are bundled, so no separate install is needed.
   ranks them with a pipeline ported from
   [Sonarr](https://github.com/Sonarr/Sonarr) before playing them through
   [librqbit](https://github.com/ikatson/rqbit) with stream-health monitoring.
+- **RAM streaming** — plays through a bounded in-memory buffer by default;
+  disk mode remains available and falls back automatically when space is low.
 - **Local library** — continue-watching, watch progress, resume, and a
   per-title list status (watching / completed / planned / …).
 - **External player** — hand a stream off to a local player such as
