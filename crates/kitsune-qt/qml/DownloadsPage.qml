@@ -24,7 +24,6 @@ Item {
     property var expandedAnime: ({})
 
     // Tree-line layout (grouped mode) + sticky header backdrop.
-    // Theme-aware properties:
     readonly property color stickyBackdrop: Theme.surface
     readonly property int treeTrunkX: 28
     readonly property int treeGutter: 48
@@ -137,10 +136,6 @@ Item {
                 status: r.status || "",
                 progressBytes: r.progressBytes || 0,
                 totalBytes: r.totalBytes || 0,
-                // Carried through so a per-file row can explain a failure.
-                // Without it a failed episode under a season pack showed a red
-                // dot and no reason, which is the "silent failure" this page
-                // exists to avoid.
                 error: r.error || "",
                 fraction: 0,
                 percent: 0
@@ -1480,7 +1475,6 @@ Item {
                         anchors.bottomMargin: 9
                         spacing: 11
 
-                        // Cover image is now clickable to open Anime Page
                         Rectangle {
                             id: sectionCoverContainer
                             Layout.alignment: Qt.AlignVCenter
@@ -1536,7 +1530,6 @@ Item {
                                 font.weight: Font.DemiBold
                             }
 
-                            // Hover overlay to indicate clickability
                             Rectangle {
                                 anchors.fill: parent
                                 radius: parent.radius
@@ -1544,7 +1537,7 @@ Item {
                                 color: Qt.rgba(0, 0, 0, 0.5)
                                 Text {
                                     anchors.centerIn: parent
-                                    text: "\u2197" // External link arrow
+                                    text: "\u2197"
                                     color: "#ffffff"
                                     font.pixelSize: 14
                                 }
@@ -1735,7 +1728,6 @@ Item {
                             Layout.fillWidth: true
                             spacing: 12
 
-                            // Selection + expander
                             ColumnLayout {
                                 Layout.alignment: Qt.AlignTop
                                 Layout.topMargin: 4
@@ -1785,7 +1777,6 @@ Item {
                                 }
                             }
 
-                            // Cover
                             Rectangle {
                                 id: coverContainer
                                 Layout.alignment: Qt.AlignTop
@@ -1838,7 +1829,6 @@ Item {
                                     font.weight: Font.DemiBold
                                 }
                                 
-                                // Play overlay on hover
                                 Rectangle {
                                     anchors.fill: parent
                                     radius: parent.radius
@@ -1853,7 +1843,6 @@ Item {
                                 }
                             }
 
-                            // Primary information and progress
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignTop
@@ -1962,7 +1951,6 @@ Item {
                                                 : page.fillColorFor(live.status)
                                             Behavior on width { NumberAnimation { duration: 280; easing.type: Easing.Linear } }
 
-                                            // Download gradient overlay
                                             Rectangle {
                                                 anchors.fill: parent
                                                 radius: parent.radius
@@ -1987,7 +1975,6 @@ Item {
                                 }
                             }
 
-                            // Fox illustration
                             ErrorState {
                                 Layout.alignment: Qt.AlignVCenter
                                 Layout.preferredWidth: 92
@@ -2012,7 +1999,6 @@ Item {
                             wrapMode: Text.WordWrap
                         }
 
-                        // Actions footer
                         RowLayout {
                             Layout.fillWidth: true
                             Layout.leftMargin: 32
