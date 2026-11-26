@@ -23,6 +23,32 @@ use crate::{
 
 const MAX_FASTRESUME_CHECKS: usize = 64;
 
+/// Free bytes on the volume holding `path`, for the initial-check log.
+///
+/// The torrent's output folder may not exist yet on a first download, so walk
+/// up to the nearest existing ancestor. Unix-only: elsewhere the log says
+/// "unknown" instead of guessing.
+fn free_disk_space(path: &std::path::Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        let mut probe = path;
+        loop {
+            if let Ok(stat) = nix::sys::statvfs::statvfs(probe) {
+                return Some(
+                    u64::from(stat.blocks_available())
+                        .saturating_mul(stat.fragment_size() as u64),
+                );
+            }
+            probe = probe.parent()?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 use super::{ManagedTorrentShared, TorrentMetadata, paused::TorrentStatePaused};
 
 pub struct TorrentStateInitializing {
@@ -251,8 +277,10 @@ impl TorrentStateInitializing {
 
         info!(
             torrent=?self.shared.id,
-            "Initial check results: have {}, needed {}, total selected {}",
-            SF::new(hns.have_bytes),
+            "Initial check results: free disk {}, needed {}, total selected {}",
+            free_disk_space(&self.shared.options.output_folder)
+                .map(|bytes| SF::new(bytes).to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
             SF::new(hns.needed_bytes),
             SF::new(hns.selected_bytes)
         );

@@ -1,14 +1,43 @@
+diff --git a/vendor/librqbit/Cargo.toml b/vendor/librqbit/Cargo.toml
+index ac65f2e..88c9ed0 100644
+--- a/vendor/librqbit/Cargo.toml
++++ b/vendor/librqbit/Cargo.toml
+@@ -221,7 +221,10 @@ default-features = false
+ 
+ [dependencies.nix]
+ version = "0.30"
+-features = ["uio"]
++features = [
++    "uio",
++    "fs",
++]
+ 
+ [dependencies.notify]
+ version = "8"
+diff --git a/vendor/librqbit/Cargo.toml.orig b/vendor/librqbit/Cargo.toml.orig
+index 1623e22..7a03afe 100644
+--- a/vendor/librqbit/Cargo.toml.orig
++++ b/vendor/librqbit/Cargo.toml.orig
+@@ -108,7 +108,7 @@ librqbit-utp = { workspace = true, features = ["export-metrics"] }
+ axum-extra = { workspace = true, features = ["query"] }
+ librqbit-dualstack-sockets = { workspace = true, features = ["axum"] }
+ socket2.workspace = true
+-nix = { workspace = true, features = ["uio"] }
++nix = { workspace = true, features = ["uio", "fs"] }
+ thiserror.workspace = true
+ 
+ [target.'cfg(windows)'.dependencies]
 diff --git a/vendor/librqbit/README.md b/vendor/librqbit/README.md
-index 45d21ca..bfcff30 100644
+index 45d21ca..1f20873 100644
 --- a/vendor/librqbit/README.md
 +++ b/vendor/librqbit/README.md
-@@ -1,5 +1,54 @@
+@@ -1,5 +1,78 @@
  # librqbit
  
 +> **PATCHED COPY — do not pull upstream changes over this blindly.**
 +>
 +> Kitsune vendors librqbit 9.0.1 (`[patch.crates-io]` in the workspace root)
-+> with three behavioural fixes, kept as `patches/librqbit-streaming-fixes.patch`
++> with four behavioural fixes, kept as `patches/librqbit-streaming-fixes.patch`
 +> and re-applied by `scripts/update-vendor.sh` on updates:
 +>
 +> - **Ghost-read repair** (the mid-episode black screen): a stream read that
@@ -46,6 +75,30 @@ index 45d21ca..bfcff30 100644
 +>     eligible). Regression test:
 +>     `piece_tracker::tests::
 +>     test_steal_prefers_stream_wanted_piece_over_globally_oldest`.
++> - **Per-file download order** (per-file priorities in a pack): upstream
++>   rebuilds its piece queue from the filename-sorted file list every time a
++>   torrent resumes, so a caller's file order only lasted until the next
++>   pause/resume. The order is now kept on the shared torrent state and
++>   reinstalled whenever the live state is rebuilt.
++>   - `src/torrent_state/mod.rs` — `ManagedTorrent::update_file_priorities`
++>     validates a supplied order (unknown or duplicate indices are ignored,
++>     unlisted files follow in their default order), stores it on the shared
++>     state and forwards it to the live state.
++>   - `src/torrent_state/live/mod.rs` — `TorrentStateLive::new` consumes the
++>     stored order when present, falling back to the filename sort;
++>     `set_file_priority_order` is the live-state entry point.
++>   - `src/session.rs` — `Session::update_file_priorities` wrapper for the
++>     engine side.
++>   Regression tests: `torrent_state::file_priority_order_tests::
++>   {a_partial_order_is_completed_with_the_left_out_files,
++>   duplicates_and_out_of_range_values_are_rejected,
++>   an_empty_order_is_the_identity}` and
++>   `chunk_tracker::tests::iter_queued_pieces_follows_the_file_priority_order`
++>   (the tracker hands out pieces in the requested file order).
++>
++> One logging tweak: the initial-check line now reports free disk space on the
++> download volume (`src/torrent_state/initializing.rs`), so a resumed torrent's
++> "have 0" cannot be misread as "the disk has nothing free".
 +>
 +> Companion app-side hardening lives in
 +> `crates/kitsune-core/src/torrent/ram_storage.rs` (tiered eviction that
@@ -58,7 +111,7 @@ index 45d21ca..bfcff30 100644
  
  ## Basic example
 diff --git a/vendor/librqbit/src/chunk_tracker.rs b/vendor/librqbit/src/chunk_tracker.rs
-index 8db129b..51131ef 100644
+index 8db129b..a0ff7ba 100644
 --- a/vendor/librqbit/src/chunk_tracker.rs
 +++ b/vendor/librqbit/src/chunk_tracker.rs
 @@ -269,6 +269,34 @@ impl ChunkTracker {
@@ -96,6 +149,47 @@ index 8db129b..51131ef 100644
      pub fn mark_piece_downloaded(&mut self, idx: ValidPieceIndex) {
          let id = idx.get() as usize;
          if !self.have.as_slice()[id] {
+@@ -512,6 +540,40 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn iter_queued_pieces_follows_the_file_priority_order() {
++        let piece_len = CHUNK_SIZE * 2 + 1;
++        let l = Lengths::new(piece_len as u64 * 3, piece_len).unwrap();
++        assert_eq!(l.total_pieces(), 3);
++
++        let files = (0..3)
++            .map(|i| FileInfo {
++                relative_filename: format!("{i}").into(),
++                offset_in_torrent: piece_len as u64 * i as u64,
++                piece_range: i..i + 1,
++                len: piece_len as u64,
++                attrs: Default::default(),
++            })
++            .collect::<Vec<_>>();
++
++        let bf_len = l.piece_bitfield_bytes();
++        let have = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
++        let mut selected = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
++        selected.get_mut(0..3).unwrap().fill(true);
++
++        let ct = ChunkTracker::new(have.into_dyn(), selected, l, &files).unwrap();
++
++        let order = |pri: &[usize]| {
++            ct.iter_queued_pieces(&pri.to_vec(), &files)
++                .map(|p| p.get())
++                .collect::<Vec<_>>()
++        };
++        // The default order is file order; a custom order reorders the pieces
++        // the tracker hands out, which is what a per-file priority promises.
++        assert_eq!(order(&[0, 1, 2]), vec![0, 1, 2]);
++        assert_eq!(order(&[2, 0, 1]), vec![2, 0, 1]);
++    }
++
+     #[test]
+     fn test_update_only_files() {
+         let piece_len = CHUNK_SIZE * 2 + 1;
 diff --git a/vendor/librqbit/src/piece_tracker.rs b/vendor/librqbit/src/piece_tracker.rs
 index 7d87287..c7e6dec 100644
 --- a/vendor/librqbit/src/piece_tracker.rs
@@ -291,8 +385,86 @@ index 7d87287..c7e6dec 100644
 +        }
 +    }
  }
+diff --git a/vendor/librqbit/src/session.rs b/vendor/librqbit/src/session.rs
+index 75071b9..6ab01c9 100644
+--- a/vendor/librqbit/src/session.rs
++++ b/vendor/librqbit/src/session.rs
+@@ -1362,6 +1362,7 @@ impl Session {
+                 session: Arc::downgrade(self),
+                 magnet_name: name,
+                 client_name_and_version: self.client_name_and_version.clone(),
++                custom_file_priorities: parking_lot::RwLock::new(None),
+             });
+ 
+             let initializing = Arc::new(TorrentStateInitializing::new(
+@@ -1624,6 +1625,15 @@ impl Session {
+         Ok(())
+     }
+ 
++    pub async fn update_file_priorities(
++        self: &Arc<Self>,
++        handle: &ManagedTorrentHandle,
++        order: &[usize],
++    ) -> anyhow::Result<()> {
++        handle.update_file_priorities(order)?;
++        Ok(())
++    }
++
+     pub fn listen_addr(&self) -> Option<SocketAddr> {
+         self.listen_addr
+     }
+diff --git a/vendor/librqbit/src/torrent_state/initializing.rs b/vendor/librqbit/src/torrent_state/initializing.rs
+index 37789dc..d09f209 100644
+--- a/vendor/librqbit/src/torrent_state/initializing.rs
++++ b/vendor/librqbit/src/torrent_state/initializing.rs
+@@ -23,6 +23,32 @@ use crate::{
+ 
+ const MAX_FASTRESUME_CHECKS: usize = 64;
+ 
++/// Free bytes on the volume holding `path`, for the initial-check log.
++///
++/// The torrent's output folder may not exist yet on a first download, so walk
++/// up to the nearest existing ancestor. Unix-only: elsewhere the log says
++/// "unknown" instead of guessing.
++fn free_disk_space(path: &std::path::Path) -> Option<u64> {
++    #[cfg(unix)]
++    {
++        let mut probe = path;
++        loop {
++            if let Ok(stat) = nix::sys::statvfs::statvfs(probe) {
++                return Some(
++                    u64::from(stat.blocks_available())
++                        .saturating_mul(stat.fragment_size() as u64),
++                );
++            }
++            probe = probe.parent()?;
++        }
++    }
++    #[cfg(not(unix))]
++    {
++        let _ = path;
++        None
++    }
++}
++
+ use super::{ManagedTorrentShared, TorrentMetadata, paused::TorrentStatePaused};
+ 
+ pub struct TorrentStateInitializing {
+@@ -251,8 +277,10 @@ impl TorrentStateInitializing {
+ 
+         info!(
+             torrent=?self.shared.id,
+-            "Initial check results: have {}, needed {}, total selected {}",
+-            SF::new(hns.have_bytes),
++            "Initial check results: free disk {}, needed {}, total selected {}",
++            free_disk_space(&self.shared.options.output_folder)
++                .map(|bytes| SF::new(bytes).to_string())
++                .unwrap_or_else(|| "unknown".to_string()),
+             SF::new(hns.needed_bytes),
+             SF::new(hns.selected_bytes)
+         );
 diff --git a/vendor/librqbit/src/torrent_state/live/mod.rs b/vendor/librqbit/src/torrent_state/live/mod.rs
-index b4146d8..050f5fb 100644
+index b4146d8..5e7c0c3 100644
 --- a/vendor/librqbit/src/torrent_state/live/mod.rs
 +++ b/vendor/librqbit/src/torrent_state/live/mod.rs
 @@ -172,6 +172,11 @@ impl TorrentStateLocked {
@@ -318,7 +490,44 @@ index b4146d8..050f5fb 100644
  }
  
  impl TorrentStateLive {
-@@ -295,6 +304,7 @@ impl TorrentStateLive {
+@@ -236,17 +245,26 @@ impl TorrentStateLive {
+         let lengths = *paused.chunk_tracker.get_lengths();
+ 
+         // TODO: make it configurable
++        // A custom order set by the application (via
++        // `ManagedTorrent::update_file_priorities`) wins over the default;
++        // without it every unpause would silently reset to file-name order.
++        // A stale order that no longer matches the metadata falls back too.
+         let file_priorities = {
+-            let mut pri = (0..paused.metadata.file_infos.len()).collect::<Vec<usize>>();
+-            // sort by filename, cause many torrents have random sort order.
+-            pri.sort_unstable_by_key(|id| {
+-                paused
+-                    .metadata
+-                    .file_infos
+-                    .get(*id)
+-                    .map(|fi| fi.relative_filename.as_path())
+-            });
+-            pri
++            let custom = paused.shared.custom_file_priorities.read().clone();
++            match custom {
++                Some(order) if order.len() == paused.metadata.file_infos.len() => order,
++                _ => {
++                    let mut pri = (0..paused.metadata.file_infos.len()).collect::<Vec<usize>>();
++                    pri.sort_unstable_by_key(|id| {
++                        paused
++                            .metadata
++                            .file_infos
++                            .get(*id)
++                            .map(|fi| fi.relative_filename.as_path())
++                    });
++                    pri
++                }
++            }
+         };
+ 
+         let (have_broadcast_tx, _) = tokio::sync::broadcast::channel(128);
+@@ -295,6 +313,7 @@ impl TorrentStateLive {
                  .collect(),
              ratelimit_upload_tx,
              ratelimits,
@@ -326,7 +535,7 @@ index b4146d8..050f5fb 100644
          });
  
          state.spawn(
-@@ -333,6 +343,34 @@ impl TorrentStateLive {
+@@ -333,6 +352,34 @@ impl TorrentStateLive {
              state.clone().task_peer_adder(peer_queue_rx),
          );
  
@@ -361,7 +570,22 @@ index b4146d8..050f5fb 100644
          state.spawn(
              debug_span!(parent: state.shared.span.clone(), "upload_scheduler"),
              format!("[{}]upload_scheduler", state.shared.id),
-@@ -811,6 +849,32 @@ impl TorrentStateLive {
+@@ -689,6 +736,14 @@ impl TorrentStateLive {
+         TimedExistence::new(timeit(reason, || self._locked.write()), reason)
+     }
+ 
++    /// Replace the picking order handed to the piece tracker.
++    ///
++    /// Called by `ManagedTorrent::update_file_priorities` so the order change
++    /// reaches a live torrent without a state transition.
++    pub(crate) fn set_file_priority_order(&self, order: FilePriorities) {
++        self.lock_write("update_file_priorities").file_priorities = order;
++    }
++
+     fn set_peer_live(&self, handle: PeerHandle, h: Handshake, connection_kind: ConnectionKind) {
+         self.peers.with_peer_mut(handle, "set_peer_live", |p| {
+             p.connecting_to_live(h.peer_id, &self.peers, connection_kind);
+@@ -811,6 +866,32 @@ impl TorrentStateLive {
          Ok(())
      }
  
@@ -394,7 +618,7 @@ index b4146d8..050f5fb 100644
      // If we have all selected pieces but not necessarily all pieces.
      pub(crate) fn is_finished(&self) -> bool {
          self.get_hns().map(|h| h.finished()).unwrap_or_default()
-@@ -829,10 +893,10 @@ impl TorrentStateLive {
+@@ -829,10 +910,10 @@ impl TorrentStateLive {
      // We might have the torrent "finished" i.e. no selected files. But if someone is streaming files despite
      // them being selected, we aren't fully "finished".
      fn is_finished_and_no_active_streams(&self) -> bool {
@@ -409,7 +633,7 @@ index b4146d8..050f5fb 100644
      }
  
      fn on_piece_completed(&self, id: ValidPieceIndex) -> anyhow::Result<()> {
-@@ -907,6 +971,53 @@ impl TorrentStateLive {
+@@ -907,6 +988,53 @@ impl TorrentStateLive {
              .last();
      }
  
@@ -463,6 +687,98 @@ index b4146d8..050f5fb 100644
      async fn task_send_pex_to_peer(
          self: Arc<Self>,
          this_peer_addr: SocketAddr,
+diff --git a/vendor/librqbit/src/torrent_state/mod.rs b/vendor/librqbit/src/torrent_state/mod.rs
+index cfe483c..0e36092 100644
+--- a/vendor/librqbit/src/torrent_state/mod.rs
++++ b/vendor/librqbit/src/torrent_state/mod.rs
+@@ -194,6 +194,12 @@ pub struct ManagedTorrentShared {
+     pub(crate) magnet_name: Option<String>,
+ 
+     pub(crate) client_name_and_version: String,
++
++    // Per-file download order set by the application. `None` means the
++    // default (files sorted by name). It lives here, outside the per-state
++    // data, because `TorrentStateLive::new` rebuilds the picking order from
++    // the default on every unpause and would otherwise lose the custom one.
++    pub(crate) custom_file_priorities: parking_lot::RwLock<Option<Vec<usize>>>,
+ }
+ 
+ impl ManagedTorrentShared {
+@@ -644,6 +650,74 @@ impl ManagedTorrent {
+         g.only_files = Some(only_files.iter().copied().collect());
+         Ok(())
+     }
++
++    /// Reorder the per-file download priority.
++    ///
++    /// Files earlier in `order` download first; files not listed keep their
++    /// relative order behind the listed ones. The order survives pause and
++    /// unpause (see [`ManagedTorrentShared::custom_file_priorities`]).
++    pub fn update_file_priorities(&self, order: &[usize]) -> anyhow::Result<()> {
++        let metadata = self.metadata.load();
++        let metadata = metadata.as_ref().context("torrent is not resolved")?;
++        let file_count = metadata.file_infos.len();
++        let full = build_file_priority_order(order, file_count)?;
++        *self.shared.custom_file_priorities.write() = Some(full.clone());
++        // A live torrent picks pieces straight from the locked copy; refresh
++        // it so the change takes effect without a state transition.
++        let live = {
++            let g = self.locked.read();
++            match &g.state {
++                ManagedTorrentState::Live(live) => Some(live.clone()),
++                _ => None,
++            }
++        };
++        if let Some(live) = live {
++            live.set_file_priority_order(full);
++        }
++        Ok(())
++    }
++}
++
++/// The pure part of [`ManagedTorrent::update_file_priorities`]: validate the
++/// requested order against the file count and complete it with the files the
++/// caller left out.
++fn build_file_priority_order(order: &[usize], file_count: usize) -> anyhow::Result<Vec<usize>> {
++    let mut seen = vec![false; file_count];
++    for f in order.iter().copied() {
++        if f >= file_count {
++            anyhow::bail!("file priority order contains invalid value {f}")
++        }
++        if seen[f] {
++            anyhow::bail!("file priority order contains duplicate value {f}")
++        }
++        seen[f] = true;
++    }
++    let mut full = order.to_vec();
++    full.extend((0..file_count).filter(|f| !seen[*f]));
++    Ok(full)
++}
++
++#[cfg(test)]
++mod file_priority_order_tests {
++    use super::build_file_priority_order;
++
++    #[test]
++    fn a_partial_order_is_completed_with_the_left_out_files() {
++        let order = build_file_priority_order(&[3, 1], 5).unwrap();
++        assert_eq!(order, vec![3, 1, 0, 2, 4]);
++    }
++
++    #[test]
++    fn duplicates_and_out_of_range_values_are_rejected() {
++        assert!(build_file_priority_order(&[1, 1], 3).is_err());
++        assert!(build_file_priority_order(&[3], 3).is_err());
++    }
++
++    #[test]
++    fn an_empty_order_is_the_identity() {
++        let order = build_file_priority_order(&[], 3).unwrap();
++        assert_eq!(order, vec![0, 1, 2]);
++    }
+ }
+ 
+ pub type ManagedTorrentHandle = Arc<ManagedTorrent>;
 diff --git a/vendor/librqbit/src/torrent_state/streaming.rs b/vendor/librqbit/src/torrent_state/streaming.rs
 index 3615ed1..f8bd89f 100644
 --- a/vendor/librqbit/src/torrent_state/streaming.rs
