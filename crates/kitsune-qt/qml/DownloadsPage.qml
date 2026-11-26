@@ -35,6 +35,9 @@ Item {
     property var liveGroups: ({})
     property var liveRecords: ({})
 
+    // Speed history for the summary graph
+    property var speedHistory: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
     function asRecords(value) {
         if (Array.isArray(value)) return value
         if (value && typeof value === "object") return [value]
@@ -161,10 +164,27 @@ Item {
         liveGroups = computeLiveGroups(next)
         liveRecords = computeLiveRecords(next)
 
-        if (newSig === oldSig) return
+        if (newSig === oldSig) {
+            updateSpeedHistory()
+            return
+        }
 
         preserveScroll()
         records = next
+        updateSpeedHistory()
+    }
+
+    function updateSpeedHistory() {
+        let currentSpeed = 0
+        for (let i = 0; i < groups.length; i++) {
+            if (groups[i].status === "downloading") {
+                currentSpeed += liveGroups[groups[i].key]?.speedMbps || 0
+            }
+        }
+        let hist = speedHistory.slice()
+        hist.shift()
+        hist.push(currentSpeed)
+        speedHistory = hist
     }
 
     function preserveScroll() {
@@ -479,6 +499,26 @@ Item {
         return n
     }
 
+    // Summary Bar Computations
+    readonly property real totalDownloadSpeed: {
+        let speed = 0
+        for (let i = 0; i < groups.length; i++) {
+            if (groups[i].status === "downloading")
+                speed += liveGroups[groups[i].key]?.speedMbps || 0
+        }
+        return speed
+    }
+    readonly property int activeCount: countFor("downloading") + countFor("queued")
+    readonly property int needsAttentionCount: countFor("failed")
+    readonly property int completedCount: countFor("complete")
+    // Free bytes on the volume downloads land on. Zero means the probe failed
+    // (the page renders a dash), never an invented number.
+    property real diskFreeBytes: 0
+
+    function refreshDiskFree() {
+        if (backend) diskFreeBytes = backend.diskFreeBytes()
+    }
+
     function groupFor(key) {
         for (let i = 0; i < groups.length; i++)
             if (groups[i].key === key) return groups[i]
@@ -522,9 +562,16 @@ Item {
         return v.toFixed(v < 10 && u > 0 ? 1 : 0) + " " + units[u]
     }
 
+    // Split "8.8 GiB" into its number and unit so the summary cell can style
+    // them differently. The dash from `formatSize` has no unit part.
+    function sizeParts(bytes) {
+        const match = formatSize(bytes).match(/^([0-9.]+)\s*([A-Za-z]+)$/)
+        return match ? [match[1], match[2]] : ["\u2014", ""]
+    }
+
     function formatSpeed(mbps) {
-        if (!mbps || mbps <= 0) return "\u2014"
-        return mbps.toFixed(1) + " MiB/s"
+        if (!mbps || mbps <= 0) return "0.0"
+        return mbps.toFixed(1)
     }
 
     function formatEta(seconds) {
@@ -800,6 +847,7 @@ Item {
         backend.restoreDownloads()
         backend.getDownloads()
         backend.pollDownloads()
+        refreshDiskFree()
     }
 
     onSearchQueryChanged: preserveScroll()
@@ -819,6 +867,7 @@ Item {
         }
         function onDownloadCompleted(json) {
             const record = JSON.parse(json)
+            page.refreshDiskFree()
             if (record !== null) page.backend.pollDownloads()
         }
         function onDownloadStarted(json) {
@@ -836,6 +885,16 @@ Item {
         repeat: true
         running: page.anyActive
         onTriggered: if (page.backend) page.backend.pollDownloads()
+    }
+
+    // A download writes new bytes while it runs and removals free them, so
+    // re-probe the volume periodically. The probe only enumerates mounts, so
+    // a 5 s tick while the page is on screen is cheap.
+    Timer {
+        interval: 5000
+        repeat: true
+        running: page.visible
+        onTriggered: page.refreshDiskFree()
     }
 
     DownloadFilesDialog {
@@ -894,6 +953,193 @@ Item {
                 icon: "\u2197"
                 tone: Theme.accent
                 onActivated: if (page.backend) page.backend.openLibraryFolder()
+            }
+        }
+
+        // ---- Summary Bar ----
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 76
+            radius: 12
+            color: Theme.surfaceSunken
+            border.width: 1
+            border.color: Theme.borderSubtle
+            
+            RowLayout {
+                anchors.fill: parent
+                spacing: 0
+                
+                // Cell 1: Downloading Now
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Downloading now"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    RowLayout {
+                        spacing: 4
+                        Text {
+                            text: page.formatSpeed(page.totalDownloadSpeed)
+                            color: Theme.ink
+                            font.pixelSize: 22
+                            font.weight: Font.Bold
+                        }
+                        Text {
+                            text: "MiB/s"
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignBottom
+                            Layout.bottomMargin: 3
+                        }
+                    }
+                    
+                    // Speed Graph Curve
+                    Canvas {
+                        id: speedGraphCanvas
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 16
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.reset()
+                            ctx.strokeStyle = Theme.accent
+                            ctx.lineWidth = 1.5
+                            ctx.lineCap = "round"
+                            
+                            var pts = page.speedHistory
+                            if (pts.length === 0) return
+                            
+                            var max = 1
+                            for (var i = 0; i < pts.length; i++) {
+                                if (pts[i] > max) max = pts[i]
+                            }
+                            
+                            var w = width
+                            var h = height - 2
+                            var stepX = w / (pts.length - 1)
+                            
+                            ctx.beginPath()
+                            ctx.moveTo(0, h - (pts[0] / max) * h)
+                            
+                            for (var j = 1; j < pts.length; j++) {
+                                var x = j * stepX
+                                var y = h - (pts[j] / max) * h
+                                var prevX = (j - 1) * stepX
+                                var prevY = h - (pts[j - 1] / max) * h
+                                
+                                var cx = (prevX + x) / 2
+                                ctx.quadraticCurveTo(cx, prevY, x, y)
+                            }
+                            ctx.stroke()
+                        }
+                        Connections {
+                            target: page
+                            function onSpeedHistoryChanged() { speedGraphCanvas.requestPaint() }
+                        }
+                    }
+                }
+                
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+                
+                // Cell 2: Active
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Active"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        text: page.activeCount
+                        color: Theme.ink
+                        font.pixelSize: 22
+                        font.weight: Font.Bold
+                    }
+                }
+
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+
+                // Cell 3: Needs attention
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Needs attention"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        text: page.needsAttentionCount
+                        color: page.needsAttentionCount > 0 ? Theme.danger : Theme.ink
+                        font.pixelSize: 22
+                        font.weight: Font.Bold
+                    }
+                }
+
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+
+                // Cell 4: Completed
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Completed"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        text: page.completedCount
+                        color: Theme.ink
+                        font.pixelSize: 22
+                        font.weight: Font.Bold
+                    }
+                }
+
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+
+                // Cell 5: Free space on the download volume
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Free space"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    RowLayout {
+                        spacing: 4
+                        Text {
+                            text: page.sizeParts(page.diskFreeBytes)[0]
+                            color: Theme.ink
+                            font.pixelSize: 22
+                            font.weight: Font.Bold
+                        }
+                        Text {
+                            text: page.sizeParts(page.diskFreeBytes)[1]
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignBottom
+                            Layout.bottomMargin: 3
+                        }
+                    }
+                }
             }
         }
 
@@ -1677,7 +1923,7 @@ Item {
                                     }
                                     Text {
                                         visible: live.status === "downloading"
-                                        text: page.formatSpeed(live.speedMbps)
+                                        text: page.formatSpeed(live.speedMbps) + " MiB/s"
                                         color: live.speedMbps > 0 ? Theme.healthGreen : Theme.inkFaint
                                         font.pixelSize: 10
                                         font.bold: live.speedMbps > 0
