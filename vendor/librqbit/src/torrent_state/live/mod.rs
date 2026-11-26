@@ -245,17 +245,26 @@ impl TorrentStateLive {
         let lengths = *paused.chunk_tracker.get_lengths();
 
         // TODO: make it configurable
+        // A custom order set by the application (via
+        // `ManagedTorrent::update_file_priorities`) wins over the default;
+        // without it every unpause would silently reset to file-name order.
+        // A stale order that no longer matches the metadata falls back too.
         let file_priorities = {
-            let mut pri = (0..paused.metadata.file_infos.len()).collect::<Vec<usize>>();
-            // sort by filename, cause many torrents have random sort order.
-            pri.sort_unstable_by_key(|id| {
-                paused
-                    .metadata
-                    .file_infos
-                    .get(*id)
-                    .map(|fi| fi.relative_filename.as_path())
-            });
-            pri
+            let custom = paused.shared.custom_file_priorities.read().clone();
+            match custom {
+                Some(order) if order.len() == paused.metadata.file_infos.len() => order,
+                _ => {
+                    let mut pri = (0..paused.metadata.file_infos.len()).collect::<Vec<usize>>();
+                    pri.sort_unstable_by_key(|id| {
+                        paused
+                            .metadata
+                            .file_infos
+                            .get(*id)
+                            .map(|fi| fi.relative_filename.as_path())
+                    });
+                    pri
+                }
+            }
         };
 
         let (have_broadcast_tx, _) = tokio::sync::broadcast::channel(128);
@@ -725,6 +734,14 @@ impl TorrentStateLive {
         reason: &'static str,
     ) -> TimedExistence<RwLockWriteGuard<'_, TorrentStateLocked>> {
         TimedExistence::new(timeit(reason, || self._locked.write()), reason)
+    }
+
+    /// Replace the picking order handed to the piece tracker.
+    ///
+    /// Called by `ManagedTorrent::update_file_priorities` so the order change
+    /// reaches a live torrent without a state transition.
+    pub(crate) fn set_file_priority_order(&self, order: FilePriorities) {
+        self.lock_write("update_file_priorities").file_priorities = order;
     }
 
     fn set_peer_live(&self, handle: PeerHandle, h: Handshake, connection_kind: ConnectionKind) {

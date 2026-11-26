@@ -541,6 +541,40 @@ mod tests {
     }
 
     #[test]
+    fn iter_queued_pieces_follows_the_file_priority_order() {
+        let piece_len = CHUNK_SIZE * 2 + 1;
+        let l = Lengths::new(piece_len as u64 * 3, piece_len).unwrap();
+        assert_eq!(l.total_pieces(), 3);
+
+        let files = (0..3)
+            .map(|i| FileInfo {
+                relative_filename: format!("{i}").into(),
+                offset_in_torrent: piece_len as u64 * i as u64,
+                piece_range: i..i + 1,
+                len: piece_len as u64,
+                attrs: Default::default(),
+            })
+            .collect::<Vec<_>>();
+
+        let bf_len = l.piece_bitfield_bytes();
+        let have = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
+        let mut selected = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
+        selected.get_mut(0..3).unwrap().fill(true);
+
+        let ct = ChunkTracker::new(have.into_dyn(), selected, l, &files).unwrap();
+
+        let order = |pri: &[usize]| {
+            ct.iter_queued_pieces(&pri.to_vec(), &files)
+                .map(|p| p.get())
+                .collect::<Vec<_>>()
+        };
+        // The default order is file order; a custom order reorders the pieces
+        // the tracker hands out, which is what a per-file priority promises.
+        assert_eq!(order(&[0, 1, 2]), vec![0, 1, 2]);
+        assert_eq!(order(&[2, 0, 1]), vec![2, 0, 1]);
+    }
+
+    #[test]
     fn test_update_only_files() {
         let piece_len = CHUNK_SIZE * 2 + 1;
         let total_len = piece_len as u64 * 2 + 1;

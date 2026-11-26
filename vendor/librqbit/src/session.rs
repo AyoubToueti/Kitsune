@@ -1362,6 +1362,7 @@ impl Session {
                 session: Arc::downgrade(self),
                 magnet_name: name,
                 client_name_and_version: self.client_name_and_version.clone(),
+                custom_file_priorities: parking_lot::RwLock::new(None),
             });
 
             let initializing = Arc::new(TorrentStateInitializing::new(
@@ -1621,6 +1622,15 @@ impl Session {
     ) -> anyhow::Result<()> {
         handle.update_only_files(only_files)?;
         self.try_update_persistence_metadata(handle).await;
+        Ok(())
+    }
+
+    pub async fn update_file_priorities(
+        self: &Arc<Self>,
+        handle: &ManagedTorrentHandle,
+        order: &[usize],
+    ) -> anyhow::Result<()> {
+        handle.update_file_priorities(order)?;
         Ok(())
     }
 
