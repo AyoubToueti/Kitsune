@@ -71,7 +71,7 @@ render. Suggested width: 1280px (the default window size).
 | :--: | :-------------: |
 | ![Home](docs/screenshots/home.png) | ![Browse](docs/screenshots/browse.png) |
 
-| Detail page | Watch |
+| Detail page | Release Selector |
 | :---------: | :---: |
 | ![Detail page](docs/screenshots/detail.png) | ![Watch](docs/screenshots/watch.png) |
 
