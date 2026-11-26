@@ -1525,16 +1525,30 @@ Popup {
         function onDownloadDone() { modal.downloadStatus = "Saved." }
         function onDownloadFailed(message) { modal.downloadStatus = message }
 
-        // Permanent-download answers. The record is echoed back so the toast
-        // can name the episode, not just say "started".
+        // Permanent-download answers. The payload wraps the first record so
+        // the toast can name the episode, and reports the pack split: "started"
+        // is 0 when nothing could run (the failed answer then carries the
+        // reason), otherwise the number of episodes the disk could take.
         function onDownloadStarted(json) {
-            const record = JSON.parse(json)
-            if (record === null) {
+            const payload = JSON.parse(json)
+            if (payload === null || payload.record === null) {
                 modal.downloadStatus = "Could not start the download."
                 return
             }
-            modal.downloadStatus = "Downloading episode " + record.episode
-                + "\u2026 (see Downloads)"
+            const record = payload.record
+            const started = payload.started !== undefined ? payload.started : 1
+            const total = payload.total !== undefined ? payload.total : 1
+            if (started === 0) return
+            if (started < total) {
+                modal.downloadStatus = "Downloading " + started + " of " + total
+                    + " episodes \u2014 the rest needs more free space\u2026 (see Downloads)"
+            } else if (total > 1) {
+                modal.downloadStatus = "Downloading " + total
+                    + " episodes\u2026 (see Downloads)"
+            } else {
+                modal.downloadStatus = "Downloading episode " + record.episode
+                    + "\u2026 (see Downloads)"
+            }
         }
 
         function onEpisodeDownloadFailed(id, message) {
@@ -1547,10 +1561,16 @@ Popup {
     // Cleared on a timer rather than on the next click, because the message
     // ("that release has several files...") is worth reading.
     property string downloadStatus: ""
+    // Hovering the toast pauses the countdown: the "see Downloads" link is
+    // easy to hit while a six second timer is running.
+    property bool downloadStatusHovered: false
     Timer {
         id: downloadStatusTimer
         interval: 6000
-        onTriggered: modal.downloadStatus = ""
+        onTriggered: {
+            if (!modal.downloadStatusHovered) modal.downloadStatus = ""
+            else downloadStatusTimer.restart()
+        }
     }
     onDownloadStatusChanged: {
         if (modal.downloadStatus !== "") downloadStatusTimer.restart()
@@ -1572,24 +1592,50 @@ Popup {
         anchors.fill: parent
 
         // Download feedback, floating over the release list's bottom edge so it
-        // never reflows the list the reader is scanning.
+        // never reflows the list the reader is scanning. Hovering holds the
+        // toast open and darkens it: the reader is aiming at the link.
         Rectangle {
+            id: downloadToast
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 16
             visible: modal.downloadStatus !== ""
             z: 40
             radius: 8
-            color: Theme.glassFillHover
+            color: statusHover.hovered ? Theme.glassFillHoverStrong : Theme.glassFillHover
             border.width: 1
             border.color: Theme.glassBorder
             implicitWidth: statusText.implicitWidth + 28
             implicitHeight: statusText.implicitHeight + 16
+            HoverHandler {
+                id: statusHover
+                onHoveredChanged: modal.downloadStatusHovered = statusHover.hovered
+            }
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.NoButton
+                hoverEnabled: true
+                cursorShape: statusText.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor
+            }
             Text {
                 id: statusText
                 anchors.centerIn: parent
                 width: Math.min(implicitWidth, 520)
-                text: modal.downloadStatus
+                textFormat: Text.StyledText
+                text: {
+                    const status = modal.downloadStatus
+                    const marker = " (see Downloads)"
+                    if (!status.endsWith(marker)) return status
+                    return status.slice(0, status.length - marker.length)
+                        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;")
+                        + " (<a href=\"downloads\">see Downloads</a>)"
+                }
+                linkColor: statusText.hoveredLink ? Theme.ink : Theme.accent
+                onLinkActivated: {
+                    modal.close()
+                    modal.openDownloadsPage()
+                }
                 color: Theme.ink
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap

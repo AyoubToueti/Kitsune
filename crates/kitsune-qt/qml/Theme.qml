@@ -73,6 +73,9 @@ QtObject {
     readonly property color glassFillStrong: dark ? "#f00b0e17" : "#f7ffffff"
     readonly property color glassFillSubtle: dark ? "#0fffffff" : "#0a000000"
     readonly property color glassFillHover: dark ? "#26ffffff" : "#14000000"
+    // One step darker than glassFillHover: a hovered toast/tooltip that must
+    // read as "pressed in" without crossing into glassFillStrong's opacity.
+    readonly property color glassFillHoverStrong: dark ? "#3dffffff" : "#21000000"
     readonly property color glassBorder: dark ? "#22ffffff" : "#1f000000"
     readonly property color glassBorderHover: dark ? "#44ffffff" : "#33000000"
     readonly property color glassHighlight: dark ? "#1affffff" : "#66ffffff"

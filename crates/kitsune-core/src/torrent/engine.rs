@@ -421,6 +421,16 @@ pub fn fits_on_disk(path: &Path, needed_bytes: u64, reserve_bytes: u64) -> bool 
     }
 }
 
+/// Whether a DOWNLOAD of `needed_bytes` fits on `path`'s volume.
+///
+/// Unlike the playback decision this asks the raw question the reader cares
+/// about: is there room for the file, with no hidden headroom. The engine's
+/// own ENOSPC handling covers whatever the disk loses between this check and
+/// the last written piece.
+pub fn disk_can_fit(path: &Path, needed_bytes: u64) -> bool {
+    fits_on_disk(path, needed_bytes, 0)
+}
+
 /// A running torrent session.
 pub struct TorrentEngine {
     session: Arc<Session>,
@@ -1346,6 +1356,22 @@ mod tests {
             !fits_on_disk(tmp.path(), 0, too_much),
             "a reserve larger than the free space cannot fit"
         );
+    }
+
+    /// The download check must be the raw available space: a hidden reserve
+    /// would refuse "needs 0.6 GiB, 1.8 GiB free" transfers that plainly fit.
+    #[test]
+    fn disk_can_fit_ignores_the_reserve() {
+        let tmp = tempfile::tempdir().unwrap();
+        let Some(free) = available_space(tmp.path()) else {
+            assert!(disk_can_fit(tmp.path(), u64::MAX));
+            return;
+        };
+        // Half and double the free space sit far from the boundary, so the
+        // suite's concurrent tempdir churn cannot flip them between probes
+        // the way an exact-boundary assertion could.
+        assert!(disk_can_fit(tmp.path(), free / 2));
+        assert!(!disk_can_fit(tmp.path(), free.saturating_mul(2)));
     }
 
     /// Adds a torrent and removes it again, exercising the removal against a

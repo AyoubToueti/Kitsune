@@ -3005,7 +3005,7 @@ impl qobject::Backend {
             let magnet = release.magnet_uri.clone();
 
             let started = player
-                .start_download_in(Some(&magnet), None, &file_indices, Some(&cache_dir), false)
+                .start_download_in(Some(&magnet), None, &file_indices, Some(&cache_dir), true)
                 .await;
             let torrent_id = match started {
                 Ok(id) => id,
@@ -3032,41 +3032,91 @@ impl qobject::Backend {
             // any one episode's size and would make every bar wrong.
             let torrent_files = player.torrent_files(torrent_id);
 
-            // Refuse to start a download that cannot possibly finish. The
-            // metadata is resolved here, so this is the first point where the
-            // real size is known -- and the last before pieces are written.
-            // Without this the transfer stalled and the page showed a frozen
-            // bar until the engine reported an error.
-            let needed: u64 = file_indices
-                .iter()
-                .filter_map(|idx| {
-                    torrent_files
-                        .iter()
-                        .find(|file| file.idx == *idx)
-                        .map(|file| file.length_bytes)
-                })
-                .sum();
-            let reserve = player.disk_reserve_bytes();
-            if needed > 0 && !kitsune_core::torrent::fits_on_disk(&cache_dir, needed, reserve) {
-                let free = kitsune_core::torrent::available_space(&cache_dir)
-                    .map(|bytes| format!("{:.1} GiB", bytes as f64 / 1024.0 / 1024.0 / 1024.0))
-                    .unwrap_or_else(|| "an unknown amount of".to_string());
-                let message = format!(
-                    "Not enough disk space: this download needs {:.1} GiB, and the disk has {free} free.",
-                    needed as f64 / 1024.0 / 1024.0 / 1024.0
-                );
-                let _ = qt_thread.queue(move |qobject| {
-                    qobject.episode_download_failed(QString::from(""), QString::from(&message))
-                });
-                // Nothing was recorded yet, so there is no row to fail: the
-                // torrent is dropped to avoid downloading into a full disk.
-                let _ = player.remove_torrent(torrent_id).await;
-                return;
-            }
-            let torrent_file_count = torrent_files.len() as u32;
-            let mut created: Vec<DownloadRecord> = Vec::with_capacity(file_indices.len());
+            // A pack may be bigger than the disk. Keep the top of the
+            // selection that fits (files in pack order, measured against the
+            // raw available space) and drop the rest -- they stay selectable
+            // through the group's Files dialog once space frees up. The
+            // torrent was added paused, so nothing is written while the
+            // selection is cut down.
+            let kept: Vec<usize> = {
+                let mut ordered: Vec<usize> = file_indices.clone();
+                ordered.sort_unstable();
+                ordered.dedup();
+                match kitsune_core::torrent::available_space(&cache_dir) {
+                    None => ordered,
+                    Some(free) => {
+                        let mut kept = Vec::new();
+                        let mut total = 0u64;
+                        for idx in ordered {
+                            let Some(size) = torrent_files
+                                .iter()
+                                .find(|file| file.idx == idx)
+                                .map(|file| file.length_bytes)
+                            else {
+                                continue;
+                            };
+                            let with_this = total.saturating_add(size);
+                            if with_this > free {
+                                break;
+                            }
+                            total = with_this;
+                            kept.push(idx);
+                        }
+                        kept
+                    }
+                }
+            };
+            let dropped = file_indices.len().saturating_sub(kept.len());
 
-            for file_idx in &file_indices {
+            let mut blocked: Option<String> = None;
+            if kept.is_empty() {
+                // A download that cannot possibly finish still shows up on the
+                // page: the rows are recorded as Failed with the reason, so
+                // the user sees the attempt and can Retry it once space frees
+                // up. The torrent itself stays parked (paused) until that
+                // retry, so nothing is written into a full disk.
+                let needed: u64 = file_indices
+                    .iter()
+                    .filter_map(|idx| {
+                        torrent_files
+                            .iter()
+                            .find(|file| file.idx == *idx)
+                            .map(|file| file.length_bytes)
+                    })
+                    .sum();
+                if needed > 0
+                    && !kitsune_core::torrent::disk_can_fit(&cache_dir, needed)
+                {
+                    let free = kitsune_core::torrent::available_space(&cache_dir)
+                        .map(|bytes| {
+                            format!("{:.1} GiB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
+                        })
+                        .unwrap_or_else(|| "an unknown amount of".to_string());
+                    blocked = Some(format!(
+                        "Not enough disk space: this download needs {:.1} GiB, and the disk has {free} free.",
+                        needed as f64 / 1024.0 / 1024.0 / 1024.0
+                    ));
+                }
+            } else if dropped > 0 {
+                if let Err(err) = player.set_only_files(torrent_id, kept.clone()).await {
+                    tracing::warn!(
+                        "could not restrict torrent {torrent_id} to the episodes that fit: {err:#}"
+                    );
+                    blocked = Some("the file selection could not be applied".to_string());
+                }
+            }
+
+            // When the fit could not be applied, the rows describe the whole
+            // selection again and the torrent stays parked (paused).
+            let download_indices: Vec<usize> = if kept.is_empty() || blocked.is_some() {
+                file_indices.clone()
+            } else {
+                kept.clone()
+            };
+            let torrent_file_count = torrent_files.len() as u32;
+            let mut created: Vec<DownloadRecord> = Vec::with_capacity(download_indices.len());
+
+            for file_idx in &download_indices {
                 let (total_bytes, file_name) = torrent_files
                     .iter()
                     .find(|file| file.idx == *file_idx)
@@ -3077,7 +3127,7 @@ impl qobject::Backend {
                 // so each record should say which episode it is rather than
                 // repeating the one the modal was opened for. Falls back to the
                 // modal's episode when the name has no number.
-                let file_episode = if file_indices.len() > 1 {
+                let file_episode = if download_indices.len() > 1 {
                     episode_from_filename(&file_name).or((episode > 0).then_some(episode as u32))
                 } else {
                     (episode > 0).then_some(episode as u32)
@@ -3101,7 +3151,11 @@ impl qobject::Backend {
                     cache_dir: Some(cache_dir.display().to_string()),
                     file_idx: *file_idx as u32,
                     file_name,
-                    status: DownloadStatus::Downloading,
+                    status: if blocked.is_some() {
+                        DownloadStatus::Failed
+                    } else {
+                        DownloadStatus::Downloading
+                    },
                     progress_bytes: 0,
                     total_bytes,
                     release_seeders: release.seeders,
@@ -3114,7 +3168,7 @@ impl qobject::Backend {
                     season: season_number,
                     library_dir: Some(library_dir_string.clone()),
                     torrent_file_count: Some(torrent_file_count),
-                    error: None,
+                    error: blocked.clone(),
                 });
             }
 
@@ -3139,8 +3193,28 @@ impl qobject::Backend {
             // N episodes" from the list it already has, and the Downloads page
             // reloads the whole store anyway.
             let first = created.first().cloned();
-            let json = serde_json::to_string(&first).unwrap_or_else(|_| "null".into());
+            // The modal reports the split for a pack that only partly fits:
+            // "started" is 0 when nothing could run (the failed answer then
+            // carries the reason), otherwise the number of kept episodes.
+            let payload = serde_json::json!({
+                "record": first,
+                "started": if blocked.is_some() { 0 } else { download_indices.len() },
+                "total": file_indices.len(),
+            });
+            let json = payload.to_string();
             let _ = qt_thread.queue(move |qobject| qobject.download_started(QString::from(&json)));
+
+            // The torrent was added paused; it only runs when the selection it
+            // kept is actually cleared to write. A blocked start stays parked
+            // until the user retries with room to spare, and the queued failed
+            // answer arrives after the started one to replace its text.
+            if let Some(message) = blocked {
+                let _ = qt_thread.queue(move |qobject| {
+                    qobject.episode_download_failed(QString::from(""), QString::from(&message))
+                });
+            } else if let Err(err) = player.resume_torrent(torrent_id).await {
+                tracing::warn!("could not start torrent {torrent_id}: {err:#}");
+            }
         });
     }
 
