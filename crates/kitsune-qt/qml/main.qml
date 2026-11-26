@@ -558,6 +558,7 @@ Window {
             if (on) root.showFullScreen()
             else root.showNormal()
         }
+        onOpenDownloadsPage: root.goTo(downloadsComponent, "downloads", { "backend": root.backend })
     }
 
     Component {

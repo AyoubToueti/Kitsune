@@ -678,19 +678,6 @@ impl PlayerState {
         }
     }
 
-    /// The free-space reserve a disk download must leave, in bytes.
-    ///
-    /// Exposed so the download command can refuse a transfer that cannot fit
-    /// BEFORE any pieces are written, rather than discovering it from a failed
-    /// write later.
-    pub fn disk_reserve_bytes(&self) -> u64 {
-        self.inner
-            .settings
-            .as_ref()
-            .map(|store| store.read().reserve_bytes())
-            .unwrap_or_else(|| crate::settings::Settings::default().reserve_bytes())
-    }
-
     /// A snapshot of the shared RAM streaming buffer, when enabled.
     ///
     /// The watch page can show "buffer 84 MiB / 256 MiB" from this. `None`
@@ -1533,6 +1520,18 @@ impl PlayerState {
         };
 
         session.engine.set_only_files(id, &only).await
+    }
+
+    /// Reorder a torrent's per-file download priority.
+    ///
+    /// Files earlier in `order` download first. Same cell-read rule as
+    /// [`Self::set_only_files`].
+    pub async fn set_file_priorities(&self, id: usize, order: Vec<usize>) -> Result<()> {
+        let Some(session) = self.session_snapshot() else {
+            return Ok(());
+        };
+
+        session.engine.update_file_priorities(id, &order).await
     }
 }
 

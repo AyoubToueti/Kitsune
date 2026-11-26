@@ -93,6 +93,7 @@ mod tests {
             completed_at: None,
             priority,
             user_paused: false,
+            file_paused: false,
             season: None,
             library_dir: None,
             torrent_file_count: None,

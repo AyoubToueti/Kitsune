@@ -194,6 +194,12 @@ pub struct ManagedTorrentShared {
     pub(crate) magnet_name: Option<String>,
 
     pub(crate) client_name_and_version: String,
+
+    // Per-file download order set by the application. `None` means the
+    // default (files sorted by name). It lives here, outside the per-state
+    // data, because `TorrentStateLive::new` rebuilds the picking order from
+    // the default on every unpause and would otherwise lose the custom one.
+    pub(crate) custom_file_priorities: parking_lot::RwLock<Option<Vec<usize>>>,
 }
 
 impl ManagedTorrentShared {
@@ -643,6 +649,74 @@ impl ManagedTorrent {
 
         g.only_files = Some(only_files.iter().copied().collect());
         Ok(())
+    }
+
+    /// Reorder the per-file download priority.
+    ///
+    /// Files earlier in `order` download first; files not listed keep their
+    /// relative order behind the listed ones. The order survives pause and
+    /// unpause (see [`ManagedTorrentShared::custom_file_priorities`]).
+    pub fn update_file_priorities(&self, order: &[usize]) -> anyhow::Result<()> {
+        let metadata = self.metadata.load();
+        let metadata = metadata.as_ref().context("torrent is not resolved")?;
+        let file_count = metadata.file_infos.len();
+        let full = build_file_priority_order(order, file_count)?;
+        *self.shared.custom_file_priorities.write() = Some(full.clone());
+        // A live torrent picks pieces straight from the locked copy; refresh
+        // it so the change takes effect without a state transition.
+        let live = {
+            let g = self.locked.read();
+            match &g.state {
+                ManagedTorrentState::Live(live) => Some(live.clone()),
+                _ => None,
+            }
+        };
+        if let Some(live) = live {
+            live.set_file_priority_order(full);
+        }
+        Ok(())
+    }
+}
+
+/// The pure part of [`ManagedTorrent::update_file_priorities`]: validate the
+/// requested order against the file count and complete it with the files the
+/// caller left out.
+fn build_file_priority_order(order: &[usize], file_count: usize) -> anyhow::Result<Vec<usize>> {
+    let mut seen = vec![false; file_count];
+    for f in order.iter().copied() {
+        if f >= file_count {
+            anyhow::bail!("file priority order contains invalid value {f}")
+        }
+        if seen[f] {
+            anyhow::bail!("file priority order contains duplicate value {f}")
+        }
+        seen[f] = true;
+    }
+    let mut full = order.to_vec();
+    full.extend((0..file_count).filter(|f| !seen[*f]));
+    Ok(full)
+}
+
+#[cfg(test)]
+mod file_priority_order_tests {
+    use super::build_file_priority_order;
+
+    #[test]
+    fn a_partial_order_is_completed_with_the_left_out_files() {
+        let order = build_file_priority_order(&[3, 1], 5).unwrap();
+        assert_eq!(order, vec![3, 1, 0, 2, 4]);
+    }
+
+    #[test]
+    fn duplicates_and_out_of_range_values_are_rejected() {
+        assert!(build_file_priority_order(&[1, 1], 3).is_err());
+        assert!(build_file_priority_order(&[3], 3).is_err());
+    }
+
+    #[test]
+    fn an_empty_order_is_the_identity() {
+        let order = build_file_priority_order(&[], 3).unwrap();
+        assert_eq!(order, vec![0, 1, 2]);
     }
 }
 

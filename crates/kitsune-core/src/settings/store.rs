@@ -85,6 +85,16 @@ pub struct Settings {
     /// so this only affects fullscreen. Defaults to `false`, matching the
     /// historical behaviour.
     pub fullscreen_timecode: bool,
+    /// Which pair of times the fullscreen timecode pill shows:
+    /// `"elapsed"` (position / total, the historical behaviour),
+    /// `"remaining"` (remaining / total), or `"elapsed_remaining"`
+    /// (position / remaining).
+    ///
+    /// A `String` like `theme` and `resume_behavior`: the vocabulary belongs
+    /// to the frontend, and an unrecognised value (a newer build, a typo, a
+    /// hand-edited file) must fall back to `"elapsed"` in the UI rather than
+    /// fail the whole file's decode.
+    pub timecode_format: String,
     /// Whether the speed test reports download speed in binary units
     /// (MiB/s) rather than decimal megabits (Mbps).
     ///
@@ -170,6 +180,9 @@ impl Default for Settings {
             resume_rewind_seconds: 20,
             // Off by default: the pills are a preference, not a correction.
             fullscreen_timecode: false,
+            // Elapsed / total by default: what the pill showed before the
+            // format became configurable.
+            timecode_format: "elapsed".to_string(),
             // Mbps by default: it is how connections are sold, and what the
             // result has always read as. MiB/s is opt-in.
             use_binary_units: false,
@@ -398,6 +411,7 @@ mod tests {
             title_language: "romaji".to_string(),
             metadata_source: "kitsu".to_string(),
             fullscreen_timecode: true,
+            timecode_format: "remaining".to_string(),
             ram_streaming: false,
             ram_buffer_mib: 128,
             disk_reserve_mib: 512,
@@ -405,6 +419,12 @@ mod tests {
 
         store.write(&settings).expect("write");
         assert_eq!(store.read(), settings);
+    }
+
+    #[test]
+    fn timecode_format_defaults_to_elapsed() {
+        let (_dir, store) = store();
+        assert_eq!(store.read().timecode_format, "elapsed");
     }
 
     #[test]

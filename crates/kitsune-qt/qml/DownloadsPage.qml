@@ -24,7 +24,6 @@ Item {
     property var expandedAnime: ({})
 
     // Tree-line layout (grouped mode) + sticky header backdrop.
-    // Theme-aware properties:
     readonly property color stickyBackdrop: Theme.surface
     readonly property int treeTrunkX: 28
     readonly property int treeGutter: 48
@@ -34,6 +33,9 @@ Item {
     // Live progress snapshots, refreshed every poll.
     property var liveGroups: ({})
     property var liveRecords: ({})
+
+    // Speed history for the summary graph
+    property var speedHistory: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
     function asRecords(value) {
         if (Array.isArray(value)) return value
@@ -134,10 +136,6 @@ Item {
                 status: r.status || "",
                 progressBytes: r.progressBytes || 0,
                 totalBytes: r.totalBytes || 0,
-                // Carried through so a per-file row can explain a failure.
-                // Without it a failed episode under a season pack showed a red
-                // dot and no reason, which is the "silent failure" this page
-                // exists to avoid.
                 error: r.error || "",
                 fraction: 0,
                 percent: 0
@@ -161,10 +159,27 @@ Item {
         liveGroups = computeLiveGroups(next)
         liveRecords = computeLiveRecords(next)
 
-        if (newSig === oldSig) return
+        if (newSig === oldSig) {
+            updateSpeedHistory()
+            return
+        }
 
         preserveScroll()
         records = next
+        updateSpeedHistory()
+    }
+
+    function updateSpeedHistory() {
+        let currentSpeed = 0
+        for (let i = 0; i < groups.length; i++) {
+            if (groups[i].status === "downloading") {
+                currentSpeed += liveGroups[groups[i].key]?.speedMbps || 0
+            }
+        }
+        let hist = speedHistory.slice()
+        hist.shift()
+        hist.push(currentSpeed)
+        speedHistory = hist
     }
 
     function preserveScroll() {
@@ -205,8 +220,13 @@ Item {
         const out = []
         for (let k = 0; k < order.length; k++) {
             const group = map[order[k]]
+            // Rows follow the same order the engine downloads them: high
+            // priority at the top, low at the bottom, episode order within
+            // each level. Without this the page showed episode order while
+            // the transfer ran in priority order.
             group.records.sort(function (a, b) {
-                return (a.episode || 0) - (b.episode || 0)
+                return priorityRank(a.priority) - priorityRank(b.priority)
+                    || (a.episode || 0) - (b.episode || 0)
                     || (a.fileIdx || 0) - (b.fileIdx || 0)
             })
             aggregate(group)
@@ -474,6 +494,26 @@ Item {
         return n
     }
 
+    // Summary Bar Computations
+    readonly property real totalDownloadSpeed: {
+        let speed = 0
+        for (let i = 0; i < groups.length; i++) {
+            if (groups[i].status === "downloading")
+                speed += liveGroups[groups[i].key]?.speedMbps || 0
+        }
+        return speed
+    }
+    readonly property int activeCount: countFor("downloading") + countFor("queued")
+    readonly property int needsAttentionCount: countFor("failed")
+    readonly property int completedCount: countFor("complete")
+    // Free bytes on the volume downloads land on. Zero means the probe failed
+    // (the page renders a dash), never an invented number.
+    property real diskFreeBytes: 0
+
+    function refreshDiskFree() {
+        if (backend) diskFreeBytes = backend.diskFreeBytes()
+    }
+
     function groupFor(key) {
         for (let i = 0; i < groups.length; i++)
             if (groups[i].key === key) return groups[i]
@@ -517,9 +557,16 @@ Item {
         return v.toFixed(v < 10 && u > 0 ? 1 : 0) + " " + units[u]
     }
 
+    // Split "8.8 GiB" into its number and unit so the summary cell can style
+    // them differently. The dash from `formatSize` has no unit part.
+    function sizeParts(bytes) {
+        const match = formatSize(bytes).match(/^([0-9.]+)\s*([A-Za-z]+)$/)
+        return match ? [match[1], match[2]] : ["\u2014", ""]
+    }
+
     function formatSpeed(mbps) {
-        if (!mbps || mbps <= 0) return "\u2014"
-        return mbps.toFixed(1) + " MiB/s"
+        if (!mbps || mbps <= 0) return "0.0"
+        return mbps.toFixed(1)
     }
 
     function formatEta(seconds) {
@@ -578,6 +625,14 @@ Item {
         case "low": return "Low"
         default: return "Normal"
         }
+    }
+
+    // Sort rank for a file's priority: lower sorts first, matching the
+    // engine's download order (high downloads before normal before low).
+    function priorityRank(priority) {
+        if (priority === "high") return 0
+        if (priority === "low") return 2
+        return 1
     }
 
     function toggleSelected(key) {
@@ -740,8 +795,37 @@ Item {
 
     function togglePause(group, status) {
         if (!backend) return
-        if (status === "paused") backend.resumeDownload(String(group.actionId))
-        else backend.pauseDownload(String(group.actionId))
+        if (status === "downloading" || status === "queued")
+            backend.pauseDownload(String(group.actionId))
+        else
+            backend.resumeDownload(String(group.actionId))
+    }
+
+    function toggleFilePause(rec, status) {
+        if (!backend) return
+        backend.setFilePaused(String(rec.id), status !== "paused")
+    }
+
+    function raiseFilePriority(rec) {
+        if (!backend) return
+        if (rec.priority === "low")
+            backend.setFilePriority(String(rec.id), "normal")
+        else
+            backend.setFilePriority(String(rec.id), "high")
+    }
+
+    function lowerFilePriority(rec) {
+        if (!backend) return
+        if (rec.priority === "high")
+            backend.setFilePriority(String(rec.id), "normal")
+        else
+            backend.setFilePriority(String(rec.id), "low")
+    }
+
+    function removeFile(rec, deleteFile) {
+        if (!backend) return
+        backend.removeDownloadFile(String(rec.id), deleteFile)
+        refreshDiskFree()
     }
 
     function manageFiles(group) {
@@ -758,6 +842,7 @@ Item {
         backend.restoreDownloads()
         backend.getDownloads()
         backend.pollDownloads()
+        refreshDiskFree()
     }
 
     onSearchQueryChanged: preserveScroll()
@@ -777,6 +862,7 @@ Item {
         }
         function onDownloadCompleted(json) {
             const record = JSON.parse(json)
+            page.refreshDiskFree()
             if (record !== null) page.backend.pollDownloads()
         }
         function onDownloadStarted(json) {
@@ -794,6 +880,16 @@ Item {
         repeat: true
         running: page.anyActive
         onTriggered: if (page.backend) page.backend.pollDownloads()
+    }
+
+    // A download writes new bytes while it runs and removals free them, so
+    // re-probe the volume periodically. The probe only enumerates mounts, so
+    // a 5 s tick while the page is on screen is cheap.
+    Timer {
+        interval: 5000
+        repeat: true
+        running: page.visible
+        onTriggered: page.refreshDiskFree()
     }
 
     DownloadFilesDialog {
@@ -852,6 +948,193 @@ Item {
                 icon: "\u2197"
                 tone: Theme.accent
                 onActivated: if (page.backend) page.backend.openLibraryFolder()
+            }
+        }
+
+        // ---- Summary Bar ----
+        Rectangle {
+            Layout.fillWidth: true
+            implicitHeight: 76
+            radius: 12
+            color: Theme.surfaceSunken
+            border.width: 1
+            border.color: Theme.borderSubtle
+            
+            RowLayout {
+                anchors.fill: parent
+                spacing: 0
+                
+                // Cell 1: Downloading Now
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Downloading now"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    RowLayout {
+                        spacing: 4
+                        Text {
+                            text: page.formatSpeed(page.totalDownloadSpeed)
+                            color: Theme.ink
+                            font.pixelSize: 22
+                            font.weight: Font.Bold
+                        }
+                        Text {
+                            text: "MiB/s"
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignBottom
+                            Layout.bottomMargin: 3
+                        }
+                    }
+                    
+                    // Speed Graph Curve
+                    Canvas {
+                        id: speedGraphCanvas
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 16
+                        onPaint: {
+                            var ctx = getContext("2d")
+                            ctx.reset()
+                            ctx.strokeStyle = Theme.accent
+                            ctx.lineWidth = 1.5
+                            ctx.lineCap = "round"
+                            
+                            var pts = page.speedHistory
+                            if (pts.length === 0) return
+                            
+                            var max = 1
+                            for (var i = 0; i < pts.length; i++) {
+                                if (pts[i] > max) max = pts[i]
+                            }
+                            
+                            var w = width
+                            var h = height - 2
+                            var stepX = w / (pts.length - 1)
+                            
+                            ctx.beginPath()
+                            ctx.moveTo(0, h - (pts[0] / max) * h)
+                            
+                            for (var j = 1; j < pts.length; j++) {
+                                var x = j * stepX
+                                var y = h - (pts[j] / max) * h
+                                var prevX = (j - 1) * stepX
+                                var prevY = h - (pts[j - 1] / max) * h
+                                
+                                var cx = (prevX + x) / 2
+                                ctx.quadraticCurveTo(cx, prevY, x, y)
+                            }
+                            ctx.stroke()
+                        }
+                        Connections {
+                            target: page
+                            function onSpeedHistoryChanged() { speedGraphCanvas.requestPaint() }
+                        }
+                    }
+                }
+                
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+                
+                // Cell 2: Active
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Active"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        text: page.activeCount
+                        color: Theme.ink
+                        font.pixelSize: 22
+                        font.weight: Font.Bold
+                    }
+                }
+
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+
+                // Cell 3: Needs attention
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Needs attention"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        text: page.needsAttentionCount
+                        color: page.needsAttentionCount > 0 ? Theme.danger : Theme.ink
+                        font.pixelSize: 22
+                        font.weight: Font.Bold
+                    }
+                }
+
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+
+                // Cell 4: Completed
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Completed"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    Text {
+                        text: page.completedCount
+                        color: Theme.ink
+                        font.pixelSize: 22
+                        font.weight: Font.Bold
+                    }
+                }
+
+                Rectangle { width: 1; Layout.fillHeight: true; color: Theme.borderSubtle; Layout.topMargin: 14; Layout.bottomMargin: 14 }
+
+                // Cell 5: Free space on the download volume
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    spacing: 2
+                    Text {
+                        text: "Free space"
+                        color: Theme.inkMuted
+                        font.pixelSize: 11
+                    }
+                    RowLayout {
+                        spacing: 4
+                        Text {
+                            text: page.sizeParts(page.diskFreeBytes)[0]
+                            color: Theme.ink
+                            font.pixelSize: 22
+                            font.weight: Font.Bold
+                        }
+                        Text {
+                            text: page.sizeParts(page.diskFreeBytes)[1]
+                            color: Theme.inkMuted
+                            font.pixelSize: 11
+                            Layout.alignment: Qt.AlignBottom
+                            Layout.bottomMargin: 3
+                        }
+                    }
+                }
             }
         }
 
@@ -1192,7 +1475,6 @@ Item {
                         anchors.bottomMargin: 9
                         spacing: 11
 
-                        // Cover image is now clickable to open Anime Page
                         Rectangle {
                             id: sectionCoverContainer
                             Layout.alignment: Qt.AlignVCenter
@@ -1248,7 +1530,6 @@ Item {
                                 font.weight: Font.DemiBold
                             }
 
-                            // Hover overlay to indicate clickability
                             Rectangle {
                                 anchors.fill: parent
                                 radius: parent.radius
@@ -1256,7 +1537,7 @@ Item {
                                 color: Qt.rgba(0, 0, 0, 0.5)
                                 Text {
                                     anchors.centerIn: parent
-                                    text: "\u2197" // External link arrow
+                                    text: "\u2197"
                                     color: "#ffffff"
                                     font.pixelSize: 14
                                 }
@@ -1447,7 +1728,6 @@ Item {
                             Layout.fillWidth: true
                             spacing: 12
 
-                            // Selection + expander
                             ColumnLayout {
                                 Layout.alignment: Qt.AlignTop
                                 Layout.topMargin: 4
@@ -1497,7 +1777,6 @@ Item {
                                 }
                             }
 
-                            // Cover
                             Rectangle {
                                 id: coverContainer
                                 Layout.alignment: Qt.AlignTop
@@ -1550,7 +1829,6 @@ Item {
                                     font.weight: Font.DemiBold
                                 }
                                 
-                                // Play overlay on hover
                                 Rectangle {
                                     anchors.fill: parent
                                     radius: parent.radius
@@ -1565,7 +1843,6 @@ Item {
                                 }
                             }
 
-                            // Primary information and progress
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 Layout.alignment: Qt.AlignTop
@@ -1635,7 +1912,7 @@ Item {
                                     }
                                     Text {
                                         visible: live.status === "downloading"
-                                        text: page.formatSpeed(live.speedMbps)
+                                        text: page.formatSpeed(live.speedMbps) + " MiB/s"
                                         color: live.speedMbps > 0 ? Theme.healthGreen : Theme.inkFaint
                                         font.pixelSize: 10
                                         font.bold: live.speedMbps > 0
@@ -1674,7 +1951,6 @@ Item {
                                                 : page.fillColorFor(live.status)
                                             Behavior on width { NumberAnimation { duration: 280; easing.type: Easing.Linear } }
 
-                                            // Download gradient overlay
                                             Rectangle {
                                                 anchors.fill: parent
                                                 radius: parent.radius
@@ -1699,7 +1975,6 @@ Item {
                                 }
                             }
 
-                            // Fox illustration
                             ErrorState {
                                 Layout.alignment: Qt.AlignVCenter
                                 Layout.preferredWidth: 92
@@ -1724,7 +1999,6 @@ Item {
                             wrapMode: Text.WordWrap
                         }
 
-                        // Actions footer
                         RowLayout {
                             Layout.fillWidth: true
                             Layout.leftMargin: 32
@@ -1789,20 +2063,22 @@ Item {
                                     status: rec.status,
                                     progressBytes: rec.progressBytes || 0,
                                     totalBytes: rec.totalBytes || 0,
-                                    fraction: 0, percent: 0
+                                    fraction: 0, percent: 0,
+                                    error: rec.error || ""
                                 })
 
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 32
                                 implicitHeight: 48
                                 radius: 8
-                                color: fileMouse.containsMouse ? Theme.glassFillHover : Theme.surfaceSunken
+                                color: rowHover.hovered ? Theme.glassFillHover : Theme.surfaceSunken
 
-                                // Click expanded row to play
+                                // Use HoverHandler to track hover over the entire row
+                                HoverHandler { id: rowHover }
+
                                 MouseArea {
                                     id: fileMouse
                                     anchors.fill: parent
-                                    hoverEnabled: true
                                     cursorShape: liveRec.status === "complete" ? Qt.PointingHandCursor : Qt.ArrowCursor
                                     onClicked: {
                                         if (liveRec.status === "complete") {
@@ -1842,15 +2118,11 @@ Item {
                                             font.pixelSize: 9
                                             elide: Text.ElideMiddle
                                         }
-                                        // Why THIS file failed. The group
-                                        // card carries the same text, but a
-                                        // season pack needs it on the row the
-                                        // reader is looking at.
                                         Text {
                                             Layout.fillWidth: true
                                             visible: liveRec.status === "failed"
-                                                && liveRec.error.length > 0
-                                            text: liveRec.error
+                                                && (liveRec.error || "").length > 0
+                                            text: liveRec.error || ""
                                             color: Theme.danger
                                             font.pixelSize: 9
                                             wrapMode: Text.WordWrap
@@ -1878,6 +2150,189 @@ Item {
                                                     GradientStop { position: 0.5; color: "#FEC42D" }
                                                     GradientStop { position: 1.0; color: "#FEF7E0" }
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // --- Redesigned Episode Controls ---
+                                Rectangle {
+                                    id: fileActions
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    implicitWidth: fileActionsRow.implicitWidth + 12
+                                    implicitHeight: 32
+                                    radius: 16
+                                    color: rowHover.hovered ? Qt.rgba(0,0,0,0.4) : "transparent"
+                                    visible: rowHover.hovered
+
+                                    RowLayout {
+                                        id: fileActionsRow
+                                        anchors.centerIn: parent
+                                        spacing: 4
+                                        
+                                        // Priority Up
+                                        Item {
+                                            width: 24; height: 24
+                                            visible: liveRec.status !== "complete" && rec.priority !== "high"
+                                            HoverHandler { id: upHover }
+                                            
+                                            Rectangle {
+                                                id: glowUp
+                                                anchors.fill: parent
+                                                radius: 12
+                                                color: "transparent"
+                                                border.color: Theme.accent
+                                                border.width: 1.5
+                                                opacity: 0
+                                                
+                                                SequentialAnimation on opacity {
+                                                    id: animUp
+                                                    running: false
+                                                    NumberAnimation { from: 0.8; to: 0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                                SequentialAnimation on scale {
+                                                    id: animScaleUp
+                                                    running: false
+                                                    NumberAnimation { from: 1.0; to: 2.0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                            }
+                                            
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "\u2191"
+                                                color: upHover.hovered ? Theme.ink : Theme.inkMuted
+                                                font.pixelSize: 14
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    animUp.start()
+                                                    animScaleUp.start()
+                                                    page.raiseFilePriority(rec)
+                                                }
+                                            }
+                                        }
+
+                                        // Priority Down
+                                        Item {
+                                            width: 24; height: 24
+                                            visible: liveRec.status !== "complete" && rec.priority !== "low"
+                                            HoverHandler { id: downHover }
+                                            
+                                            Rectangle {
+                                                id: glowDown
+                                                anchors.fill: parent
+                                                radius: 12
+                                                color: "transparent"
+                                                border.color: Theme.accent
+                                                border.width: 1.5
+                                                opacity: 0
+                                                
+                                                SequentialAnimation on opacity {
+                                                    id: animDown
+                                                    running: false
+                                                    NumberAnimation { from: 0.8; to: 0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                                SequentialAnimation on scale {
+                                                    id: animScaleDown
+                                                    running: false
+                                                    NumberAnimation { from: 1.0; to: 2.0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                            }
+                                            
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "\u2193"
+                                                color: downHover.hovered ? Theme.ink : Theme.inkMuted
+                                                font.pixelSize: 14
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    animDown.start()
+                                                    animScaleDown.start()
+                                                    page.lowerFilePriority(rec)
+                                                }
+                                            }
+                                        }
+                                        
+                                        Rectangle { width: 1; height: 14; color: Theme.borderSubtle; visible: liveRec.status !== "complete" }
+
+                                        // Pause / Resume (Play vs Pause icon)
+                                        Item {
+                                            width: 24; height: 24
+                                            visible: liveRec.status === "downloading"
+                                                || liveRec.status === "queued"
+                                                || liveRec.status === "paused"
+                                            HoverHandler { id: playHover }
+                                            
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: page.toggleFilePause(rec, liveRec.status)
+                                            }
+
+                                            // Play Triangle (Resume)
+                                            Canvas {
+                                                id: playCanvas
+                                                anchors.centerIn: parent
+                                                width: 10; height: 12
+                                                visible: liveRec.status === "paused"
+                                                onPaint: {
+                                                    var ctx = getContext("2d");
+                                                    ctx.reset();
+                                                    ctx.fillStyle = playHover.hovered ? Theme.healthGreen : Theme.ink;
+                                                    ctx.beginPath();
+                                                    ctx.moveTo(0, 0);
+                                                    ctx.lineTo(10, 6);
+                                                    ctx.lineTo(0, 12);
+                                                    ctx.closePath();
+                                                    ctx.fill();
+                                                }
+                                                Connections {
+                                                    target: playHover
+                                                    function onHoveredChanged() { playCanvas.requestPaint() }
+                                                }
+                                                onVisibleChanged: if (visible) requestPaint()
+                                            }
+                                            
+                                            // Pause Segments (Pause)
+                                            Row {
+                                                anchors.centerIn: parent
+                                                spacing: 3
+                                                visible: liveRec.status !== "paused"
+                                                Rectangle { width: 3; height: 11; radius: 1; color: playHover.hovered ? Theme.accent : Theme.ink }
+                                                Rectangle { width: 3; height: 11; radius: 1; color: playHover.hovered ? Theme.accent : Theme.ink }
+                                            }
+                                        }
+
+                                        // Stop / Delete (Square icon). A single
+                                        // click acts immediately: a row is one
+                                        // file, unlike the whole-group Remove,
+                                        // which keeps its confirm step.
+                                        Item {
+                                            id: removeFileButton
+                                            width: 24; height: 24
+                                            HoverHandler { id: stopHover }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (!page.backend) return
+                                                    page.removeFile(rec, liveRec.status === "complete")
+                                                }
+                                            }
+
+                                            // Square Icon
+                                            Rectangle {
+                                                anchors.centerIn: parent
+                                                width: 9; height: 9; radius: 1
+                                                color: stopHover.hovered ? Theme.danger : Theme.ink
                                             }
                                         }
                                     }

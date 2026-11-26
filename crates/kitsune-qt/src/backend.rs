@@ -400,6 +400,35 @@ pub mod qobject {
         #[cxx_name = "setDownloadPriority"]
         fn set_download_priority(self: Pin<&mut Self>, id: QString, priority: QString);
 
+        /// Pause or resume ONE file row of a download, leaving the group's
+        /// other files running.
+        #[qinvokable]
+        #[cxx_name = "setFilePaused"]
+        fn set_file_paused(self: Pin<&mut Self>, id: QString, paused: bool);
+
+        /// Change one file row's queue priority: "high", "normal", or "low".
+        ///
+        /// The engine downloads files in priority order, so this steers the
+        /// pieces rather than only the queue planner.
+        #[qinvokable]
+        #[cxx_name = "setFilePriority"]
+        fn set_file_priority(self: Pin<&mut Self>, id: QString, priority: QString);
+
+        /// Remove ONE file row of a download. A completed row's file is
+        /// deleted from disk; a running one is deselected in the torrent.
+        /// Removing a group's last row tears the torrent down.
+        #[qinvokable]
+        #[cxx_name = "removeDownloadFile"]
+        fn remove_download_file(self: Pin<&mut Self>, id: QString, delete_file: bool);
+
+        /// Free bytes on the volume downloads are written to.
+        ///
+        /// Answers zero when the volume cannot be probed, so the page can
+        /// show a dash instead of a made-up number.
+        #[qinvokable]
+        #[cxx_name = "diskFreeBytes"]
+        fn disk_free_bytes(self: Pin<&mut Self>) -> i64;
+
         /// The library directory downloads are saved into.
         #[qinvokable]
         #[cxx_name = "libraryDir"]
@@ -1382,11 +1411,75 @@ fn unique_torrent_ids(records: &[DownloadRecord]) -> Vec<usize> {
 fn group_indices(records: &[DownloadRecord]) -> Vec<usize> {
     let mut indices: Vec<usize> = records
         .iter()
+        .filter(|record| !record.file_paused)
         .map(|record| record.file_idx as usize)
         .collect();
     indices.sort_unstable();
     indices.dedup();
     indices
+}
+
+/// The file selection a torrent should currently hold: every row that is not
+/// per-file paused. Completed and failed rows stay in so the engine keeps
+/// holding their data; per-file paused rows are the only exclusions.
+fn selection_indices(records: &[DownloadRecord]) -> Vec<usize> {
+    let mut indices: Vec<usize> = records
+        .iter()
+        .filter(|record| record.status != DownloadStatus::Paused)
+        .map(|record| record.file_idx as usize)
+        .collect();
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+/// The per-file download order for a group's torrent: higher-priority rows
+/// first, file index order within a level. `rank()` is 0 for High, so a plain
+/// ascending sort places High ahead of Normal and Low.
+fn group_file_order(records: &[DownloadRecord]) -> Vec<usize> {
+    let mut rows: Vec<&DownloadRecord> = records.iter().collect();
+    rows.sort_unstable_by_key(|record| (record.priority.rank(), record.file_idx));
+    rows.iter().map(|record| record.file_idx as usize).collect()
+}
+
+/// Push a group's file selection to the engine, logging a rejected change
+/// instead of failing the request: the store already carries the truth, and
+/// the next reattach rebuilds the selection from the records.
+fn apply_group_selection(
+    runtime: &Arc<tokio::runtime::Runtime>,
+    player: &Arc<PlayerState>,
+    torrent_id: usize,
+    records: &[DownloadRecord],
+) {
+    let selection = selection_indices(records);
+    let player = Arc::clone(player);
+    let runtime = Arc::clone(runtime);
+    runtime.spawn(async move {
+        if let Err(err) = player.set_only_files(torrent_id, selection.clone()).await {
+            tracing::warn!("could not apply file selection {selection:?}: {err:#}");
+        }
+    });
+}
+
+/// Push a group's per-file priority order to the engine.
+///
+/// The order is applied even when every row is Normal: the engine keeps the
+/// last custom order until it is replaced, so resetting priorities must send
+/// the natural (file index) order back rather than skipping the call.
+fn apply_group_file_order(
+    runtime: &Arc<tokio::runtime::Runtime>,
+    player: &Arc<PlayerState>,
+    torrent_id: usize,
+    records: &[DownloadRecord],
+) {
+    let order = group_file_order(records);
+    let player = Arc::clone(player);
+    let runtime = Arc::clone(runtime);
+    runtime.spawn(async move {
+        if let Err(err) = player.set_file_priorities(torrent_id, order.clone()).await {
+            tracing::warn!("could not apply file priority order {order:?}: {err:#}");
+        }
+    });
 }
 
 /// The torrent's file count for a group, or the number of known rows.
@@ -1429,6 +1522,32 @@ fn needs_restore(record: &DownloadRecord) -> bool {
         record.status,
         DownloadStatus::Downloading | DownloadStatus::Queued | DownloadStatus::Paused
     )
+}
+
+/// The shared "not enough disk space" refusal text for a download group, or
+/// None when the disk can still take everything the group has left to write.
+/// Retries reuse the same check as fresh starts so a group never resumes into
+/// a disk it cannot finish on.
+fn download_space_error(records: &[DownloadRecord]) -> Option<String> {
+    let cache_dir = records
+        .iter()
+        .find_map(|record| record.cache_dir.clone())
+        .map(std::path::PathBuf::from)?;
+    let needed: u64 = records
+        .iter()
+        .filter(|record| record.status != DownloadStatus::Complete && !record.file_paused)
+        .map(|record| record.total_bytes.saturating_sub(record.progress_bytes))
+        .sum();
+    if needed == 0 || kitsune_core::torrent::disk_can_fit(&cache_dir, needed) {
+        return None;
+    }
+    let free = kitsune_core::torrent::available_space(&cache_dir)
+        .map(|bytes| format!("{:.1} GiB", bytes as f64 / 1024.0 / 1024.0 / 1024.0))
+        .unwrap_or_else(|| "an unknown amount of".to_string());
+    Some(format!(
+        "Not enough disk space: this download needs {:.1} GiB, and the disk has {free} free.",
+        needed as f64 / 1024.0 / 1024.0 / 1024.0
+    ))
 }
 
 /// Record that a group's reattach is running, without holding the lock across
@@ -3005,7 +3124,7 @@ impl qobject::Backend {
             let magnet = release.magnet_uri.clone();
 
             let started = player
-                .start_download_in(Some(&magnet), None, &file_indices, Some(&cache_dir), false)
+                .start_download_in(Some(&magnet), None, &file_indices, Some(&cache_dir), true)
                 .await;
             let torrent_id = match started {
                 Ok(id) => id,
@@ -3032,41 +3151,91 @@ impl qobject::Backend {
             // any one episode's size and would make every bar wrong.
             let torrent_files = player.torrent_files(torrent_id);
 
-            // Refuse to start a download that cannot possibly finish. The
-            // metadata is resolved here, so this is the first point where the
-            // real size is known -- and the last before pieces are written.
-            // Without this the transfer stalled and the page showed a frozen
-            // bar until the engine reported an error.
-            let needed: u64 = file_indices
-                .iter()
-                .filter_map(|idx| {
-                    torrent_files
-                        .iter()
-                        .find(|file| file.idx == *idx)
-                        .map(|file| file.length_bytes)
-                })
-                .sum();
-            let reserve = player.disk_reserve_bytes();
-            if needed > 0 && !kitsune_core::torrent::fits_on_disk(&cache_dir, needed, reserve) {
-                let free = kitsune_core::torrent::available_space(&cache_dir)
-                    .map(|bytes| format!("{:.1} GiB", bytes as f64 / 1024.0 / 1024.0 / 1024.0))
-                    .unwrap_or_else(|| "an unknown amount of".to_string());
-                let message = format!(
-                    "Not enough disk space: this download needs {:.1} GiB, and the disk has {free} free.",
-                    needed as f64 / 1024.0 / 1024.0 / 1024.0
-                );
-                let _ = qt_thread.queue(move |qobject| {
-                    qobject.episode_download_failed(QString::from(""), QString::from(&message))
-                });
-                // Nothing was recorded yet, so there is no row to fail: the
-                // torrent is dropped to avoid downloading into a full disk.
-                let _ = player.remove_torrent(torrent_id).await;
-                return;
-            }
-            let torrent_file_count = torrent_files.len() as u32;
-            let mut created: Vec<DownloadRecord> = Vec::with_capacity(file_indices.len());
+            // A pack may be bigger than the disk. Keep the top of the
+            // selection that fits (files in pack order, measured against the
+            // raw available space) and drop the rest -- they stay selectable
+            // through the group's Files dialog once space frees up. The
+            // torrent was added paused, so nothing is written while the
+            // selection is cut down.
+            let kept: Vec<usize> = {
+                let mut ordered: Vec<usize> = file_indices.clone();
+                ordered.sort_unstable();
+                ordered.dedup();
+                match kitsune_core::torrent::available_space(&cache_dir) {
+                    None => ordered,
+                    Some(free) => {
+                        let mut kept = Vec::new();
+                        let mut total = 0u64;
+                        for idx in ordered {
+                            let Some(size) = torrent_files
+                                .iter()
+                                .find(|file| file.idx == idx)
+                                .map(|file| file.length_bytes)
+                            else {
+                                continue;
+                            };
+                            let with_this = total.saturating_add(size);
+                            if with_this > free {
+                                break;
+                            }
+                            total = with_this;
+                            kept.push(idx);
+                        }
+                        kept
+                    }
+                }
+            };
+            let dropped = file_indices.len().saturating_sub(kept.len());
 
-            for file_idx in &file_indices {
+            let mut blocked: Option<String> = None;
+            if kept.is_empty() {
+                // A download that cannot possibly finish still shows up on the
+                // page: the rows are recorded as Failed with the reason, so
+                // the user sees the attempt and can Retry it once space frees
+                // up. The torrent itself stays parked (paused) until that
+                // retry, so nothing is written into a full disk.
+                let needed: u64 = file_indices
+                    .iter()
+                    .filter_map(|idx| {
+                        torrent_files
+                            .iter()
+                            .find(|file| file.idx == *idx)
+                            .map(|file| file.length_bytes)
+                    })
+                    .sum();
+                if needed > 0
+                    && !kitsune_core::torrent::disk_can_fit(&cache_dir, needed)
+                {
+                    let free = kitsune_core::torrent::available_space(&cache_dir)
+                        .map(|bytes| {
+                            format!("{:.1} GiB", bytes as f64 / 1024.0 / 1024.0 / 1024.0)
+                        })
+                        .unwrap_or_else(|| "an unknown amount of".to_string());
+                    blocked = Some(format!(
+                        "Not enough disk space: this download needs {:.1} GiB, and the disk has {free} free.",
+                        needed as f64 / 1024.0 / 1024.0 / 1024.0
+                    ));
+                }
+            } else if dropped > 0 {
+                if let Err(err) = player.set_only_files(torrent_id, kept.clone()).await {
+                    tracing::warn!(
+                        "could not restrict torrent {torrent_id} to the episodes that fit: {err:#}"
+                    );
+                    blocked = Some("the file selection could not be applied".to_string());
+                }
+            }
+
+            // When the fit could not be applied, the rows describe the whole
+            // selection again and the torrent stays parked (paused).
+            let download_indices: Vec<usize> = if kept.is_empty() || blocked.is_some() {
+                file_indices.clone()
+            } else {
+                kept.clone()
+            };
+            let torrent_file_count = torrent_files.len() as u32;
+            let mut created: Vec<DownloadRecord> = Vec::with_capacity(download_indices.len());
+
+            for file_idx in &download_indices {
                 let (total_bytes, file_name) = torrent_files
                     .iter()
                     .find(|file| file.idx == *file_idx)
@@ -3077,7 +3246,7 @@ impl qobject::Backend {
                 // so each record should say which episode it is rather than
                 // repeating the one the modal was opened for. Falls back to the
                 // modal's episode when the name has no number.
-                let file_episode = if file_indices.len() > 1 {
+                let file_episode = if download_indices.len() > 1 {
                     episode_from_filename(&file_name).or((episode > 0).then_some(episode as u32))
                 } else {
                     (episode > 0).then_some(episode as u32)
@@ -3101,7 +3270,11 @@ impl qobject::Backend {
                     cache_dir: Some(cache_dir.display().to_string()),
                     file_idx: *file_idx as u32,
                     file_name,
-                    status: DownloadStatus::Downloading,
+                    status: if blocked.is_some() {
+                        DownloadStatus::Failed
+                    } else {
+                        DownloadStatus::Downloading
+                    },
                     progress_bytes: 0,
                     total_bytes,
                     release_seeders: release.seeders,
@@ -3110,10 +3283,11 @@ impl qobject::Backend {
                     completed_at: None,
                     priority: DownloadPriority::Normal,
                     user_paused: false,
+                    file_paused: false,
                     season: season_number,
                     library_dir: Some(library_dir_string.clone()),
                     torrent_file_count: Some(torrent_file_count),
-                    error: None,
+                    error: blocked.clone(),
                 });
             }
 
@@ -3138,8 +3312,28 @@ impl qobject::Backend {
             // N episodes" from the list it already has, and the Downloads page
             // reloads the whole store anyway.
             let first = created.first().cloned();
-            let json = serde_json::to_string(&first).unwrap_or_else(|_| "null".into());
+            // The modal reports the split for a pack that only partly fits:
+            // "started" is 0 when nothing could run (the failed answer then
+            // carries the reason), otherwise the number of kept episodes.
+            let payload = serde_json::json!({
+                "record": first,
+                "started": if blocked.is_some() { 0 } else { download_indices.len() },
+                "total": file_indices.len(),
+            });
+            let json = payload.to_string();
             let _ = qt_thread.queue(move |qobject| qobject.download_started(QString::from(&json)));
+
+            // The torrent was added paused; it only runs when the selection it
+            // kept is actually cleared to write. A blocked start stays parked
+            // until the user retries with room to spare, and the queued failed
+            // answer arrives after the started one to replace its text.
+            if let Some(message) = blocked {
+                let _ = qt_thread.queue(move |qobject| {
+                    qobject.episode_download_failed(QString::from(""), QString::from(&message))
+                });
+            } else if let Err(err) = player.resume_torrent(torrent_id).await {
+                tracing::warn!("could not start torrent {torrent_id}: {err:#}");
+            }
         });
     }
 
@@ -3247,6 +3441,7 @@ impl qobject::Backend {
             let remaining = Arc::clone(&remaining);
             let restore_done = Arc::clone(&restore_done);
             let qt_thread = qt_thread.clone();
+            let task_runtime = Arc::clone(&runtime);
 
             runtime.spawn(async move {
                 let result = attach_group(&player, &records, true, &group_indices(&records)).await;
@@ -3266,6 +3461,7 @@ impl qobject::Backend {
                         let cache = attached.cache_dir.display().to_string();
                         let file_count = attached.files.len() as u32;
                         let torrent_id = attached.torrent_id;
+                        apply_group_file_order(&task_runtime, &player, torrent_id, &records);
                         let update = store.mutate(|all| {
                             for record in all.iter_mut() {
                                 if record.group_key() != group_key || !needs_restore(record) {
@@ -3865,6 +4061,7 @@ impl qobject::Backend {
                     completed_at: None,
                     priority: prototype.priority,
                     user_paused,
+                    file_paused: false,
                     season: prototype.season,
                     library_dir: prototype.library_dir.clone(),
                     torrent_file_count: Some(file_count),
@@ -4049,6 +4246,234 @@ impl qobject::Backend {
         self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
     }
 
+    /// Pause or resume ONE file row of a download.
+    ///
+    /// A paused file is deselected in the engine, so its pieces stop
+    /// arriving, while the torrent keeps running for the group's other
+    /// files. This only touches the one row: a group pause sets `user_paused`
+    /// on every row, but `file_paused` survives the group resume, and
+    /// `group_indices` leaves the row out so a restart reattaches the torrent
+    /// without it.
+    fn set_file_paused(self: Pin<&mut Self>, id: QString, paused: bool) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+        let id = download_id(&id.to_string());
+        let all = store.read_all();
+        let Some(record) = all.iter().find(|record| record.id == id) else {
+            return;
+        };
+        let group_key = record.group_key();
+        let record_id = record.id;
+
+        if let Err(err) = store.mutate(|records| {
+            for row in records.iter_mut() {
+                if row.id == record_id {
+                    if paused {
+                        row.status = DownloadStatus::Paused;
+                        row.user_paused = true;
+                        row.file_paused = true;
+                    } else {
+                        row.status = DownloadStatus::Downloading;
+                        row.user_paused = false;
+                        row.file_paused = false;
+                        row.error = None;
+                    }
+                }
+            }
+        }) {
+            tracing::warn!("could not update file pause for {record_id}: {err:#}");
+            return;
+        }
+
+        let records = group_records(&store.read_all(), &group_key);
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+        let torrent_ids = unique_torrent_ids(&records);
+
+        if torrent_ids.is_empty() && !paused && !group_indices(&records).is_empty() {
+            // No live torrent: every file was paused when the app restarted,
+            // so the startup reattach skipped this group. Attach it running
+            // or the resumed row would say Downloading with nothing behind it.
+            self.reattach_group_running(group_key, records);
+            return;
+        }
+
+        if paused && selection_indices(&records).is_empty() {
+            // Pausing this row would deselect everything: a group with no
+            // active rows has nothing to download, so pause the torrent.
+            for torrent_id in torrent_ids {
+                let player = Arc::clone(&player);
+                let runtime = Arc::clone(&runtime);
+                runtime.spawn(async move {
+                    if let Err(err) = player.pause_torrent(torrent_id).await {
+                        tracing::warn!("could not pause torrent {torrent_id}: {err:#}");
+                    }
+                });
+            }
+        } else {
+            for torrent_id in &torrent_ids {
+                apply_group_selection(&runtime, &player, *torrent_id, &records);
+            }
+            if !paused {
+                // A group pause left the torrent paused; resuming one file
+                // must restart it or nothing is fetched.
+                for torrent_id in torrent_ids {
+                    let player = Arc::clone(&player);
+                    let runtime = Arc::clone(&runtime);
+                    runtime.spawn(async move {
+                        if let Err(err) = player.resume_torrent(torrent_id).await {
+                            tracing::warn!("could not resume torrent {torrent_id}: {err:#}");
+                        }
+                    });
+                }
+            }
+        }
+        self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+    }
+
+    /// Change ONE file row's queue priority.
+    ///
+    /// Besides the record the row carries, the engine's per-file order is
+    /// re-applied so a higher-priority file's pieces are fetched first.
+    fn set_file_priority(self: Pin<&mut Self>, id: QString, priority: QString) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+        let id = download_id(&id.to_string());
+        let priority = match priority.to_string().as_str() {
+            "high" => DownloadPriority::High,
+            "low" => DownloadPriority::Low,
+            _ => DownloadPriority::Normal,
+        };
+        let all = store.read_all();
+        let Some(record) = all.iter().find(|record| record.id == id) else {
+            return;
+        };
+        let group_key = record.group_key();
+        let record_id = record.id;
+
+        if let Err(err) = store.mutate(|records| {
+            for row in records.iter_mut() {
+                if row.id == record_id {
+                    row.priority = priority;
+                }
+            }
+        }) {
+            tracing::warn!("could not update file priority for {record_id}: {err:#}");
+            return;
+        }
+
+        let file_idx = all
+            .iter()
+            .find(|record| record.id == record_id)
+            .map(|record| record.file_idx)
+            .unwrap_or_default();
+        tracing::info!(
+            "download {record_id} (file {file_idx}): file priority set to {priority:?}"
+        );
+
+        let records = group_records(&store.read_all(), &group_key);
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+        for torrent_id in unique_torrent_ids(&records) {
+            apply_group_file_order(&runtime, &player, torrent_id, &records);
+        }
+        self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+    }
+
+    /// Remove ONE file row of a download.
+    ///
+    /// A completed row's file is deleted from disk when asked. A running one
+    /// is deselected in the engine so the torrent stops fetching its pieces.
+    /// Removing a group's last row tears the torrent and its caches down.
+    fn remove_download_file(self: Pin<&mut Self>, id: QString, delete_file: bool) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+        let id = download_id(&id.to_string());
+        let all = store.read_all();
+        let Some(record) = all.iter().find(|record| record.id == id) else {
+            return;
+        };
+        let record = record.clone();
+        let group_key = record.group_key();
+
+        if let Err(err) = store.mutate(|records| records.retain(|row| row.id != record.id)) {
+            tracing::warn!("could not remove download file {}: {err:#}", record.id);
+            return;
+        }
+
+        if delete_file && !record.output_path.is_empty() {
+            if let Err(err) = std::fs::remove_file(&record.output_path) {
+                tracing::warn!("could not delete {}: {err}", record.output_path);
+            }
+        }
+
+        let remaining = group_records(&store.read_all(), &group_key);
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+
+        if remaining.is_empty() {
+            // The torrent and its caches have no owner left. Same teardown
+            // as removing a whole group, for just this record's torrent.
+            let info_hash = group_info_hash(std::slice::from_ref(&record));
+            let cache_dirs: Vec<(String, std::path::PathBuf)> = std::slice::from_ref(&record)
+                .iter()
+                .filter_map(|row| {
+                    let hash = row.info_hash.clone().or_else(|| info_hash.clone())?;
+                    let dir = row.cache_dir.clone().map(std::path::PathBuf::from)?;
+                    Some((hash, dir))
+                })
+                .collect();
+            let torrent_ids = unique_torrent_ids(std::slice::from_ref(&record));
+            runtime.spawn(async move {
+                for torrent_id in torrent_ids {
+                    if let Err(err) = player.remove_torrent(torrent_id).await {
+                        tracing::warn!("could not stop torrent {torrent_id}: {err:#}");
+                    }
+                }
+                if let Some(hash) = info_hash {
+                    if let Err(err) = remove_cached_torrent(&hash) {
+                        tracing::warn!("could not remove cached torrent {hash}: {err:#}");
+                    }
+                }
+                for (hash, dir) in cache_dirs {
+                    if let Err(err) = remove_download_cache(&dir, &hash) {
+                        tracing::warn!(
+                            "could not remove download cache {}: {err:#}",
+                            dir.display()
+                        );
+                    }
+                }
+            });
+        } else if selection_indices(&remaining).is_empty() {
+            // Nothing left to fetch: pause the torrent instead of pushing an
+            // empty selection the engine rejects.
+            for torrent_id in unique_torrent_ids(&remaining) {
+                let player = Arc::clone(&player);
+                let runtime = Arc::clone(&runtime);
+                runtime.spawn(async move {
+                    if let Err(err) = player.pause_torrent(torrent_id).await {
+                        tracing::warn!("could not pause torrent {torrent_id}: {err:#}");
+                    }
+                });
+            }
+        } else {
+            for torrent_id in unique_torrent_ids(&remaining) {
+                apply_group_selection(&runtime, &player, torrent_id, &remaining);
+            }
+        }
+        self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+    }
+
+    fn disk_free_bytes(self: Pin<&mut Self>) -> i64 {
+        let dir = self.rust().player.resolved_download_dir();
+        kitsune_core::torrent::available_space(&dir)
+            .and_then(|free| i64::try_from(free).ok())
+            .unwrap_or(0)
+    }
+
     fn library_dir(self: Pin<&mut Self>) -> QString {
         QString::from(
             &self
@@ -4151,87 +4576,54 @@ impl qobject::Backend {
             return;
         }
 
+        // A retry must not write into a full disk either: keep the failed rows
+        // failed with a fresh reason until space frees up.
+        if records
+            .iter()
+            .any(|record| record.status == DownloadStatus::Failed)
+        {
+            if let Some(message) = download_space_error(&records) {
+                let _ = store.mutate(|all| {
+                    for record in all.iter_mut() {
+                        if record.group_key() == group_key
+                            && record.status == DownloadStatus::Failed
+                        {
+                            record.error = Some(message.clone());
+                        }
+                    }
+                });
+                self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+                return;
+            }
+        }
+
         // No live torrent: this is a Retry of a failed or stale group. Attach
         // it running rather than merely flipping the flag, or the row would
         // say Downloading with nothing behind it.
         if live_id.is_none() {
-            let qt_thread = self.qt_thread();
-            let runtime = Arc::clone(&self.rust().runtime);
-            let player = Arc::clone(&self.rust().player);
-            let restoring = Arc::clone(&self.rust().restoring_downloads);
-            mark_restoring(&restoring, &group_key);
-
-            runtime.spawn(async move {
-                let result = attach_group(&player, &records, false, &group_indices(&records)).await;
-                let list_json = match result {
-                    Ok(attached) => {
-                        if let Some(bytes) = player.torrent_bytes(attached.torrent_id) {
-                            if let Err(err) = save_cached_torrent(&attached.info_hash, &bytes) {
-                                tracing::warn!("could not cache retried torrent: {err:#}");
-                            }
-                        }
-                        let torrent_id = attached.torrent_id;
-                        let hash = attached.info_hash.clone();
-                        let cache = attached.cache_dir.display().to_string();
-                        let file_count = attached.files.len() as u32;
-                        if let Err(err) = store.mutate(|all| {
-                            for record in all.iter_mut() {
-                                if record.group_key() != group_key
-                                    || record.status == DownloadStatus::Complete
-                                {
-                                    continue;
-                                }
-                                record.torrent_id = Some(torrent_id);
-                                record.info_hash = Some(hash.clone());
-                                record.cache_dir = Some(cache.clone());
-                                record.torrent_file_count = Some(file_count);
-                                record.status = DownloadStatus::Downloading;
-                                record.user_paused = false;
-                                record.error = None;
-                            }
-                        }) {
-                            tracing::warn!("could not record retry for {group_key}: {err:#}");
-                        }
-                        downloads_json(&store.read_all())
-                    }
-                    Err(message) => {
-                        if let Err(err) = store.mutate(|all| {
-                            for record in all.iter_mut() {
-                                if record.group_key() == group_key
-                                    && record.status != DownloadStatus::Complete
-                                {
-                                    record.status = DownloadStatus::Failed;
-                                    record.error = Some(message.clone());
-                                }
-                            }
-                        }) {
-                            tracing::warn!(
-                                "could not record retry failure for {group_key}: {err:#}"
-                            );
-                        }
-                        downloads_json(&store.read_all())
-                    }
-                };
-
-                unmark_restoring(&restoring, &group_key);
-                let _ = qt_thread
-                    .queue(move |qobject| qobject.downloads_ready(QString::from(&list_json)));
-            });
+            // A group whose every row is per-file paused (or complete) has
+            // nothing to attach: retrying would fail with "no files" and
+            // wrongly fail the rows.
+            if group_indices(&records).is_empty() {
+                self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+                return;
+            }
+            self.reattach_group_running(group_key, records);
             return;
         }
-
-        // A restored group is paused on disk. Flip only the rows that can run,
-        // then let the queue planner enforce the concurrency limit.
+        // A restored group is paused on disk; a retried one may carry Failed
+        // rows past the space guard above. Flip every row that can run, then
+        // let the queue planner enforce the concurrency limit. A per-file
+        // paused row stays paused: its engine exclusion is still in place and
+        // only an explicit per-file resume clears it.
         let Some(torrent_id) = live_id else {
             return;
         };
         let _ = store.mutate(|all| {
             for record in all.iter_mut() {
                 if record.group_key() == group_key
-                    && !matches!(
-                        record.status,
-                        DownloadStatus::Complete | DownloadStatus::Failed
-                    )
+                    && record.status != DownloadStatus::Complete
+                    && !record.file_paused
                 {
                     record.status = DownloadStatus::Downloading;
                     record.user_paused = false;
@@ -4239,7 +4631,6 @@ impl qobject::Backend {
                 }
             }
         });
-
         let runtime = Arc::clone(&self.rust().runtime);
         let player = Arc::clone(&self.rust().player);
         runtime.spawn(async move {
@@ -4249,6 +4640,109 @@ impl qobject::Backend {
         });
 
         self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+    }
+
+    /// Attach a group that has no live torrent, running.
+    ///
+    /// Used by a group Retry and by a per-file resume that wakes a group whose
+    /// files were all paused when the app restarted. Without the attach the
+    /// row would say Downloading with no torrent behind it, and the queue
+    /// planner (which skips rows without a live id) would leave it stuck.
+    fn reattach_group_running(
+        self: Pin<&mut Self>,
+        group_key: String,
+        records: Vec<DownloadRecord>,
+    ) {
+        let Some(store) = self.rust().downloads.clone() else {
+            return;
+        };
+
+        // A retry must not write into a full disk either: fail the rows that
+        // want to run with the reason until space frees up.
+        if let Some(message) = download_space_error(&records) {
+            let _ = store.mutate(|all| {
+                for record in all.iter_mut() {
+                    if record.group_key() == group_key
+                        && record.status != DownloadStatus::Complete
+                        && record.status != DownloadStatus::Paused
+                    {
+                        record.status = DownloadStatus::Failed;
+                        record.error = Some(message.clone());
+                    }
+                }
+            });
+            self.downloads_ready(QString::from(&downloads_json(&store.read_all())));
+            return;
+        }
+
+        let qt_thread = self.qt_thread();
+        let runtime = Arc::clone(&self.rust().runtime);
+        let player = Arc::clone(&self.rust().player);
+        let restoring = Arc::clone(&self.rust().restoring_downloads);
+        mark_restoring(&restoring, &group_key);
+        let task_runtime = Arc::clone(&runtime);
+
+        runtime.spawn(async move {
+            let result = attach_group(&player, &records, false, &group_indices(&records)).await;
+            let list_json = match result {
+                Ok(attached) => {
+                    if let Some(bytes) = player.torrent_bytes(attached.torrent_id) {
+                        if let Err(err) = save_cached_torrent(&attached.info_hash, &bytes) {
+                            tracing::warn!("could not cache retried torrent: {err:#}");
+                        }
+                    }
+                    let torrent_id = attached.torrent_id;
+                    apply_group_file_order(&task_runtime, &player, torrent_id, &records);
+                    let hash = attached.info_hash.clone();
+                    let cache = attached.cache_dir.display().to_string();
+                    let file_count = attached.files.len() as u32;
+                    if let Err(err) = store.mutate(|all| {
+                        for record in all.iter_mut() {
+                            if record.group_key() != group_key
+                                || record.status == DownloadStatus::Complete
+                                || record.file_paused
+                            {
+                                continue;
+                            }
+                            record.torrent_id = Some(torrent_id);
+                            record.info_hash = Some(hash.clone());
+                            record.cache_dir = Some(cache.clone());
+                            record.torrent_file_count = Some(file_count);
+                            // Rows paused for another reason (a per-file
+                            // pause that survived, or a group pause the
+                            // caller did not intend to lift) stay paused.
+                            if record.status != DownloadStatus::Paused {
+                                record.status = DownloadStatus::Downloading;
+                            }
+                            record.error = None;
+                        }
+                    }) {
+                        tracing::warn!("could not record retry for {group_key}: {err:#}");
+                    }
+                    downloads_json(&store.read_all())
+                }
+                Err(message) => {
+                    if let Err(err) = store.mutate(|all| {
+                        for record in all.iter_mut() {
+                            if record.group_key() == group_key
+                                && record.status != DownloadStatus::Complete
+                                && record.status != DownloadStatus::Paused
+                            {
+                                record.status = DownloadStatus::Failed;
+                                record.error = Some(message.clone());
+                            }
+                        }
+                    }) {
+                        tracing::warn!("could not record retry failure for {group_key}: {err:#}");
+                    }
+                    downloads_json(&store.read_all())
+                }
+            };
+
+            unmark_restoring(&restoring, &group_key);
+            let _ =
+                qt_thread.queue(move |qobject| qobject.downloads_ready(QString::from(&list_json)));
+        });
     }
 
     fn download_torrent(self: Pin<&mut Self>, url: QString, path: QString) {
@@ -5172,6 +5666,7 @@ mod downloaded_for_anime_tests {
             completed_at: None,
             priority: DownloadPriority::Normal,
             user_paused: false,
+            file_paused: false,
             season: None,
             library_dir: None,
             torrent_file_count: None,
@@ -5193,6 +5688,22 @@ mod downloaded_for_anime_tests {
         let path = dir.join("show-01.mkv");
         std::fs::write(&path, b"x").unwrap();
         (dir, path)
+    }
+
+    // The engine takes files earlier in the order first, so High MUST sort
+    // ahead of Normal and Low. Getting this backwards silently loaded the
+    // highest-priority file last (it looked like the arrows did nothing).
+    #[test]
+    fn group_file_order_puts_high_priority_first() {
+        let mut rows: Vec<DownloadRecord> = (0..4).map(sample_record).collect();
+        for (idx, row) in rows.iter_mut().enumerate() {
+            row.id = idx as u64 + 1;
+            row.file_idx = idx as u32;
+        }
+        rows[3].priority = DownloadPriority::High;
+        rows[1].priority = DownloadPriority::Low;
+
+        assert_eq!(group_file_order(&rows), vec![3, 0, 2, 1]);
     }
 
     #[test]

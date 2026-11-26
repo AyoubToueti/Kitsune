@@ -72,6 +72,31 @@ Popup {
         return (h > 0 ? h + ":" + mm : mm) + ":" + ss
     }
 
+    // Which pair the top-left HUD pill shows. An unknown value (older or
+    // newer settings file) degrades to the historical elapsed / total.
+    function validTimecodeFormat(value) {
+        return (value === "remaining" || value === "elapsed_remaining")
+            ? value : "elapsed"
+    }
+
+    // Label of the top-left HUD pill, in the format chosen in Player settings.
+    // Reads `position`/`duration` here so the Text binding tracks them.
+    function timecodeText() {
+        const item = playerLoader.item
+        const position = item ? (item.position || 0) : 0
+        const duration = item ? (item.duration || 0) : 0
+        const remaining = Math.max(duration - position, 0)
+        // A leading minus makes "remaining" unmistakable against "elapsed";
+        // at exactly zero there is nothing left, so no sign is shown.
+        const remainingText = remaining > 0
+            ? "-" + fmtTime(remaining) : fmtTime(remaining)
+        if (timecodeFormat === "remaining")
+            return remainingText + "  /  " + fmtTime(duration)
+        if (timecodeFormat === "elapsed_remaining")
+            return fmtTime(position) + "  /  " + remainingText
+        return fmtTime(position) + "  /  " + fmtTime(duration)
+    }
+
     function requestResume() {
         if (modal.backend) modal.backend.getWatchPositions()
     }
@@ -232,10 +257,19 @@ Popup {
     property bool fullscreen: false
     // Persisted mirror of the user's "Show timecode in fullscreen" choice.
     property bool fullscreenTimecode: false
+    // Which pair the top-left HUD pill shows: "elapsed" (position / total),
+    // "remaining" (remaining / total) or "elapsed_remaining"
+    // (position / remaining). Persisted as `timecodeFormat` in the settings.
+    property string timecodeFormat: "elapsed"
+    // Wall clock for the top-right pill. Ticked while the HUD is visible.
+    property date clockNow: new Date()
     property bool chromeVisible: true
     property bool infoOpen: false
     property int infoTick: 0
     signal requestFullscreen(bool on)
+    // Emitted when the reader follows the "see Downloads" toast link; main
+    // wires it to the page stack so the modal cannot reach the stack itself.
+    signal openDownloadsPage()
 
     Timer {
         interval: 1000
@@ -604,6 +638,15 @@ Popup {
         if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
     }
 
+    function setTimecodeFormat(format) {
+        const value = modal.validTimecodeFormat(format)
+        const s = Object.assign({}, modal.appSettings)
+        s.timecodeFormat = value
+        modal.appSettings = s
+        modal.timecodeFormat = value
+        if (modal.backend) modal.backend.setSettings(JSON.stringify(s))
+    }
+
     Connections {
         target: modal.backend
         function onSettingsReady(json) {
@@ -612,6 +655,7 @@ Popup {
             modal.appSettings = s
             modal.shortcutMap = s.shortcuts || ({})
             modal.fullscreenTimecode = s.fullscreenTimecode === true
+            modal.timecodeFormat = modal.validTimecodeFormat(s.timecodeFormat)
         }
     }
 
@@ -1481,16 +1525,30 @@ Popup {
         function onDownloadDone() { modal.downloadStatus = "Saved." }
         function onDownloadFailed(message) { modal.downloadStatus = message }
 
-        // Permanent-download answers. The record is echoed back so the toast
-        // can name the episode, not just say "started".
+        // Permanent-download answers. The payload wraps the first record so
+        // the toast can name the episode, and reports the pack split: "started"
+        // is 0 when nothing could run (the failed answer then carries the
+        // reason), otherwise the number of episodes the disk could take.
         function onDownloadStarted(json) {
-            const record = JSON.parse(json)
-            if (record === null) {
+            const payload = JSON.parse(json)
+            if (payload === null || payload.record === null) {
                 modal.downloadStatus = "Could not start the download."
                 return
             }
-            modal.downloadStatus = "Downloading episode " + record.episode
-                + "\u2026 (see Downloads)"
+            const record = payload.record
+            const started = payload.started !== undefined ? payload.started : 1
+            const total = payload.total !== undefined ? payload.total : 1
+            if (started === 0) return
+            if (started < total) {
+                modal.downloadStatus = "Downloading " + started + " of " + total
+                    + " episodes \u2014 the rest needs more free space\u2026 (see Downloads)"
+            } else if (total > 1) {
+                modal.downloadStatus = "Downloading " + total
+                    + " episodes\u2026 (see Downloads)"
+            } else {
+                modal.downloadStatus = "Downloading episode " + record.episode
+                    + "\u2026 (see Downloads)"
+            }
         }
 
         function onEpisodeDownloadFailed(id, message) {
@@ -1503,10 +1561,16 @@ Popup {
     // Cleared on a timer rather than on the next click, because the message
     // ("that release has several files...") is worth reading.
     property string downloadStatus: ""
+    // Hovering the toast pauses the countdown: the "see Downloads" link is
+    // easy to hit while a six second timer is running.
+    property bool downloadStatusHovered: false
     Timer {
         id: downloadStatusTimer
         interval: 6000
-        onTriggered: modal.downloadStatus = ""
+        onTriggered: {
+            if (!modal.downloadStatusHovered) modal.downloadStatus = ""
+            else downloadStatusTimer.restart()
+        }
     }
     onDownloadStatusChanged: {
         if (modal.downloadStatus !== "") downloadStatusTimer.restart()
@@ -1528,24 +1592,50 @@ Popup {
         anchors.fill: parent
 
         // Download feedback, floating over the release list's bottom edge so it
-        // never reflows the list the reader is scanning.
+        // never reflows the list the reader is scanning. Hovering holds the
+        // toast open and darkens it: the reader is aiming at the link.
         Rectangle {
+            id: downloadToast
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 16
             visible: modal.downloadStatus !== ""
             z: 40
             radius: 8
-            color: Theme.glassFillHover
+            color: statusHover.hovered ? Theme.glassFillHoverStrong : Theme.glassFillHover
             border.width: 1
             border.color: Theme.glassBorder
             implicitWidth: statusText.implicitWidth + 28
             implicitHeight: statusText.implicitHeight + 16
+            HoverHandler {
+                id: statusHover
+                onHoveredChanged: modal.downloadStatusHovered = statusHover.hovered
+            }
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.NoButton
+                hoverEnabled: true
+                cursorShape: statusText.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor
+            }
             Text {
                 id: statusText
                 anchors.centerIn: parent
                 width: Math.min(implicitWidth, 520)
-                text: modal.downloadStatus
+                textFormat: Text.StyledText
+                text: {
+                    const status = modal.downloadStatus
+                    const marker = " (see Downloads)"
+                    if (!status.endsWith(marker)) return status
+                    return status.slice(0, status.length - marker.length)
+                        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                        .replace(/>/g, "&gt;")
+                        + " (<a href=\"downloads\">see Downloads</a>)"
+                }
+                linkColor: statusText.hoveredLink ? Theme.ink : Theme.accent
+                onLinkActivated: {
+                    modal.close()
+                    modal.openDownloadsPage()
+                }
                 color: Theme.ink
                 font.pixelSize: 12
                 wrapMode: Text.WordWrap
@@ -1558,9 +1648,12 @@ Popup {
 
             // --- Window Header -----------------------------------
             Item {
+                id: windowHeader
                 Layout.fillWidth: true
                 Layout.preferredHeight: modal.fullscreen ? 0 : 84
                 visible: !modal.fullscreen
+
+                HoverHandler { id: windowHeaderHover }
 
                 RowLayout {
                     anchors.fill: parent
@@ -2233,7 +2326,7 @@ Popup {
                             id: viewportMouseArea
                             anchors.fill: parent
                             hoverEnabled: true
-                            acceptedButtons: Qt.LeftButton
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
                             cursorShape: (modal.stage === "play" && !modal.chromeVisible) ? Qt.BlankCursor : Qt.ArrowCursor
                             // Qt re-sends hover events with the SAME coordinates
                             // whenever an item (OSD, bars) appears or vanishes
@@ -2246,7 +2339,22 @@ Popup {
                                 lastY = mouse.y
                                 modal.wakeChrome()
                             }
-                            onClicked: {
+                            onClicked: function (mouse) {
+                                if (mouse.button === Qt.RightButton) {
+                                    // The settings card already owns the
+                                    // foreground; its backdrop handles this.
+                                    if (modal.settingsOpen) return
+                                    // Right-click opens Player settings on the
+                                    // tab that holds the timecode format. The
+                                    // HUD pills cannot host it: moving the
+                                    // mouse to them hides the HUD before a
+                                    // click lands.
+                                    bottomControls.closeChapterMenu()
+                                    modal.wakeChrome()
+                                    settingsCard.tab = "playback"
+                                    modal.settingsOpen = true
+                                    return
+                                }
                                 // Click-to-pause must not reveal the UI.
                                 bottomControls.closeChapterMenu()
                                 if (playerLoader.item) playerLoader.item.command(["cycle", "pause"])
@@ -2274,38 +2382,56 @@ Popup {
                             }
                         }
 
-                        // ===== Fullscreen timecode HUD =========================
+                        // ===== Timecode HUD ====================================
                         //
-                        // Shown only when *all four* are true:
-                        //   - fullscreen (windowed already shows the popup header/footer)
-                        //   - the play stage
-                        //   - the chrome is hidden (header + bottom bar gone)
-                        //   - the user enabled it in Settings
+                        // Shows when the user enabled it and any of:
+                        //   - fullscreen with the chrome hidden (the original
+                        //     always-on case),
+                        //   - the Player settings card is open,
+                        //   - the pointer is over the top or bottom player bar
+                        //     (in windowed mode too).
                         //
                         // Two rounded pills, matching the OSD's look. `enabled:
                         // false` guarantees the viewport's click-to-pause and
-                        // move-to-wake handlers keep working underneath.
+                        // move-to-wake handlers keep working underneath; the
+                        // format is chosen from Player settings (right-click
+                        // the video), not by clicking the pill (a mouse move
+                        // would hide the HUD first).
                         Item {
                             id: timecodeOverlay
                             anchors.fill: parent
                             z: 11
                             enabled: false
                             visible: opacity > 0.0
-                            opacity: (modal.fullscreen
-                                      && modal.stage === "play"
-                                      && !modal.chromeVisible
-                                      && modal.fullscreenTimecode) ? 1.0 : 0.0
+                            opacity: (modal.stage === "play"
+                                      && modal.fullscreenTimecode
+                                      && ((modal.fullscreen && !modal.chromeVisible)
+                                          || modal.settingsOpen
+                                          || topBarHover.hovered
+                                          || bottomControlsHover.hovered
+                                          || windowHeaderHover.hovered)) ? 1.0 : 0.0
                             Behavior on opacity {
                                 NumberAnimation {
                                     duration: Theme.animationsEnabled ? 200 : 0
                                 }
                             }
 
-                            // Top-left: elapsed / total
+                            // Drop below the fullscreen top bar while it is
+                            // up, so hover-to-show never paints the HUD on top
+                            // of the title.
+                            property real topGap: (modal.fullscreen && topBar.visible) ? 74 : 20
+                            Behavior on topGap {
+                                NumberAnimation {
+                                    duration: Theme.animationsEnabled ? 200 : 0
+                                }
+                            }
+
+                            // Top-left: the pair chosen in Player settings.
                             Rectangle {
                                 anchors.left: parent.left
                                 anchors.top: parent.top
-                                anchors.margins: 20
+                                anchors.leftMargin: 20
+                                anchors.topMargin: timecodeOverlay.topGap
                                 radius: 8
                                 color: Qt.rgba(0.07, 0.07, 0.11, 0.72)
                                 border.width: 1
@@ -2319,11 +2445,7 @@ Popup {
                                     // `position` and `duration` are properties
                                     // of MpvObject, so the binding updates
                                     // automatically as they tick.
-                                    text: modal.fmtTime(playerLoader.item
-                                                        ? (playerLoader.item.position || 0) : 0)
-                                        + "  /  "
-                                        + modal.fmtTime(playerLoader.item
-                                                        ? (playerLoader.item.duration || 0) : 0)
+                                    text: modal.timecodeText()
                                     color: Theme.ink
                                     font.pixelSize: 12
                                     font.family: "monospace"
@@ -2331,11 +2453,13 @@ Popup {
                                 }
                             }
 
-                            // Top-right: current position
+                            // Top-right: wall clock in the system's own time
+                            // format (12h/24h, AM/PM, whatever the OS picked).
                             Rectangle {
                                 anchors.right: parent.right
                                 anchors.top: parent.top
-                                anchors.margins: 20
+                                anchors.rightMargin: 20
+                                anchors.topMargin: timecodeOverlay.topGap
                                 radius: 8
                                 color: Qt.rgba(0.07, 0.07, 0.11, 0.72)
                                 border.width: 1
@@ -2346,13 +2470,28 @@ Popup {
                                 Text {
                                     id: currentTimeText
                                     anchors.centerIn: parent
-                                    text: modal.fmtTime(playerLoader.item
-                                                        ? (playerLoader.item.position || 0) : 0)
+                                    // `Qt.formatTime` needs an explicit
+                                    // pattern, so ask the system locale for
+                                    // its own short time format: 12h/24h and
+                                    // AM/PM follow whatever the OS picked.
+                                    text: Qt.formatTime(modal.clockNow,
+                                        Qt.locale().timeFormat(Locale.ShortFormat))
                                     color: Theme.accent
                                     font.pixelSize: 14
                                     font.family: "monospace"
                                     font.bold: true
                                 }
+                            }
+
+                            // One tick a second: enough for a locale format
+                            // without seconds, and the minute boundary stays
+                            // honest. Stops with the HUD.
+                            Timer {
+                                interval: 1000
+                                repeat: true
+                                running: timecodeOverlay.opacity > 0.0
+                                triggeredOnStart: true
+                                onTriggered: modal.clockNow = new Date()
                             }
                         }
 
@@ -2368,6 +2507,15 @@ Popup {
                             opacity: (modal.stage === "play" && modal.chromeVisible && modal.fullscreen) ? 1.0 : 0.0
 
                             Behavior on opacity { NumberAnimation { duration: 200 } }
+
+                            // The bar owns the pointer: clicks and the wheel
+                            // must not fall through to the video's
+                            // click-to-pause / wheel-volume handlers.
+                            MouseArea {
+                                anchors.fill: parent
+                                acceptedButtons: Qt.AllButtons
+                                onWheel: function (wheel) { wheel.accepted = true }
+                            }
 
                             HoverHandler {
                                 id: topBarHover
@@ -3258,6 +3406,9 @@ Popup {
             visible: modal.settingsOpen && modal.stage === "play"
             z: 99
             onClicked: modal.settingsOpen = false
+            // The card is up; the video underneath must not take wheel
+            // volume changes while the pointer wanders off the card.
+            onWheel: function (wheel) { wheel.accepted = true }
         }
 
         PlayerSettings {
@@ -3267,6 +3418,7 @@ Popup {
             resumeBehavior: modal.resumeBehavior
             resumeRewind: modal.resumeRewind
             fullscreenTimecode: modal.fullscreenTimecode
+            timecodeFormat: modal.timecodeFormat
             open: modal.settingsOpen
             visible: modal.settingsOpen && modal.stage === "play"
             z: 100
@@ -3275,6 +3427,7 @@ Popup {
             onShortcutChanged: (action, sequence) => modal.setShortcut(action, sequence)
             onResumeChanged: (behavior, rewind) => modal.setResume(behavior, rewind)
             onFullscreenTimecodeToggled: (enabled) => modal.setFullscreenTimecode(enabled)
+            onTimecodeFormatSelected: (format) => modal.setTimecodeFormat(format)
         }
     }
 }

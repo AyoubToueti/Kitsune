@@ -126,6 +126,15 @@ pub struct DownloadRecord {
     /// True when the reader explicitly paused this download.
     #[serde(default)]
     pub user_paused: bool,
+    /// True when the reader paused THIS FILE alone inside a pack.
+    ///
+    /// Distinct from `user_paused`, which a group pause sets on every row:
+    /// this flag survives a group resume (the engine's file selection keeps
+    /// the file excluded) and `group_indices` leaves it out, so a restart
+    /// reattaches the torrent without it. `default` so an older
+    /// `downloads.json` still parses.
+    #[serde(default)]
+    pub file_paused: bool,
     /// Season number from the request that started the download.
     ///
     /// Persisted because the finish path needs it after a restart; it used to
@@ -379,6 +388,7 @@ mod tests {
             completed_at: Some(2000),
             priority: DownloadPriority::Normal,
             user_paused: false,
+            file_paused: false,
             season: None,
             library_dir: None,
             torrent_file_count: None,

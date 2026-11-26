@@ -2,6 +2,48 @@
 
 All notable changes to Kitsune, generated from the git history. v1.0.0 is the first public release, so it covers both the original Tauri/SvelteKit era and the Qt6/QML rewrite; the backend is the same throughout.
 
+## 1.2.0 (2026-11-26)
+
+### Features
+
+**downloads**
+
+- add a summary bar with speed graph and free space ([20e4b80](https://github.com/AyoubToueti/Kitsune/commit/20e4b80103aeebcf9ad6cddaf036802de1c3b57a), 2026-11-26)
+- fit packs to the disk and record blocked starts ([3441166](https://github.com/AyoubToueti/Kitsune/commit/3441166eca3ec64eb887dfb2d0727ba04ac85cb5), 2026-11-26)
+- track per-file pause state on records ([b2c530f](https://github.com/AyoubToueti/Kitsune/commit/b2c530f7110ff5f05a21bea621fb1fda46b980d8), 2026-11-26)
+- pause, prioritize and remove individual files ([ebed4dd](https://github.com/AyoubToueti/Kitsune/commit/ebed4dd05cd5d7bcb291757000f1e35a82660a41), 2026-11-26)
+
+**player**
+
+- add a configurable timecode HUD ([ed18ae0](https://github.com/AyoubToueti/Kitsune/commit/ed18ae0ca29ebb54654d305a8470bb5f04ce70bc), 2026-11-26)
+
+**vendor**
+
+- report free disk space in the initial check ([a4832df](https://github.com/AyoubToueti/Kitsune/commit/a4832dfe5e21e3955bcb7299d4a35d5504556185), 2026-11-26)
+
+### Fixes
+
+**vendor**
+
+- keep the custom per-file priority order ([5c718b6](https://github.com/AyoubToueti/Kitsune/commit/5c718b614090d4b5eb33a5ed2bc1c4318bd26f10), 2026-11-26)
+
+<details>
+<summary>Maintenance (documentation, build, CI, tests, chores)</summary>
+
+### Documentation
+
+**general**
+
+- refresh screenshots ([2722184](https://github.com/AyoubToueti/Kitsune/commit/27221845733e3f54313a0eca5a6f669a0a2d270d), 2026-11-26)
+
+### Style
+
+**downloads**
+
+- drop redundant section comments ([66e5cec](https://github.com/AyoubToueti/Kitsune/commit/66e5cec699151a7704c279b257cdfa2416d2e76b), 2026-11-26)
+
+</details>
+
 ## 1.1.0 (2026-11-25)
 
 ### Features

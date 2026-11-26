@@ -291,6 +291,30 @@ Item {
         return Math.round(bar.vol()) + "%"
     }
 
+    // The bar owns the pointer: clicks and the wheel must not fall through to
+    // the video underneath (click-to-pause, wheel-volume). The wheel seeks
+    // here instead, except over the volume pill.
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onWheel: function (wheel) {
+            wheel.accepted = true
+            if (!bar.player) return
+            if (!bar.timelineOnly) {
+                const p = volControl.mapFromItem(bar, wheel.x, wheel.y)
+                if (p.x >= 0 && p.x <= volControl.width
+                        && p.y >= 0 && p.y <= volControl.height)
+                    return
+            }
+            const notches = wheel.angleDelta.y / 120
+            if (notches === 0) return
+            const step = notches * 5
+            bar.player.command(["seek", String(step), "relative"])
+            bar.triggerOSD(step > 0 ? "forward" : "rewind",
+                           (step > 0 ? "+" : "") + Math.round(step) + "s")
+        }
+    }
+
     GlassPanel {
         anchors.fill: parent
         radius: 14
@@ -1095,6 +1119,7 @@ Item {
                 }
 
                 Rectangle {
+                    id: volControl
                     height: 32
                     radius: 10
                     color: Theme.glassFillSubtle
