@@ -55,8 +55,15 @@ runtime are bundled, so no separate install is needed.
   [librqbit](https://github.com/ikatson/rqbit) with stream-health monitoring.
 - **RAM streaming** — plays through a bounded in-memory buffer by default;
   disk mode remains available and falls back automatically when space is low.
+- **Downloads** — keep episodes locally and manage the queue per file: pause,
+  resume, raise or lower a file's priority, or remove it. Packs that do not fit
+  the target disk are blocked up front instead of failing mid-download, and a
+  summary bar tracks speed and free space.
 - **Local library** — continue-watching, watch progress, resume, and a
   per-title list status (watching / completed / planned / …).
+- **Player** — embedded libmpv playback with a configurable timecode HUD
+  (short, long, or time remaining), a wall clock, and wheel seeking over the
+  controls.
 - **External player** — hand a stream off to a local player such as
   [mpv](https://mpv.io).
 - **AniList sign-in** — OAuth via a `kitsune://` deep link, with the token
@@ -146,19 +153,20 @@ The version lives in one place: `[workspace.package] version` in the root
 `Cargo.toml`. Both crates inherit it, and Cargo regenerates `Cargo.lock` from it.
 
     # bump it (also updates the two Cargo.lock entries)
-    node scripts/sync-version.mjs 1.0.0
+    node scripts/sync-version.mjs 1.2.0
 
-Generate the changelog from the git history (or run the **Changelog** workflow,
-which opens a PR with the result):
+Generate the changelog for the release (the range defaults to the last tag; pass
+`HEAD` for the first release, which covers the full history):
 
-    node scripts/changelog.mjs HEAD --version 1.0.0  # first release: full history
-    node scripts/changelog.mjs --version 1.1.0       # later: last tag..HEAD
+    node scripts/changelog.mjs --version 1.2.0
 
-Then commit, tag, and push — the tag triggers the release workflow:
+Commit the bump and changelog, merge the PR, then tag the merge commit and push
+the tag. The tag triggers `qt-release.yml`, which derives the installer version
+from it and drafts the GitHub release with the AppImage, `.deb`, `.rpm` and
+Windows installer attached:
 
-    git commit -am "release: v1.0.0"
-    git tag v1.0.0
-    git push origin main --tags
+    git tag -a v1.2.0 -m "v1.2.0"
+    git push origin v1.2.0
 
 The tag **must** match the version; `qt-release.yml` derives the installer
 version from the tag name and fails if it cannot.
