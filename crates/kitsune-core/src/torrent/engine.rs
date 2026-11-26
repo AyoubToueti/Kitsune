@@ -862,6 +862,22 @@ impl TorrentEngine {
             .with_context(|| format!("failed to resume torrent {id}"))
     }
 
+    /// Reorder a torrent's per-file download priority.
+    ///
+    /// Files earlier in `order` download first. One-shot and validation-free
+    /// on purpose: the engine validates the indices, and a rejected order is
+    /// logged by the caller rather than retried for half a minute.
+    pub async fn update_file_priorities(&self, id: usize, order: &[usize]) -> Result<()> {
+        let Some(handle) = self.session.get(id.into()) else {
+            tracing::warn!("update_file_priorities: unknown torrent {id}");
+            return Ok(());
+        };
+        let session = self.session();
+        session.update_file_priorities(&handle, order).await?;
+        tracing::info!("torrent {id}: file priority order set to {order:?}");
+        Ok(())
+    }
+
     /// Restrict a torrent's download to a single file index.
     ///
     /// librqbit otherwise downloads every file from the start in order, so a

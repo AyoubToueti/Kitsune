@@ -205,8 +205,13 @@ Item {
         const out = []
         for (let k = 0; k < order.length; k++) {
             const group = map[order[k]]
+            // Rows follow the same order the engine downloads them: high
+            // priority at the top, low at the bottom, episode order within
+            // each level. Without this the page showed episode order while
+            // the transfer ran in priority order.
             group.records.sort(function (a, b) {
-                return (a.episode || 0) - (b.episode || 0)
+                return priorityRank(a.priority) - priorityRank(b.priority)
+                    || (a.episode || 0) - (b.episode || 0)
                     || (a.fileIdx || 0) - (b.fileIdx || 0)
             })
             aggregate(group)
@@ -580,6 +585,14 @@ Item {
         }
     }
 
+    // Sort rank for a file's priority: lower sorts first, matching the
+    // engine's download order (high downloads before normal before low).
+    function priorityRank(priority) {
+        if (priority === "high") return 0
+        if (priority === "low") return 2
+        return 1
+    }
+
     function toggleSelected(key) {
         const next = Object.assign({}, selectedIds)
         if (next[key]) delete next[key]
@@ -740,8 +753,37 @@ Item {
 
     function togglePause(group, status) {
         if (!backend) return
-        if (status === "paused") backend.resumeDownload(String(group.actionId))
-        else backend.pauseDownload(String(group.actionId))
+        if (status === "downloading" || status === "queued")
+            backend.pauseDownload(String(group.actionId))
+        else
+            backend.resumeDownload(String(group.actionId))
+    }
+
+    function toggleFilePause(rec, status) {
+        if (!backend) return
+        backend.setFilePaused(String(rec.id), status !== "paused")
+    }
+
+    function raiseFilePriority(rec) {
+        if (!backend) return
+        if (rec.priority === "low")
+            backend.setFilePriority(String(rec.id), "normal")
+        else
+            backend.setFilePriority(String(rec.id), "high")
+    }
+
+    function lowerFilePriority(rec) {
+        if (!backend) return
+        if (rec.priority === "high")
+            backend.setFilePriority(String(rec.id), "normal")
+        else
+            backend.setFilePriority(String(rec.id), "low")
+    }
+
+    function removeFile(rec, deleteFile) {
+        if (!backend) return
+        backend.removeDownloadFile(String(rec.id), deleteFile)
+        refreshDiskFree()
     }
 
     function manageFiles(group) {
@@ -1789,20 +1831,22 @@ Item {
                                     status: rec.status,
                                     progressBytes: rec.progressBytes || 0,
                                     totalBytes: rec.totalBytes || 0,
-                                    fraction: 0, percent: 0
+                                    fraction: 0, percent: 0,
+                                    error: rec.error || ""
                                 })
 
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 32
                                 implicitHeight: 48
                                 radius: 8
-                                color: fileMouse.containsMouse ? Theme.glassFillHover : Theme.surfaceSunken
+                                color: rowHover.hovered ? Theme.glassFillHover : Theme.surfaceSunken
 
-                                // Click expanded row to play
+                                // Use HoverHandler to track hover over the entire row
+                                HoverHandler { id: rowHover }
+
                                 MouseArea {
                                     id: fileMouse
                                     anchors.fill: parent
-                                    hoverEnabled: true
                                     cursorShape: liveRec.status === "complete" ? Qt.PointingHandCursor : Qt.ArrowCursor
                                     onClicked: {
                                         if (liveRec.status === "complete") {
@@ -1842,15 +1886,11 @@ Item {
                                             font.pixelSize: 9
                                             elide: Text.ElideMiddle
                                         }
-                                        // Why THIS file failed. The group
-                                        // card carries the same text, but a
-                                        // season pack needs it on the row the
-                                        // reader is looking at.
                                         Text {
                                             Layout.fillWidth: true
                                             visible: liveRec.status === "failed"
-                                                && liveRec.error.length > 0
-                                            text: liveRec.error
+                                                && (liveRec.error || "").length > 0
+                                            text: liveRec.error || ""
                                             color: Theme.danger
                                             font.pixelSize: 9
                                             wrapMode: Text.WordWrap
@@ -1878,6 +1918,189 @@ Item {
                                                     GradientStop { position: 0.5; color: "#FEC42D" }
                                                     GradientStop { position: 1.0; color: "#FEF7E0" }
                                                 }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // --- Redesigned Episode Controls ---
+                                Rectangle {
+                                    id: fileActions
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 8
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    implicitWidth: fileActionsRow.implicitWidth + 12
+                                    implicitHeight: 32
+                                    radius: 16
+                                    color: rowHover.hovered ? Qt.rgba(0,0,0,0.4) : "transparent"
+                                    visible: rowHover.hovered
+
+                                    RowLayout {
+                                        id: fileActionsRow
+                                        anchors.centerIn: parent
+                                        spacing: 4
+                                        
+                                        // Priority Up
+                                        Item {
+                                            width: 24; height: 24
+                                            visible: liveRec.status !== "complete" && rec.priority !== "high"
+                                            HoverHandler { id: upHover }
+                                            
+                                            Rectangle {
+                                                id: glowUp
+                                                anchors.fill: parent
+                                                radius: 12
+                                                color: "transparent"
+                                                border.color: Theme.accent
+                                                border.width: 1.5
+                                                opacity: 0
+                                                
+                                                SequentialAnimation on opacity {
+                                                    id: animUp
+                                                    running: false
+                                                    NumberAnimation { from: 0.8; to: 0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                                SequentialAnimation on scale {
+                                                    id: animScaleUp
+                                                    running: false
+                                                    NumberAnimation { from: 1.0; to: 2.0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                            }
+                                            
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "\u2191"
+                                                color: upHover.hovered ? Theme.ink : Theme.inkMuted
+                                                font.pixelSize: 14
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    animUp.start()
+                                                    animScaleUp.start()
+                                                    page.raiseFilePriority(rec)
+                                                }
+                                            }
+                                        }
+
+                                        // Priority Down
+                                        Item {
+                                            width: 24; height: 24
+                                            visible: liveRec.status !== "complete" && rec.priority !== "low"
+                                            HoverHandler { id: downHover }
+                                            
+                                            Rectangle {
+                                                id: glowDown
+                                                anchors.fill: parent
+                                                radius: 12
+                                                color: "transparent"
+                                                border.color: Theme.accent
+                                                border.width: 1.5
+                                                opacity: 0
+                                                
+                                                SequentialAnimation on opacity {
+                                                    id: animDown
+                                                    running: false
+                                                    NumberAnimation { from: 0.8; to: 0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                                SequentialAnimation on scale {
+                                                    id: animScaleDown
+                                                    running: false
+                                                    NumberAnimation { from: 1.0; to: 2.0; duration: 400; easing.type: Easing.OutQuad }
+                                                }
+                                            }
+                                            
+                                            Text {
+                                                anchors.centerIn: parent
+                                                text: "\u2193"
+                                                color: downHover.hovered ? Theme.ink : Theme.inkMuted
+                                                font.pixelSize: 14
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    animDown.start()
+                                                    animScaleDown.start()
+                                                    page.lowerFilePriority(rec)
+                                                }
+                                            }
+                                        }
+                                        
+                                        Rectangle { width: 1; height: 14; color: Theme.borderSubtle; visible: liveRec.status !== "complete" }
+
+                                        // Pause / Resume (Play vs Pause icon)
+                                        Item {
+                                            width: 24; height: 24
+                                            visible: liveRec.status === "downloading"
+                                                || liveRec.status === "queued"
+                                                || liveRec.status === "paused"
+                                            HoverHandler { id: playHover }
+                                            
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: page.toggleFilePause(rec, liveRec.status)
+                                            }
+
+                                            // Play Triangle (Resume)
+                                            Canvas {
+                                                id: playCanvas
+                                                anchors.centerIn: parent
+                                                width: 10; height: 12
+                                                visible: liveRec.status === "paused"
+                                                onPaint: {
+                                                    var ctx = getContext("2d");
+                                                    ctx.reset();
+                                                    ctx.fillStyle = playHover.hovered ? Theme.healthGreen : Theme.ink;
+                                                    ctx.beginPath();
+                                                    ctx.moveTo(0, 0);
+                                                    ctx.lineTo(10, 6);
+                                                    ctx.lineTo(0, 12);
+                                                    ctx.closePath();
+                                                    ctx.fill();
+                                                }
+                                                Connections {
+                                                    target: playHover
+                                                    function onHoveredChanged() { playCanvas.requestPaint() }
+                                                }
+                                                onVisibleChanged: if (visible) requestPaint()
+                                            }
+                                            
+                                            // Pause Segments (Pause)
+                                            Row {
+                                                anchors.centerIn: parent
+                                                spacing: 3
+                                                visible: liveRec.status !== "paused"
+                                                Rectangle { width: 3; height: 11; radius: 1; color: playHover.hovered ? Theme.accent : Theme.ink }
+                                                Rectangle { width: 3; height: 11; radius: 1; color: playHover.hovered ? Theme.accent : Theme.ink }
+                                            }
+                                        }
+
+                                        // Stop / Delete (Square icon). A single
+                                        // click acts immediately: a row is one
+                                        // file, unlike the whole-group Remove,
+                                        // which keeps its confirm step.
+                                        Item {
+                                            id: removeFileButton
+                                            width: 24; height: 24
+                                            HoverHandler { id: stopHover }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: {
+                                                    if (!page.backend) return
+                                                    page.removeFile(rec, liveRec.status === "complete")
+                                                }
+                                            }
+
+                                            // Square Icon
+                                            Rectangle {
+                                                anchors.centerIn: parent
+                                                width: 9; height: 9; radius: 1
+                                                color: stopHover.hovered ? Theme.danger : Theme.ink
                                             }
                                         }
                                     }

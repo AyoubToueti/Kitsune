@@ -1521,6 +1521,18 @@ impl PlayerState {
 
         session.engine.set_only_files(id, &only).await
     }
+
+    /// Reorder a torrent's per-file download priority.
+    ///
+    /// Files earlier in `order` download first. Same cell-read rule as
+    /// [`Self::set_only_files`].
+    pub async fn set_file_priorities(&self, id: usize, order: Vec<usize>) -> Result<()> {
+        let Some(session) = self.session_snapshot() else {
+            return Ok(());
+        };
+
+        session.engine.update_file_priorities(id, &order).await
+    }
 }
 
 impl Default for PlayerState {
