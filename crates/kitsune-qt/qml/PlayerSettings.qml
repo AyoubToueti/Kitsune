@@ -19,6 +19,9 @@ Item {
     // Fullscreen HUD: show elapsed/total and current time at the corners
     // while the header and control bar are hidden.
     property bool fullscreenTimecode: false
+    // Which pair the top-left pill shows: "elapsed", "remaining" or
+    // "elapsed_remaining". Persisted through the modal's app settings.
+    property string timecodeFormat: "elapsed"
 
     signal closeRequested()
     /// Emitted when the reader rebinds an action. An empty sequence clears the
@@ -28,6 +31,7 @@ Item {
     /// rewind delay from the in-player settings card.
     signal resumeChanged(string behavior, int rewind)
     signal fullscreenTimecodeToggled(bool enabled)
+    signal timecodeFormatSelected(string format)
 
     // The actions the reader can rebind, with their built-in defaults. Kept in
     // sync with the `sc(...)` calls in EpisodeWatchModal.
@@ -281,6 +285,55 @@ Item {
                     spacing: 14
                     visible: card.tab === "playback"
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        SettingLabel {
+                            text: "Show timecode overlay"
+                            Layout.fillWidth: true
+                        }
+                        ThemedSwitch {
+                            checked: card.fullscreenTimecode
+                            onToggled: card.fullscreenTimecodeToggled(checked)
+                        }
+                    }
+ 
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Show a timecode on the top left and the wall clock on the "
+                              + "top right while the controls are hidden, the pointer is "
+                              + "over a player bar, or these settings are open. "
+                              + "Right-click the video to open them."
+                        color: Theme.inkFaint
+                        font.pixelSize: 10
+                        wrapMode: Text.WordWrap
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        SettingLabel { text: "Timecode format" }
+                        Flow {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: childrenRect.height
+                            spacing: 6
+                            Repeater {
+                                model: [
+                                    { "value": "elapsed", "label": "Elapsed / total" },
+                                    { "value": "remaining", "label": "Remaining / total" },
+                                    { "value": "elapsed_remaining", "label": "Elapsed / remaining" }
+                                ]
+                                delegate: GlassChip {
+                                    required property var modelData
+                                    text: modelData.label
+                                    active: card.timecodeFormat === modelData.value
+                                    onClicked: card.timecodeFormatSelected(modelData.value)
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.glassBorder }
+
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 8
@@ -346,29 +399,6 @@ Item {
                             onClicked: card.resetPicture()
                         }
                         Item { Layout.fillWidth: true }
-                    }
- 
-                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.glassBorder }
- 
-                    RowLayout {
-                        Layout.fillWidth: true
-                        SettingLabel {
-                            text: "Show timecode in fullscreen"
-                            Layout.fillWidth: true
-                        }
-                        ThemedSwitch {
-                            checked: card.fullscreenTimecode
-                            onToggled: card.fullscreenTimecodeToggled(checked)
-                        }
-                    }
- 
-                    Text {
-                        Layout.fillWidth: true
-                        text: "When the controls hide in fullscreen, show elapsed / total time "  
-                              + "on the top left and the current time on the top right."
-                        color: Theme.inkFaint
-                        font.pixelSize: 10
-                        wrapMode: Text.WordWrap
                     }
                 }
 
